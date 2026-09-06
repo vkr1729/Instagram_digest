@@ -102,7 +102,7 @@
     "enabled": true
   },
   {
-    "handle": "architecturaldigest",
+    "handle": "archdigest",
     "name": "Architectural Digest",
     "category": "niche",
     "enabled": true
@@ -366,12 +366,6 @@
     "enabled": true
   },
   {
-    "handle": "homescreenentertainment",
-    "name": "Home Screen Entertainment",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "hubermanlab",
     "name": "Dr. Andrew Huberman",
     "category": "health",
@@ -386,7 +380,7 @@
   {
     "handle": "irais.browaeys",
     "name": "Iraïs Browaeys",
-    "category": "ai_tech",
+    "category": "niche",
     "enabled": true
   },
   {
@@ -398,7 +392,7 @@
   {
     "handle": "itsneerajanair",
     "name": "Neeraja",
-    "category": "food",
+    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -518,7 +512,7 @@
   {
     "handle": "natoutofoffice",
     "name": "Natasha Starcheski | Out of Office",
-    "category": "food",
+    "category": "niche",
     "enabled": true
   },
   {
@@ -608,7 +602,7 @@
   {
     "handle": "rationalrahul123",
     "name": "Rational Rahul - Telugu",
-    "category": "niche",
+    "category": "finance",
     "enabled": true
   },
   {
@@ -632,7 +626,7 @@
   {
     "handle": "rohansehgalofficial",
     "name": "Rohan Sehgal",
-    "category": "entertainment",
+    "category": "food",
     "enabled": true
   },
   {
@@ -648,12 +642,6 @@
     "enabled": true
   },
   {
-    "handle": "sam_altman",
-    "name": "Sam Altman",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
     "handle": "sandeepdasauthor",
     "name": "Sandeep Das",
     "category": "niche",
@@ -662,7 +650,7 @@
   {
     "handle": "sarathnalla23",
     "name": "Sarath Nalla",
-    "category": "finance",
+    "category": "entertainment",
     "enabled": true
   },
   {
@@ -872,7 +860,7 @@
   {
     "handle": "vanshxvermaa",
     "name": "Vansh Verma",
-    "category": "entertainment",
+    "category": "niche",
     "enabled": true
   },
   {
@@ -890,13 +878,13 @@
   {
     "handle": "vishal.chowhan_",
     "name": "Vishal Chowhan",
-    "category": "finance",
+    "category": "health",
     "enabled": true
   },
   {
     "handle": "with.prathamesh",
     "name": "Prathamesh Shetty",
-    "category": "entertainment",
+    "category": "niche",
     "enabled": true
   },
   {

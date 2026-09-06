@@ -40,8 +40,8 @@ def run_full_sync(
             logger.error("Pre-flight quota check failed. Aborting to protect Cloudflare free limits.")
             return 1
 
-    # 2. Sync / refresh followed accounts
-    sources = extractor.sync_following_accounts(force=False)
+    # 2. Load tracked and curated creators
+    sources = extractor.load_sources()
     active_sources = [s for s in sources if s.get("enabled", True)]
     logger.info("Processing %d active creators from sources.json.", len(active_sources))
 
@@ -66,25 +66,40 @@ def run_full_sync(
             if i < len(by_cat.get(c, [])):
                 ordered_sources.append(by_cat[c][i])
 
-    target_candidate_count = max(config.TOP_DIGEST_COUNT + 35, 135)
     with extractor.InstagramSession() as session:
-        for src in ordered_sources:
-            if len(candidates) >= target_candidate_count:
-                break
-            handle = src.get("handle", "")
-            if not handle:
-                continue
-            reels = extractor.extract_creator_reels(
-                handle=handle,
-                max_reels=min(limit_per_creator, 5),
-                days_back=days_back,
-                fast_mode=True,  # Fast discovery from reels tab
-                session=session,
-            )
-            candidates.extend(reels)
-            time.sleep(0.2)
+        candidates_cache_file = config.DATA_DIR / "candidates_cache.json"
+        if candidates_cache_file.exists():
+            try:
+                if time.time() - candidates_cache_file.stat().st_mtime < 12 * 3600:
+                    candidates = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
+                    logger.info("Loaded %d candidate reels from fresh candidates_cache.json.", len(candidates))
+            except Exception:
+                candidates = []
 
-        logger.info("Extracted total %d candidate reels across creators.", len(candidates))
+        if not candidates:
+            # Ensure candidate gathering covers all active creators so all category quotas can be fulfilled
+            for idx, src in enumerate(ordered_sources, 1):
+                handle = src.get("handle", "")
+                if not handle:
+                    continue
+                cat = src.get("category", "")
+                max_candidate_reels = 6 if cat == "food" else min(limit_per_creator, 5)
+                logger.info("[%d/%d] Extracting candidate reels for @%s (%s)...", idx, len(ordered_sources), handle, cat)
+                reels = extractor.extract_creator_reels(
+                    handle=handle,
+                    max_reels=max_candidate_reels,
+                    days_back=days_back,
+                    fast_mode=True,  # Fast discovery from reels tab
+                    session=session,
+                )
+                candidates.extend(reels)
+                time.sleep(0.2)
+
+            logger.info("Extracted total %d candidate reels across creators.", len(candidates))
+            try:
+                candidates_cache_file.write_text(json.dumps(candidates, indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
         # 4. Rank candidates using Fair-Share Viral Multiplier
         ranked_reels = ranker.rank_top_reels(
@@ -115,6 +130,13 @@ def run_full_sync(
                 rank = reel.get("rank", 1)
                 filename = f"{rank:02d}_{handle}_{reel_id}.mp4"
                 local_video_path = week_videos_dir / filename
+
+                # Check if this reel was already downloaded under a previous rank prefix
+                existing_matches = list(week_videos_dir.glob(f"*_{handle}_{reel_id}.mp4")) or list(week_videos_dir.glob(f"*_{reel_id}.mp4"))
+                if existing_matches:
+                    matched_file = existing_matches[0]
+                    if matched_file.resolve() != local_video_path.resolve():
+                        matched_file.rename(local_video_path)
 
                 # Download if not already cached
                 if not local_video_path.exists():

@@ -197,7 +197,8 @@ def rank_top_reels(
             if category_counts.get(cat, 0) >= target:
                 break
             h = item["creator_handle"].lower().replace("@", "")
-            if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
+            effective_cap = (max_per_creator + 2) if cat == "food" else max_per_creator
+            if creator_counts[h] < effective_cap and item["id"] not in used_ids:
                 selected.append(item)
                 creator_counts[h] += 1
                 category_counts[cat] = category_counts.get(cat, 0) + 1
@@ -216,7 +217,8 @@ def rank_top_reels(
             if len(selected) >= top_n:
                 break
             h = item["creator_handle"].lower().replace("@", "")
-            if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
+            effective_cap = (max_per_creator + 2) if item.get("category") == "food" else max_per_creator
+            if creator_counts[h] < effective_cap and item["id"] not in used_ids:
                 selected.append(item)
                 creator_counts[h] += 1
                 used_ids.add(item["id"])
