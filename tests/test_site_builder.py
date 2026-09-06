@@ -74,6 +74,8 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
         assert "You're All Caught Up!" in html
         assert 'id="jumpBtn"' in html
         assert 'id="jumpModal"' in html
+        assert 'updateCategoryProgressRings' in html
+        assert '--ring-deg' in html
 
     # Verify unselect button and channels link are local-only
     assert 'class="unselect-channel-btn"' in local_html

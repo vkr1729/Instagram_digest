@@ -369,21 +369,33 @@
       min-width: 0;
       user-select: none;
     }
+    @property --ring-deg {
+      syntax: '<angle>';
+      inherits: false;
+      initial-value: 360deg;
+    }
+
     .story-ring {
       width: 44px;
       height: 44px;
       border-radius: 50%;
-      padding: 2px;
-      background: rgba(255, 255, 255, 0.15);
+      padding: 2.5px;
+      box-sizing: border-box;
+      background: conic-gradient(
+        from -90deg,
+        #f09433 0deg,
+        #dc2743 calc(var(--ring-deg, 360deg) * 0.5),
+        #bc1888 var(--ring-deg, 360deg),
+        rgba(255, 255, 255, 0.16) var(--ring-deg, 360deg) 360deg
+      );
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      transition: --ring-deg 0.35s ease, transform 0.15s ease, box-shadow 0.2s ease;
     }
     .story-bubble.active .story-ring {
-      background: var(--ig-gradient);
-      box-shadow: 0 0 10px rgba(220, 39, 67, 0.5);
-      transform: scale(1.04);
+      box-shadow: 0 0 10px rgba(220, 39, 67, 0.55);
+      transform: scale(1.06);
     }
     .story-avatar {
       width: 100%;
@@ -395,6 +407,10 @@
       justify-content: center;
       font-size: 17px;
       border: 2px solid var(--bg-pitch);
+      transition: border-color 0.2s ease;
+    }
+    .story-bubble.active .story-avatar {
+      border-color: rgba(255, 255, 255, 0.75);
     }
     .story-title {
       font-size: 9.5px;
@@ -406,10 +422,23 @@
       width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
+      transition: color 0.2s ease;
     }
     .story-bubble.active .story-title {
       color: #fff;
-      font-weight: 600;
+      font-weight: 700;
+    }
+    .active-dot {
+      width: 3px;
+      height: 3px;
+      background: #fff;
+      border-radius: 50%;
+      margin-top: 1px;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    .story-bubble.active .active-dot {
+      opacity: 1;
     }
     @media (min-width: 600px) {
       .story-bar {
@@ -690,30 +719,37 @@
         <div class="story-bubble active" data-category="all" onclick="filterCategory('all')">
           <div class="story-ring"><div class="story-avatar">🔥</div></div>
           <span class="story-title">Top 200</span>
+          <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="entertainment" onclick="filterCategory('entertainment')">
           <div class="story-ring"><div class="story-avatar">🎬</div></div>
           <span class="story-title">Entertain</span>
+          <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="finance" onclick="filterCategory('finance')">
           <div class="story-ring"><div class="story-avatar">💰</div></div>
           <span class="story-title">Finance</span>
+          <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="ai_tech" onclick="filterCategory('ai_tech')">
           <div class="story-ring"><div class="story-avatar">💻</div></div>
           <span class="story-title">AI & Tech</span>
+          <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="niche" onclick="filterCategory('niche')">
           <div class="story-ring"><div class="story-avatar">🧠</div></div>
           <span class="story-title">Niche</span>
+          <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="health" onclick="filterCategory('health')">
           <div class="story-ring"><div class="story-avatar">🏋️</div></div>
           <span class="story-title">Health</span>
+          <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="food" onclick="filterCategory('food')">
           <div class="story-ring"><div class="story-avatar">🥗</div></div>
           <span class="story-title">Food</span>
+          <div class="active-dot"></div>
         </div>
       </nav>
     </div>
@@ -820,6 +856,10 @@
       localStorage.setItem('ig_digest_watched_ids', jsonStr);
       localStorage.setItem(LAST_WATCHED_KEY, reelId);
 
+      if (typeof updateCategoryProgressRings === 'function') {
+        updateCategoryProgressRings();
+      }
+
       // Dual-layer persistence: sync to local server backend
       if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         fetch('/api/watched', {
@@ -842,6 +882,9 @@
         }).catch(() => {});
       }
       filterCategory(currentCategory);
+      if (typeof updateCategoryProgressRings === 'function') {
+        updateCategoryProgressRings();
+      }
     }
 
     // Sync from local server backend if available on startup
@@ -997,12 +1040,49 @@
       setTimeout(() => t.classList.remove('visible'), 1600);
     }
 
+    // Update Story Rings: dynamic unwinding progress ring showing percentage of reels left
+    function updateCategoryProgressRings() {
+      const watched = getWatchedIds();
+      const allCards = Array.from(document.querySelectorAll('.reel-card'));
+      const bubbles = document.querySelectorAll('.story-bubble');
+
+      bubbles.forEach(bubble => {
+        const cat = bubble.dataset.category;
+        const matchingCards = allCards.filter(card => {
+          const cardCat = card.dataset.category;
+          return (
+            cat === 'all' ||
+            cardCat === cat ||
+            (cat === 'ai_tech' && cardCat === 'tech') ||
+            (cat === 'tech' && (cardCat === 'ai_tech' || cardCat === 'tech')) ||
+            (cat === 'niche' && cardCat === 'explainer') ||
+            (cat === 'explainer' && (cardCat === 'niche' || cardCat === 'explainer')) ||
+            (cat === 'entertainment' && cardCat === 'culture') ||
+            (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
+          );
+        });
+
+        const total = matchingCards.length;
+        const watchedCount = matchingCards.filter(c => watched.has(c.dataset.id)).length;
+        const leftCount = Math.max(0, total - watchedCount);
+        const pctLeft = total > 0 ? (leftCount / total) : 0;
+        const deg = Math.round(pctLeft * 360);
+
+        const ring = bubble.querySelector('.story-ring');
+        if (ring) {
+          ring.style.setProperty('--ring-deg', `${deg}deg`);
+        }
+        bubble.setAttribute('title', `${leftCount} of ${total} left (${Math.round(pctLeft * 100)}%)`);
+      });
+    }
+
     // Story Category Filtering & Resume from Last Unwatched Reel
     function filterCategory(cat) {
       currentCategory = cat;
       const watched = getWatchedIds();
       const bubbles = document.querySelectorAll('.story-bubble');
       bubbles.forEach(b => b.classList.toggle('active', b.dataset.category === cat));
+      updateCategoryProgressRings();
 
       const cards = Array.from(document.querySelectorAll('.reel-card'));
       let visibleCount = 0;
@@ -1398,6 +1478,9 @@
         if (v) v.pause();
         c.remove();
       });
+      if (typeof updateCategoryProgressRings === 'function') {
+        updateCategoryProgressRings();
+      }
 
       // Show immediate feedback
       showToast('@' + cleanHandle + ' unselected & muted');
