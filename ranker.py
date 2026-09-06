@@ -26,21 +26,39 @@ def calculate_creator_baseline(reels: list[dict[str, Any]]) -> float:
 
 def compute_viral_score(reel: dict[str, Any], baseline_views: float) -> float:
     """
-    Compute creator-normalized viral score.
-    Combines ratio to creator baseline with engagement multiplier (likes/comments).
+    Compute Bayesian-damped creator-normalized viral score:
+    1. Reach Ratio: views relative to creator's median baseline.
+    2. Sublinear Damping: (reach_ratio ** 0.75) * log10(views) dampens tiny micro-creator spikes
+       while rewarding authentic community-wide breakout hits.
+    3. Bayesian-smoothed Engagement: (likes + 2*comments + 5) / (views + 100) with 2x comment weight.
+    4. Recency decay within the 7-day window.
     """
+    import math
+
     views = max(1, reel.get("view_count", 0))
     likes = reel.get("like_count", 0)
     comments = reel.get("comment_count", 0)
 
-    # Relative reach multiplier (e.g. 2.5x normal views)
-    reach_multiplier = views / max(100.0, baseline_views)
+    # 1. Reach ratio relative to creator's median baseline
+    reach_ratio = views / max(200.0, baseline_views)
 
-    # Engagement rate: (likes + 2*comments) / views
-    engagement_rate = (likes + (comments * 2.0)) / max(10.0, float(views))
+    # 2. Damped reach with logarithmic view scaling
+    log_scale = math.log10(max(10.0, float(views)))
+    damped_reach = math.pow(reach_ratio, 0.75) * log_scale
 
-    # Composite viral score
-    score = reach_multiplier * (1.0 + (engagement_rate * 5.0))
+    # 3. Bayesian-smoothed engagement rate (weights comments 2x, Laplace smoothing prior)
+    smooth_engagement = (likes + (comments * 2.0) + 5.0) / (views + 100.0)
+
+    # 4. Composite viral score
+    score = damped_reach * (1.0 + (smooth_engagement * 4.0))
+
+    # 5. Mild recency bonus within 7-day window if timestamp is present
+    ts = reel.get("timestamp")
+    if ts:
+        age_hours = max(0.0, (datetime.now(timezone.utc).timestamp() - ts) / 3600.0)
+        recency_factor = 1.0 / math.pow((age_hours + 12.0) / 24.0, 0.15)
+        score *= recency_factor
+
     return round(score, 3)
 
 

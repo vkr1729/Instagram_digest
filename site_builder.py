@@ -146,6 +146,44 @@ def build_site(
     # 5. Write .nojekyll for GitHub Pages
     (config.SITE_DIR / ".nojekyll").write_text("", encoding="utf-8")
 
+    # 6. Copy PWA and Apple Touch Icon assets
+    assets_dir = config.ROOT_DIR / "assets"
+    for icon_name in ["apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon.svg"]:
+        src_icon = assets_dir / icon_name
+        if src_icon.exists():
+            shutil.copy2(src_icon, config.SITE_DIR / icon_name)
+
+    # 7. Write Web App Manifest for iOS/Android Add to Home Screen
+    manifest_data = {
+        "name": "Instagram Digest",
+        "short_name": "Digest",
+        "description": "Weekly curated Instagram Reels digest",
+        "start_url": "./",
+        "display": "standalone",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        "icons": [
+            {
+                "src": "apple-touch-icon.png",
+                "sizes": "180x180 360x360",
+                "type": "image/png"
+            },
+            {
+                "src": "icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png"
+            },
+            {
+                "src": "icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png"
+            }
+        ]
+    }
+    (config.SITE_DIR / "manifest.webmanifest").write_text(
+        json.dumps(manifest_data, indent=2), encoding="utf-8"
+    )
+
     logger.info("Successfully compiled static site at %s and %s (%d available weeks)",
                 r2_index_path, local_index_path, len(sorted_weeks))
     return r2_index_path, local_index_path

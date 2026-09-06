@@ -4,6 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Instagram Digest — Weekly Top 200</title>
+
+  <!-- iOS PWA & Home Screen App Icon -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Digest">
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://instagram-digest-media.kedarvreddy.workers.dev" crossorigin>
@@ -336,30 +345,33 @@
       box-shadow: 0 4px 12px rgba(255, 69, 58, 0.35);
     }
 
-    /* 5 Story Category Circles */
+    /* Story Category Circles */
     .story-bar {
       display: flex;
-      gap: 12px;
-      padding: 4px 16px 14px;
+      gap: 4px;
+      padding: 4px 6px 12px;
       overflow-x: auto;
       scrollbar-width: none;
       background: transparent;
       z-index: 20;
       border-bottom: none;
+      justify-content: space-between;
+      -webkit-overflow-scrolling: touch;
     }
     .story-bar::-webkit-scrollbar { display: none; }
     .story-bubble {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       cursor: pointer;
-      flex-shrink: 0;
+      flex: 1 1 0;
+      min-width: 0;
       user-select: none;
     }
     .story-ring {
-      width: 52px;
-      height: 52px;
+      width: 44px;
+      height: 44px;
       border-radius: 50%;
       padding: 2px;
       background: rgba(255, 255, 255, 0.15);
@@ -370,7 +382,7 @@
     }
     .story-bubble.active .story-ring {
       background: var(--ig-gradient);
-      box-shadow: 0 0 12px rgba(220, 39, 67, 0.5);
+      box-shadow: 0 0 10px rgba(220, 39, 67, 0.5);
       transform: scale(1.04);
     }
     .story-avatar {
@@ -381,18 +393,43 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 20px;
+      font-size: 17px;
       border: 2px solid var(--bg-pitch);
     }
     .story-title {
-      font-size: 11px;
+      font-size: 9.5px;
       color: var(--text-muted);
       font-weight: 500;
       white-space: nowrap;
+      letter-spacing: -0.3px;
+      text-align: center;
+      width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .story-bubble.active .story-title {
       color: #fff;
       font-weight: 600;
+    }
+    @media (min-width: 600px) {
+      .story-bar {
+        gap: 12px;
+        padding: 4px 16px 14px;
+        justify-content: flex-start;
+      }
+      .story-bubble {
+        flex: 0 0 auto;
+      }
+      .story-ring {
+        width: 48px;
+        height: 48px;
+      }
+      .story-avatar {
+        font-size: 19px;
+      }
+      .story-title {
+        font-size: 11px;
+      }
     }
 
     /* Video Feed Container (CSS Scroll-Snap) */
@@ -656,7 +693,7 @@
         </div>
         <div class="story-bubble" data-category="entertainment" onclick="filterCategory('entertainment')">
           <div class="story-ring"><div class="story-avatar">🎬</div></div>
-          <span class="story-title">Entertainment</span>
+          <span class="story-title">Entertain</span>
         </div>
         <div class="story-bubble" data-category="finance" onclick="filterCategory('finance')">
           <div class="story-ring"><div class="story-avatar">💰</div></div>

@@ -69,7 +69,7 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
         assert "Top 200" in html
         assert "AI &amp; Tech" in html or "AI & Tech" in html
         assert "Health" in html
-        assert "Entertainment" in html
+        assert "Entertain" in html or "Entertainment" in html
         assert "preload=\"auto\"" in html
         assert "You're All Caught Up!" in html
         assert 'id="jumpBtn"' in html
