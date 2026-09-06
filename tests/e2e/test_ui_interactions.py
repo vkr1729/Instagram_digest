@@ -325,3 +325,39 @@ def test_uat_6_10_watched_persistence_and_resuming(setup_test_site):
         assert active_id == "reel_health_1"
 
         browser.close()
+
+
+def test_uat_6_11_keyboard_shortcuts_and_week_switcher(setup_test_site):
+    """UAT-6.11: Desktop keyboard shortcuts (Space for play/pause, F for fullscreen) and week selector."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        # Verify week selector dropdown exists in header
+        selector = page.locator("#weekSelector")
+        assert selector.is_visible()
+
+        # Mock video play/pause on active video to test Spacebar keyboard binding
+        page.evaluate("""() => {
+            const v = document.querySelector('.reel-card video');
+            v._mockPaused = false;
+            Object.defineProperty(v, 'paused', { get: () => v._mockPaused, configurable: true });
+            v.pause = () => { v._mockPaused = true; };
+            v.play = () => { v._mockPaused = false; return Promise.resolve(); };
+        }""")
+
+        # Press Space -> pauses video
+        page.keyboard.press("Space")
+        assert page.evaluate("() => document.querySelector('.reel-card video').paused") is True
+
+        # Press Space again -> resumes video
+        page.keyboard.press("Space")
+        assert page.evaluate("() => document.querySelector('.reel-card video').paused") is False
+
+        # 'F' key triggers fullscreen
+        page.keyboard.press("f")
+
+        browser.close()

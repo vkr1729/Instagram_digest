@@ -148,8 +148,14 @@ def save_digest_batch(ranked_items: list[dict[str, Any]], run_date: str | None =
         "count": len(ranked_items),
         "items": ranked_items,
     }
-    config.DIGEST_BATCH_FILE.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
+    config.DIGEST_BATCH_FILE.write_text(payload_json, encoding="utf-8")
+
+    # Also archive by week_id for multi-week switching
+    if hasattr(config, "DIGESTS_DIR"):
+        config.DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
+        archive_path = config.DIGESTS_DIR / f"{run_date}.json"
+        archive_path.write_text(payload_json, encoding="utf-8")
+
     logger.info("Saved Top %d digest batch to %s", len(ranked_items), config.DIGEST_BATCH_FILE)
     return config.DIGEST_BATCH_FILE

@@ -10,7 +10,7 @@ import mimetypes
 import os
 import shutil
 from http import HTTPStatus
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -146,13 +146,14 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.send_header("Content-Length", str(chunk_size))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
 
         try:
             with video_path.open("rb") as f:
                 f.seek(start)
                 remaining = chunk_size
-                buf_size = 64 * 1024
+                buf_size = 256 * 1024  # 256 KB fast buffer
                 while remaining > 0:
                     read_bytes = f.read(min(remaining, buf_size))
                     if not read_bytes:
@@ -164,12 +165,12 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
 
 def run_local_server(port: int = 8080) -> None:
-    """Run local dashboard server on specified port."""
+    """Run multi-threaded local dashboard server on specified port."""
     server_address = ("127.0.0.1", port)
-    httpd = HTTPServer(server_address, LocalDigestHandler)
-    logger.info("Instagram Digest local server running at http://127.0.0.1:%d/", port)
+    httpd = ThreadingHTTPServer(server_address, LocalDigestHandler)
+    logger.info("Instagram Digest multi-threaded server running at http://127.0.0.1:%d/", port)
     print(f"\n=======================================================")
-    print(f" Instagram Digest Local Dashboard Ready!")
+    print(f" Instagram Digest Multi-Threaded Local Dashboard Ready!")
     print(f" URL: http://127.0.0.1:{port}/")
     print(f" Press Ctrl+C to stop.")
     print(f"=======================================================\n")

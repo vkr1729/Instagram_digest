@@ -74,25 +74,79 @@ def build_site(
         r2_items.append(r2_item)
         local_items.append(local_item)
 
+    # Discover available weekly batches
+    archive_dir = config.SITE_DIR / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    available_week_ids = set()
+    if hasattr(config, "DIGESTS_DIR") and config.DIGESTS_DIR.exists():
+        for f in config.DIGESTS_DIR.glob("*.json"):
+            available_week_ids.add(f.stem)
+    available_week_ids.add(week_id)
+
+    sorted_weeks = sorted(list(available_week_ids), reverse=True)
+    latest_week = sorted_weeks[0] if sorted_weeks else week_id
+
+    def build_weeks_metadata(is_local: bool) -> list[dict[str, Any]]:
+        meta_list = []
+        for w in sorted_weeks:
+            try:
+                dt = datetime.strptime(w, "%Y-%m-%d")
+                label = dt.strftime("Week of %b %d, %Y")
+            except ValueError:
+                label = f"Week {w}"
+
+            is_curr = (w == latest_week)
+            if is_local:
+                url = "local_index.html" if is_curr else f"archive/local_{w}.html"
+            else:
+                url = "index.html" if is_curr else f"archive/{w}.html"
+
+            meta_list.append({
+                "week_id": w,
+                "label": label,
+                "is_current": is_curr,
+                "url": url,
+            })
+        return meta_list
+
+    weeks_r2 = build_weeks_metadata(is_local=False)
+    weeks_local = build_weeks_metadata(is_local=True)
+
     # 1. Render site/index.html (GitHub Pages version)
-    rendered_r2 = template.render(items=r2_items, week_id=week_id)
+    rendered_r2 = template.render(
+        items=r2_items,
+        week_id=week_id,
+        available_weeks=weeks_r2,
+        is_local=False,
+    )
     r2_index_path = config.SITE_DIR / "index.html"
     r2_index_path.write_text(rendered_r2, encoding="utf-8")
 
     # 2. Render site/local_index.html (Local dashboard version)
-    rendered_local = template.render(items=local_items, week_id=week_id)
+    rendered_local = template.render(
+        items=local_items,
+        week_id=week_id,
+        available_weeks=weeks_local,
+        is_local=True,
+    )
     local_index_path = config.SITE_DIR / "local_index.html"
     local_index_path.write_text(rendered_local, encoding="utf-8")
 
-    # 3. Write data.json API payload
+    # 3. Also render as archive copies
+    (archive_dir / f"{week_id}.html").write_text(rendered_r2, encoding="utf-8")
+    (archive_dir / f"local_{week_id}.html").write_text(rendered_local, encoding="utf-8")
+
+    # 4. Write data.json API payload
     (config.SITE_DIR / "data.json").write_text(
         json.dumps(digest_data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    # 4. Write .nojekyll for GitHub Pages
+    # 5. Write .nojekyll for GitHub Pages
     (config.SITE_DIR / ".nojekyll").write_text("", encoding="utf-8")
 
-    logger.info("Successfully compiled static site at %s and %s", r2_index_path, local_index_path)
+    logger.info("Successfully compiled static site at %s and %s (%d available weeks)",
+                r2_index_path, local_index_path, len(sorted_weeks))
     return r2_index_path, local_index_path
 
 

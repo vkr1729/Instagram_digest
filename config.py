@@ -13,11 +13,13 @@ DATA_DIR = ROOT_DIR / "data"
 SITE_DIR = ROOT_DIR / "site"
 TEMPLATES_DIR = ROOT_DIR / "templates"
 VIDEOS_DIR = ROOT_DIR / "videos"
+DIGESTS_DIR = DATA_DIR / "digests"
 
 # Ensure runtime directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SITE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Native .env loader (zero external dependency required)
 ENV_FILE = ROOT_DIR / ".env"
