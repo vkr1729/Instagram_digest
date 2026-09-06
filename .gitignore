@@ -36,7 +36,8 @@ wheels/
 htmlcov/
 
 # Local data & temporary video downloads
-data/
+data/*
+!data/blacklist.json
 downloads/
 videos/
 site/
