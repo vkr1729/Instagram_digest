@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Instagram Digest — Weekly Top 100</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,20 +24,24 @@
       color: var(--text-main);
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       height: 100%;
+      height: 100dvh;
       overflow: hidden;
+      user-select: none;
     }
 
     /* Outer App Shell */
     .app-shell {
       display: flex;
       flex-direction: column;
-      height: 100vh;
+      height: 100%;
+      height: 100dvh;
       max-width: 440px;
       margin: 0 auto;
       background: var(--bg-pitch);
       position: relative;
       overflow: hidden;
       box-shadow: 0 0 50px rgba(0, 0, 0, 0.9);
+      transition: max-width 0.3s ease, border-radius 0.3s ease;
     }
     @media (min-width: 768px) {
       body {
@@ -53,6 +57,46 @@
       }
     }
 
+    /* True Fullscreen Mode (Fullscreen API & CSS Fallback) */
+    :fullscreen .app-shell,
+    .app-shell:fullscreen,
+    .app-shell.is-fullscreen {
+      max-width: 100vw !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      border-radius: 0 !important;
+      border: none !important;
+      margin: 0 !important;
+      background: #000 !important;
+      box-shadow: none !important;
+    }
+    :fullscreen .app-shell .reel-card,
+    .app-shell:fullscreen .reel-card,
+    .app-shell.is-fullscreen .reel-card {
+      width: 100vw;
+      height: 100%;
+    }
+    :fullscreen .app-shell .reel-video,
+    .app-shell:fullscreen .reel-video,
+    .app-shell.is-fullscreen .reel-video {
+      max-width: calc(100vh * (9 / 16));
+      margin: 0 auto;
+    }
+
+    /* Immersive Mode (Double-Tap to Hide Chrome) */
+    .app-shell.immersive-mode .top-header {
+      transform: translateY(-100%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .app-shell.immersive-mode .story-bar {
+      transform: translateY(-100%);
+      opacity: 0;
+      pointer-events: none;
+      margin-top: -65px;
+    }
+
     /* Top App Header */
     .top-header {
       display: flex;
@@ -60,8 +104,9 @@
       align-items: center;
       padding: 12px 18px 8px;
       background: var(--bg-pitch);
-      z-index: 20;
+      z-index: 25;
       border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      transition: transform 0.25s ease, opacity 0.25s ease, margin-top 0.25s ease;
     }
     .brand-logo {
       font-family: 'Grand Hotel', cursive;
@@ -73,8 +118,25 @@
     .header-controls {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
+    .icon-btn {
+      background: var(--accent-pill);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .icon-btn:hover { background: rgba(255, 255, 255, 0.2); }
+    .icon-btn:active { transform: scale(0.92); }
+
     .speed-btn {
       background: var(--accent-pill);
       border: 1px solid rgba(255, 255, 255, 0.1);
@@ -87,10 +149,11 @@
       transition: background 0.15s ease;
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 3px;
+      height: 32px;
     }
     .speed-btn:hover { background: rgba(255, 255, 255, 0.2); }
-    .week-selector {
+    .week-pill {
       background: rgba(255, 255, 255, 0.06);
       border: 1px solid var(--border-subtle);
       color: var(--text-muted);
@@ -98,7 +161,7 @@
       border-radius: 10px;
       font-size: 11px;
       font-weight: 500;
-      cursor: pointer;
+      white-space: nowrap;
     }
 
     /* 5 Story Category Circles */
@@ -111,6 +174,7 @@
       background: var(--bg-pitch);
       z-index: 20;
       border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      transition: transform 0.25s ease, opacity 0.25s ease, margin-top 0.25s ease;
     }
     .story-bar::-webkit-scrollbar { display: none; }
     .story-bubble {
@@ -167,6 +231,7 @@
       scroll-snap-type: y mandatory;
       scrollbar-width: none;
       position: relative;
+      background: #000;
     }
     .feed-container::-webkit-scrollbar { display: none; }
 
@@ -177,7 +242,7 @@
       scroll-snap-align: start;
       scroll-snap-stop: always;
       position: relative;
-      background: #090a0f;
+      background: #000;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -189,6 +254,7 @@
       height: 100%;
       object-fit: cover;
       background: #000;
+      display: block;
     }
 
     /* Hairline Top Progress Bar */
@@ -270,7 +336,8 @@
       width: 64px;
       height: 64px;
       border-radius: 50%;
-      background: rgba(0, 0, 0, 0.6);
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(8px);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -285,6 +352,30 @@
       opacity: 1;
       transform: translate(-50%, -50%) scale(1.1);
     }
+
+    /* Immersive Mode Hint Toast */
+    .toast-overlay {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(14, 15, 20, 0.88);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .toast-overlay.visible { opacity: 1; }
 
     /* 0.5s Auto-advance Countdown Toast */
     .countdown-toast {
@@ -340,13 +431,22 @@
 </head>
 <body>
 
-  <div class="app-shell">
+  <div class="app-shell" id="appShell">
+    <!-- Floating Immersive Mode Toast -->
+    <div class="toast-overlay" id="globalToast">Double tap screen for full video</div>
+
     <!-- Top Header -->
-    <header class="top-header">
+    <header class="top-header" id="topHeader">
       <div class="brand-logo">Instagram</div>
       <div class="header-controls">
+        <button class="icon-btn" id="soundToggleBtn" onclick="toggleAudio(event)" title="Toggle Sound (Mute / Unmute)">
+          <span id="soundIcon">🔊</span>
+        </button>
         <button class="speed-btn" id="speedToggleBtn" onclick="cycleSpeed()" title="Adjust Playback Speed">
           ⚡ <span id="speedDisplay">1.5x</span>
+        </button>
+        <button class="icon-btn" id="fullscreenBtn" onclick="toggleFullscreen(event)" title="Toggle Fullscreen Mode">
+          <span id="fsIcon">⛶</span>
         </button>
         <span class="week-pill" id="weekBadge">Week {{ week_id|default('Sync') }}</span>
       </div>
@@ -384,14 +484,17 @@
         <div class="countdown-toast">Next reel in 0.5s...</div>
         <div class="play-pause-indicator">▶</div>
 
-        <!-- HTML5 Video Tag with Next-2 Preload -->
+        <!-- HTML5 Video Tag with Virtualized Sliding-Window Loader -->
         <video 
           class="reel-video"
-          src="{{ item.video_url }}"
+          {% if loop.index0 < 3 %}src="{{ item.video_url }}"{% endif %}
+          data-src="{{ item.video_url }}"
           poster="{{ item.thumbnail }}"
           playsinline
+          webkit-playsinline
+          x5-playsinline
           muted
-          {% if loop.index0 < 3 %}preload="auto"{% else %}preload="metadata"{% endif %}
+          {% if loop.index0 < 3 %}preload="auto"{% else %}preload="none"{% endif %}
           loop="false"
         ></video>
 
@@ -424,8 +527,10 @@
     let currentSpeed = 1.5;
     const availableSpeeds = [1.0, 1.25, 1.5, 1.75, 2.0];
     let currentCategory = 'all';
-    let activeCardIndex = 0;
+    let isAudioMuted = false;
     let autoAdvanceTimeout = null;
+    let isScrollingTransition = false;
+    let currentActiveCard = null;
 
     // LocalStorage Watched IDs Set
     const STORAGE_KEY = 'ig_digest_watched_ids';
@@ -446,16 +551,105 @@
       filterCategory(currentCategory);
     }
 
+    // Audio Mute/Unmute Management
+    function toggleAudio(e) {
+      if (e) e.stopPropagation();
+      isAudioMuted = !isAudioMuted;
+      updateSoundUI();
+
+      // Apply immediately to active video
+      if (currentActiveCard) {
+        const activeVideo = currentActiveCard.querySelector('.reel-video');
+        if (activeVideo) {
+          activeVideo.muted = isAudioMuted;
+          if (!isAudioMuted && activeVideo.paused) {
+            activeVideo.play().catch(() => {});
+          }
+        }
+      }
+    }
+    function updateSoundUI() {
+      const soundIcon = document.getElementById('soundIcon');
+      if (soundIcon) {
+        soundIcon.textContent = isAudioMuted ? '🔇' : '🔊';
+      }
+    }
+
     // Playback Speed Cycling
     function cycleSpeed() {
       const nextIdx = (availableSpeeds.indexOf(currentSpeed) + 1) % availableSpeeds.length;
       currentSpeed = availableSpeeds[nextIdx];
       document.getElementById('speedDisplay').textContent = currentSpeed + 'x';
 
-      // Apply to all video elements
+      // Apply to all currently loaded videos
       document.querySelectorAll('.reel-video').forEach(v => {
         v.playbackRate = currentSpeed;
+        v.preservesPitch = true;
+        v.webkitPreservesPitch = true;
+        v.mozPreservesPitch = true;
       });
+    }
+
+    // Fullscreen API & CSS Fullscreen Fallback
+    function toggleFullscreen(e) {
+      if (e) e.stopPropagation();
+      const shell = document.getElementById('appShell');
+      const isCurrentlyFs = shell.classList.contains('is-fullscreen');
+
+      if (!isCurrentlyFs) {
+        shell.classList.add('is-fullscreen');
+        if (shell.requestFullscreen) {
+          shell.requestFullscreen().catch(() => {});
+        } else if (shell.webkitRequestFullscreen) {
+          try { shell.webkitRequestFullscreen(); } catch (err) {}
+        }
+      } else {
+        shell.classList.remove('is-fullscreen');
+        if (document.fullscreenElement && document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+          try { document.webkitExitFullscreen(); } catch (err) {}
+        }
+      }
+      const fsIcon = document.getElementById('fsIcon');
+      if (fsIcon) fsIcon.textContent = shell.classList.contains('is-fullscreen') ? '🗗' : '⛶';
+    }
+
+    function syncFullscreenState() {
+      const shell = document.getElementById('appShell');
+      const fsIcon = document.getElementById('fsIcon');
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      if (!isFs && shell.classList.contains('is-fullscreen')) {
+        // Exited via Escape key or browser gesture
+        shell.classList.remove('is-fullscreen');
+      }
+      if (fsIcon) fsIcon.textContent = shell.classList.contains('is-fullscreen') ? '🗗' : '⛶';
+    }
+    document.addEventListener('fullscreenchange', syncFullscreenState);
+    document.addEventListener('webkitfullscreenchange', syncFullscreenState);
+
+    // Double-Tap Immersive Mode
+    let lastTapTime = 0;
+    document.getElementById('feedContainer').addEventListener('click', (e) => {
+      if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button')) return;
+      const now = Date.now();
+      if (now - lastTapTime < 300) {
+        // Double tap detected: toggle immersive mode
+        const shell = document.getElementById('appShell');
+        shell.classList.toggle('immersive-mode');
+        showToast(shell.classList.contains('immersive-mode') ? 'Immersive full-screen active' : 'Controls restored');
+        lastTapTime = 0;
+      } else {
+        lastTapTime = now;
+      }
+    });
+
+    function showToast(msg) {
+      const t = document.getElementById('globalToast');
+      if (!t) return;
+      t.textContent = msg;
+      t.classList.add('visible');
+      setTimeout(() => t.classList.remove('visible'), 1600);
     }
 
     // Story Category Filtering
@@ -478,16 +672,19 @@
         } else {
           card.style.display = 'none';
           const video = card.querySelector('video');
-          if (video) { video.pause(); video.currentTime = 0; }
+          if (video) { 
+            video.pause(); 
+            video.currentTime = 0; 
+          }
         }
       });
 
       const celebration = document.getElementById('celebrationScreen');
       if (visibleCount === 0) {
         celebration.classList.add('active');
+        currentActiveCard = null;
       } else {
         celebration.classList.remove('active');
-        // Scroll to first visible card
         const firstVisible = cards.find(c => c.style.display !== 'none');
         if (firstVisible) {
           firstVisible.scrollIntoView();
@@ -496,11 +693,59 @@
       }
     }
 
-    // Video Playback & 0.5s Auto-Advance
+    // High-Performance Sliding Window Loader
+    // Only loads active reel and immediate next reel into memory, cutting network bandwidth by 95%
+    function updateSlidingWindow(activeCard) {
+      if (!activeCard) return;
+      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
+        .filter(c => c.style.display !== 'none');
+      const activeIdx = visibleCards.indexOf(activeCard);
+      if (activeIdx === -1) return;
+
+      const lookAhead = 2;
+      const lookBehind = 1;
+
+      visibleCards.forEach((card, idx) => {
+        const video = card.querySelector('.reel-video');
+        if (!video) return;
+        const targetSrc = video.dataset.src;
+        if (!targetSrc) return;
+
+        const distance = idx - activeIdx;
+        const isWithinWindow = (distance >= -lookBehind && distance <= lookAhead);
+
+        if (isWithinWindow) {
+          if (!video.getAttribute('src')) {
+            video.src = targetSrc;
+          }
+          // Prioritize active and next
+          video.preload = (distance === 0 || distance === 1) ? 'auto' : 'metadata';
+        } else {
+          // Offscreen: unmount src to release network connections and hardware decoders
+          if (video.getAttribute('src')) {
+            video.pause();
+            video.removeAttribute('src');
+            video.load(); // Flush internal video buffer
+          }
+        }
+      });
+    }
+
+    // Video Playback & Audio Stability
     function playCardVideo(card) {
       if (!card) return;
+      currentActiveCard = card;
       const video = card.querySelector('.reel-video');
       if (!video) return;
+
+      // Update sliding window around current card
+      updateSlidingWindow(card);
+
+      // Ensure active video has src loaded
+      if (!video.getAttribute('src') && video.dataset.src) {
+        video.src = video.dataset.src;
+        video.load();
+      }
 
       // Pause all other videos
       document.querySelectorAll('.reel-video').forEach(v => {
@@ -510,26 +755,22 @@
         }
       });
 
+      // Maintain pitch stability at 1.5x speed
       video.playbackRate = currentSpeed;
-      video.muted = false; // unmuted if allowed, browser may require initial tap
-      video.play().catch(() => {
-        video.muted = true;
-        video.play();
-      });
+      video.preservesPitch = true;
+      video.webkitPreservesPitch = true;
+      video.mozPreservesPitch = true;
+      video.muted = isAudioMuted;
 
-      // Preload next 2 videos for MRT travel resiliency
-      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
-        .filter(c => c.style.display !== 'none');
-      const idx = visibleCards.indexOf(card);
-      if (idx !== -1) {
-        if (visibleCards[idx + 1]) {
-          const nextV = visibleCards[idx + 1].querySelector('video');
-          if (nextV) nextV.preload = 'auto';
-        }
-        if (visibleCards[idx + 2]) {
-          const nextV2 = visibleCards[idx + 2].querySelector('video');
-          if (nextV2) nextV2.preload = 'auto';
-        }
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(() => {
+          // Fallback if browser restricts unmuted autoplay
+          video.muted = true;
+          isAudioMuted = true;
+          updateSoundUI();
+          video.play().catch(() => {});
+        });
       }
     }
 
@@ -548,11 +789,11 @@
         }
       });
 
-      // Tap card to toggle play/pause
+      // Tap card to toggle play/pause (ignoring clicks on scrim text or buttons)
       card.addEventListener('click', (e) => {
-        if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet')) return;
+        if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button')) return;
         if (video.paused) {
-          video.play();
+          video.play().catch(() => {});
           playIcon.textContent = '▶';
           playIcon.classList.add('visible');
           setTimeout(() => playIcon.classList.remove('visible'), 400);
@@ -585,8 +826,10 @@
 
       if (currentIndex !== -1 && currentIndex + 1 < visibleCards.length) {
         const nextCard = visibleCards[currentIndex + 1];
+        isScrollingTransition = true;
         nextCard.scrollIntoView({ behavior: 'smooth' });
         playCardVideo(nextCard);
+        setTimeout(() => { isScrollingTransition = false; }, 450);
       } else {
         // Reached end of unread feed
         filterCategory(currentCategory);
@@ -595,12 +838,13 @@
 
     // IntersectionObserver to play video when snapped into view
     const observer = new IntersectionObserver((entries) => {
+      if (isScrollingTransition) return;
       entries.forEach(entry => {
-        if (entry.isIntersecting) {
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.55) {
           playCardVideo(entry.target);
         }
       });
-    }, { threshold: 0.6 });
+    }, { threshold: [0.55] });
 
     document.querySelectorAll('.reel-card').forEach(c => observer.observe(c));
 

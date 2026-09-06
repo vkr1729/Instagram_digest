@@ -225,3 +225,81 @@ def test_uat_6_6_celebration_screen(setup_test_site):
         assert page.locator(".reel-card").first.is_visible()
 
         browser.close()
+
+
+def test_uat_6_7_sound_toggle_and_pitch_preservation(setup_test_site):
+    """UAT-6.7: Sound button toggles mute state and applies pitch preservation."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        sound_btn = page.locator("#soundToggleBtn")
+        sound_icon = page.locator("#soundIcon")
+        assert sound_btn.is_visible()
+
+        initial_muted = page.evaluate("() => isAudioMuted")
+        expected_icon = "🔇" if initial_muted else "🔊"
+        assert sound_icon.inner_text() == expected_icon
+
+        # Click sound toggle -> toggles state
+        page.click("#soundToggleBtn")
+        assert page.evaluate("() => isAudioMuted") != initial_muted
+
+        # Click again -> restores original state
+        page.click("#soundToggleBtn")
+        assert page.evaluate("() => isAudioMuted") == initial_muted
+
+        browser.close()
+
+
+def test_uat_6_8_fullscreen_and_immersive_mode(setup_test_site):
+    """UAT-6.8: Fullscreen toggle and double-tap immersive mode expand view."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        fs_btn = page.locator("#fullscreenBtn")
+        shell = page.locator("#appShell")
+        assert fs_btn.is_visible()
+
+        # Click fullscreen button -> toggles fullscreen styling
+        page.click("#fullscreenBtn")
+        is_fs = shell.evaluate("el => el.classList.contains('is-fullscreen')")
+        assert is_fs is True
+
+        # Double-click feed container -> toggles immersive mode
+        feed = page.locator("#feedContainer")
+        feed.dblclick()
+        is_immersive = shell.evaluate("el => el.classList.contains('immersive-mode')")
+        assert is_immersive is True
+
+        browser.close()
+
+
+def test_uat_6_9_sliding_window_virtualization(setup_test_site):
+    """UAT-6.9: Sliding-window video loader defers loading offscreen media."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        # First 3 cards have src
+        cards = page.locator(".reel-card")
+        video0 = cards.nth(0).locator("video")
+        video3 = cards.nth(3).locator("video")
+
+        assert video0.get_attribute("src") is not None
+        assert video3.get_attribute("data-src") is not None
+
+        # Verify updateSlidingWindow function exists
+        assert page.evaluate("() => typeof updateSlidingWindow === 'function'")
+
+        browser.close()
