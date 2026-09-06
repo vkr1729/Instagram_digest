@@ -12,7 +12,7 @@ import shutil
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import config
 import extractor
@@ -83,6 +83,25 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API Watched route -> /api/watched?week_id=...
+        if clean_path == "/api/watched":
+            query = parse_qs(parsed.query)
+            week_id = query.get("week_id", ["default"])[0]
+            watched_data = {}
+            if config.WATCHED_FILE.exists():
+                try:
+                    watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            watched_list = watched_data.get(week_id, [])
+            body = json.dumps({"watched": watched_list}).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "File Not Found")
 
     def do_POST(self):
@@ -95,6 +114,46 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             except Exception as e:
                 resp = {"success": False, "error": str(e)}
 
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path == "/api/watched":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+            try:
+                payload = json.loads(post_body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            week_id = payload.get("week_id", "default")
+            action = payload.get("action", "add")
+            reel_id = payload.get("reel_id")
+
+            watched_data = {}
+            if config.WATCHED_FILE.exists():
+                try:
+                    watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            if action == "reset":
+                watched_data[week_id] = []
+            elif reel_id:
+                current_list = list(dict.fromkeys(watched_data.get(week_id, []) + [reel_id]))
+                watched_data[week_id] = current_list
+
+            try:
+                config.WATCHED_FILE.parent.mkdir(parents=True, exist_ok=True)
+                config.WATCHED_FILE.write_text(json.dumps(watched_data, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.error("Failed writing watched.json: %s", e)
+
+            resp = {"success": True, "watched": watched_data.get(week_id, [])}
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

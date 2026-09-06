@@ -6,6 +6,8 @@
   <title>Instagram Digest — Weekly Top 100</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://pub-dd429b2c39d043b0a731a5cbae13f043.r2.dev" crossorigin>
+  <link rel="dns-prefetch" href="https://pub-dd429b2c39d043b0a731a5cbae13f043.r2.dev">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Grand+Hotel&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -466,12 +468,12 @@
           <select class="week-selector" id="weekSelector" onchange="switchWeek(this.value)" title="Switch Weekly Digest">
             {% if available_weeks %}
               {% for w in available_weeks %}
-              <option value="{% if is_local %}{{ w.local_url }}{% else %}{{ w.url }}{% endif %}" {% if w.week_id == week_id %}selected{% endif %}>
-                {{ w.label }}{% if w.is_current %} (Current){% endif %}
+              <option value="{{ w.url }}" {% if w.week_id == week_id %}selected{% endif %}>
+                {{ w.label }}
               </option>
               {% endfor %}
             {% else %}
-              <option value="" selected>Week {{ week_id|default('Sync') }}</option>
+              <option value="" selected>Current</option>
             {% endif %}
           </select>
         </div>
@@ -585,13 +587,54 @@
       localStorage.setItem(STORAGE_KEY, jsonStr);
       localStorage.setItem('ig_digest_watched_ids', jsonStr);
       localStorage.setItem(LAST_WATCHED_KEY, reelId);
+
+      // Dual-layer persistence: sync to local server backend
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        fetch('/api/watched', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ week_id: currentWeekId, reel_id: reelId })
+        }).catch(() => {});
+      }
     }
 
     function resetWatchedHistory() {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(LAST_WATCHED_KEY);
       localStorage.removeItem('ig_digest_watched_ids');
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        fetch('/api/watched', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'reset', week_id: currentWeekId })
+        }).catch(() => {});
+      }
       filterCategory(currentCategory);
+    }
+
+    // Sync from local server backend if available on startup
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      fetch('/api/watched?week_id=' + encodeURIComponent(currentWeekId))
+        .then(r => r.json())
+        .then(data => {
+          if (data && Array.isArray(data.watched) && data.watched.length > 0) {
+            const set = getWatchedIds();
+            let changed = false;
+            data.watched.forEach(id => {
+              if (!set.has(id)) {
+                set.add(id);
+                changed = true;
+              }
+            });
+            if (changed) {
+              const jsonStr = JSON.stringify(Array.from(set));
+              localStorage.setItem(STORAGE_KEY, jsonStr);
+              localStorage.setItem('ig_digest_watched_ids', jsonStr);
+              filterCategory(currentCategory);
+            }
+          }
+        })
+        .catch(() => {});
     }
 
     function switchWeek(targetUrl) {
@@ -767,23 +810,24 @@
             video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'high';
           } else if (distance === 1) {
-            // Next reel: low fetch priority so active reel gets 100% bandwidth
-            video.preload = 'auto';
-            if ('fetchPriority' in video) video.fetchPriority = 'low';
-          } else if (distance === 2) {
-            // 2nd next reel: low fetch priority; buffers metadata first, upgrades to auto when active is ready
+            // Next reel: start with metadata to give active reel 100% bandwidth.
+            // Upgrade to auto-buffering as soon as active reel starts playing or has data.
             if ('fetchPriority' in video) video.fetchPriority = 'low';
             const activeVideo = activeCard.querySelector('.reel-video');
-            if (activeVideo && activeVideo.readyState >= 3) {
+            if (activeVideo && (activeVideo.readyState >= 3 || !activeVideo.paused)) {
               video.preload = 'auto';
             } else {
               video.preload = 'metadata';
               if (activeVideo) {
-                activeVideo.addEventListener('canplay', () => {
-                  video.preload = 'auto';
-                }, { once: true });
+                const upgradeHandler = () => { video.preload = 'auto'; };
+                activeVideo.addEventListener('playing', upgradeHandler, { once: true });
+                activeVideo.addEventListener('canplay', upgradeHandler, { once: true });
               }
             }
+          } else if (distance === 2) {
+            // 2nd next reel: low fetch priority; metadata only
+            if ('fetchPriority' in video) video.fetchPriority = 'low';
+            video.preload = 'metadata';
           } else {
             // Lookbehind (-1)
             video.preload = 'metadata';
@@ -812,7 +856,6 @@
       // Ensure active video has src loaded
       if (!video.getAttribute('src') && video.dataset.src) {
         video.src = video.dataset.src;
-        video.load();
       }
 
       // Pause all other videos

@@ -89,14 +89,15 @@ def build_site(
 
     def build_weeks_metadata(is_local: bool) -> list[dict[str, Any]]:
         meta_list = []
-        for w in sorted_weeks:
-            try:
-                dt = datetime.strptime(w, "%Y-%m-%d")
-                label = dt.strftime("Week of %b %d, %Y")
-            except ValueError:
-                label = f"Week {w}"
-
+        for idx, w in enumerate(sorted_weeks):
             is_curr = (w == latest_week)
+            if is_curr:
+                label = "Current"
+            elif idx == 1:
+                label = "Prev"
+            else:
+                label = f"Prev {idx}"
+
             if is_local:
                 url = "local_index.html" if is_curr else f"archive/local_{w}.html"
             else:

@@ -197,7 +197,7 @@ def upload_reel_to_r2(local_file: Path, week_id: str, key_name: str | None = Non
                 str(local_file),
                 config.R2_BUCKET_NAME,
                 r2_key,
-                ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=604800"},
+                ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=31536000, immutable"},
             )
             logger.info("Uploaded successfully: %s", public_url)
             return public_url
