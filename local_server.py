@@ -144,16 +144,19 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
 
-        with video_path.open("rb") as f:
-            f.seek(start)
-            remaining = chunk_size
-            buf_size = 64 * 1024
-            while remaining > 0:
-                read_bytes = f.read(min(remaining, buf_size))
-                if not read_bytes:
-                    break
-                self.wfile.write(read_bytes)
-                remaining -= len(read_bytes)
+        try:
+            with video_path.open("rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                buf_size = 64 * 1024
+                while remaining > 0:
+                    read_bytes = f.read(min(remaining, buf_size))
+                    if not read_bytes:
+                        break
+                    self.wfile.write(read_bytes)
+                    remaining -= len(read_bytes)
+        except (ConnectionResetError, BrokenPipeError):
+            pass
 
 
 def run_local_server(port: int = 8080) -> None:

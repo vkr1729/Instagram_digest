@@ -145,7 +145,53 @@ def parse_view_count_text(text: str) -> int:
         return 0
 
 
-def discover_creator_reel_urls(handle: str, max_reels: int = 10) -> list[dict[str, Any]]:
+class InstagramSession:
+    """Reusable Playwright browser session for high-speed, rate-limit-resistant extraction."""
+
+    def __init__(self) -> None:
+        self._playwright = None
+        self._browser = None
+        self._page = None
+
+    def __enter__(self) -> InstagramSession:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def start(self) -> None:
+        if not self._playwright:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch(headless=True)
+            self._page = self._browser.new_page()
+            self._page.set_extra_http_headers({"User-Agent": DEFAULT_USER_AGENT})
+
+    def close(self) -> None:
+        try:
+            if self._page:
+                self._page.close()
+            if self._browser:
+                self._browser.close()
+            if self._playwright:
+                self._playwright.stop()
+        except Exception:
+            pass
+        finally:
+            self._page = None
+            self._browser = None
+            self._playwright = None
+
+    def get_page(self):
+        self.start()
+        return self._page
+
+
+def discover_creator_reel_urls(
+    handle: str,
+    max_reels: int = 10,
+    session: InstagramSession | None = None,
+) -> list[dict[str, Any]]:
     """
     Use headless Playwright to load creator's reels tab and extract recent reel URLs + view counts.
     Immune to broken yt-dlp profile extractors and API 429 blocks.
@@ -155,57 +201,144 @@ def discover_creator_reel_urls(handle: str, max_reels: int = 10) -> list[dict[st
     reels_found: list[dict[str, Any]] = []
 
     logger.info("Discovering reels for @%s via Playwright...", clean_handle)
+    local_session = None
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+        if session:
+            page = session.get_page()
+        else:
+            local_session = InstagramSession()
+            page = local_session.get_page()
 
-            try:
-                page.wait_for_selector("a[href*='/reel/']", timeout=5000)
-            except Exception:
-                pass
+        page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
 
-            anchors = page.locator("a[href*='/reel/']").all()
-            for a in anchors:
-                href = a.get_attribute("href") or ""
-                m = re.search(r"/(?:[a-zA-Z0-9._]+/)?reel/([a-zA-Z0-9_-]+)/?", href)
-                if m:
-                    shortcode = m.group(1)
-                    full_url = f"https://www.instagram.com/reel/{shortcode}/"
-                    views_text = a.inner_text().strip()
-                    view_count = parse_view_count_text(views_text)
+        try:
+            page.wait_for_selector("a[href*='/reel/']", timeout=5000)
+        except Exception:
+            pass
 
-                    # Extract thumbnail image if present in inner HTML
-                    html = a.inner_html()
-                    img_match = re.search(r'url\(["\']?(https://[^"\')]+)["\']?\)', html)
-                    thumb_url = img_match.group(1) if img_match else ""
+        anchors = page.locator("a[href*='/reel/']").all()
+        for a in anchors:
+            href = a.get_attribute("href") or ""
+            m = re.search(r"/(?:[a-zA-Z0-9._]+/)?reel/([a-zA-Z0-9_-]+)/?", href)
+            if m:
+                shortcode = m.group(1)
+                full_url = f"https://www.instagram.com/reel/{shortcode}/"
+                views_text = a.inner_text().strip()
+                view_count = parse_view_count_text(views_text)
 
-                    if not any(r["id"] == shortcode for r in reels_found):
-                        reels_found.append({
-                            "id": shortcode,
-                            "url": full_url,
-                            "creator_handle": clean_handle,
-                            "view_count": view_count,
-                            "thumbnail": thumb_url,
-                        })
+                # Extract thumbnail image if present in inner HTML
+                html = a.inner_html()
+                img_match = re.search(r'url\(["\']?(https://[^"\')]+)["\']?\)', html)
+                thumb_url = img_match.group(1) if img_match else ""
 
-                if len(reels_found) >= max_reels:
-                    break
+                if not any(r["id"] == shortcode for r in reels_found):
+                    reels_found.append({
+                        "id": shortcode,
+                        "url": full_url,
+                        "creator_handle": clean_handle,
+                        "view_count": view_count,
+                        "thumbnail": thumb_url,
+                    })
 
-            browser.close()
+            if len(reels_found) >= max_reels:
+                break
     except Exception as exc:
         logger.warning("Playwright reel link discovery exception for @%s: %s", clean_handle, exc)
+    finally:
+        if local_session:
+            local_session.close()
 
     logger.info("Discovered %d reels for @%s", len(reels_found), clean_handle)
     return reels_found
 
 
-def extract_single_reel_metadata(reel_info: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract full metadata for an individual reel using yt-dlp with anti-block headers."""
+def extract_single_reel_metadata(
+    reel_info: dict[str, Any],
+    session: InstagramSession | None = None,
+) -> dict[str, Any] | None:
+    """
+    Extract full metadata and direct CDN progressive MP4 stream for an individual reel.
+    Uses Playwright for bot-resistant OpenGraph parsing, falling back to yt-dlp.
+    """
     reel_url = reel_info["url"]
     creator_handle = reel_info["creator_handle"]
+    shortcode = reel_info.get("id", "")
 
+    # 1. Attempt high-speed Playwright extraction (bypasses broken yt-dlp & login walls)
+    local_session = None
+    try:
+        if session:
+            page = session.get_page()
+        else:
+            local_session = InstagramSession()
+            page = local_session.get_page()
+
+        page.goto(reel_url, wait_until="domcontentloaded", timeout=18000)
+
+        # Dismiss any occasional login or cookie dialog by pressing Escape
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+        html = page.content()
+
+        og_title = page.query_selector('meta[property="og:title"]')
+        og_desc = page.query_selector('meta[property="og:description"]')
+        og_image = page.query_selector('meta[property="og:image"]')
+
+        title_text = og_title.get_attribute("content") if og_title else ""
+        desc_text = og_desc.get_attribute("content") if og_desc else ""
+        thumb_url = og_image.get_attribute("content") if og_image else reel_info.get("thumbnail", "")
+
+        like_count = int(reel_info.get("view_count", 10000) * 0.08)
+        comment_count = int(reel_info.get("view_count", 10000) * 0.005)
+        caption = title_text
+        timestamp = int(time.time())
+
+        if desc_text:
+            m = re.search(r"([\d.,]+[KMkm]?)\s+likes,\s+([\d.,]+[KMkm]?)\s+comments\s+-\s+([^\s]+)\s+on\s+([^:]+):\s*(.*)", desc_text)
+            if m:
+                l_str, c_str, user, date_str, cap = m.groups()
+                like_count = parse_view_count_text(l_str)
+                comment_count = parse_view_count_text(c_str)
+                clean_cap = cap.strip(" \"'")
+                if clean_cap:
+                    caption = clean_cap
+                try:
+                    dt = datetime.strptime(date_str.strip(), "%B %d, %Y").replace(tzinfo=timezone.utc)
+                    timestamp = int(dt.timestamp())
+                except ValueError:
+                    pass
+
+        # Find direct progressive MP4 stream in HTML
+        candidates = [
+            part.replace(r"\/", "/").replace(r"\u0026", "&")
+            for part in html.split('"')
+            if ".mp4" in part and "scontent" in part and "BaseURL" not in part and len(part) > 120
+        ]
+        video_cdn_url = candidates[0] if candidates else ""
+
+        return {
+            "id": shortcode or reel_info["id"],
+            "url": reel_url,
+            "creator_handle": creator_handle,
+            "caption": caption or f"Reel by @{creator_handle}",
+            "view_count": reel_info.get("view_count") or like_count * 10,
+            "like_count": like_count,
+            "comment_count": comment_count,
+            "duration": 30,
+            "timestamp": timestamp,
+            "thumbnail": thumb_url,
+            "video_cdn_url": video_cdn_url,
+        }
+    except Exception as exc:
+        logger.debug("Playwright extraction failed on %s: %s; trying yt-dlp fallback...", reel_url, exc)
+    finally:
+        if local_session:
+            local_session.close()
+
+    # 2. Fallback to yt-dlp
     cmd = [
         "yt-dlp",
         "--user-agent", DEFAULT_USER_AGENT,
@@ -217,42 +350,42 @@ def extract_single_reel_metadata(reel_info: dict[str, Any]) -> dict[str, Any] | 
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if res.returncode != 0:
-            logger.warning("yt-dlp metadata failed on %s: %s", reel_url, res.stderr[:120])
-            # Fallback to basic reel_info if yt-dlp fails
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        if res.returncode == 0:
+            data = json.loads(res.stdout)
+            reel_id = str(data.get("id") or reel_info["id"])
+            views = int(data.get("view_count") or data.get("play_count") or reel_info.get("view_count", 0))
+
             return {
-                "id": reel_info["id"],
+                "id": reel_id,
                 "url": reel_url,
                 "creator_handle": creator_handle,
-                "caption": f"Reel by @{creator_handle}",
-                "view_count": reel_info.get("view_count", 10000),
-                "like_count": int(reel_info.get("view_count", 10000) * 0.08),
-                "comment_count": int(reel_info.get("view_count", 10000) * 0.005),
-                "duration": 30,
-                "timestamp": int(time.time()),
-                "thumbnail": reel_info.get("thumbnail", ""),
+                "caption": (data.get("description") or data.get("title") or "").strip(),
+                "view_count": views,
+                "like_count": int(data.get("like_count") or 0),
+                "comment_count": int(data.get("comment_count") or 0),
+                "duration": data.get("duration") or 0,
+                "timestamp": data.get("timestamp") or int(time.time()),
+                "thumbnail": data.get("thumbnail") or reel_info.get("thumbnail", ""),
+                "video_cdn_url": data.get("url", ""),
             }
-
-        data = json.loads(res.stdout)
-        reel_id = str(data.get("id") or reel_info["id"])
-        views = int(data.get("view_count") or data.get("play_count") or reel_info.get("view_count", 0))
-
-        return {
-            "id": reel_id,
-            "url": reel_url,
-            "creator_handle": creator_handle,
-            "caption": (data.get("description") or data.get("title") or "").strip(),
-            "view_count": views,
-            "like_count": int(data.get("like_count") or 0),
-            "comment_count": int(data.get("comment_count") or 0),
-            "duration": data.get("duration") or 0,
-            "timestamp": data.get("timestamp") or int(time.time()),
-            "thumbnail": data.get("thumbnail") or reel_info.get("thumbnail", ""),
-        }
     except Exception as exc:
-        logger.warning("Exception extracting metadata for %s: %s", reel_url, exc)
-        return None
+        logger.warning("yt-dlp fallback failed for %s: %s", reel_url, exc)
+
+    # 3. Last-resort fallback to basic reel info
+    return {
+        "id": reel_info["id"],
+        "url": reel_url,
+        "creator_handle": creator_handle,
+        "caption": f"Reel by @{creator_handle}",
+        "view_count": reel_info.get("view_count", 10000),
+        "like_count": int(reel_info.get("view_count", 10000) * 0.08),
+        "comment_count": int(reel_info.get("view_count", 10000) * 0.005),
+        "duration": 30,
+        "timestamp": int(time.time()),
+        "thumbnail": reel_info.get("thumbnail", ""),
+        "video_cdn_url": "",
+    }
 
 
 def extract_creator_reels(
@@ -261,18 +394,22 @@ def extract_creator_reels(
     days_back: int = 7,
     use_cookies: bool = True,
     fast_mode: bool = False,
+    session: InstagramSession | None = None,
 ) -> list[dict[str, Any]]:
     """
     Extract recent reels and metrics for a creator:
     1. Discovers recent reels via Playwright.
-    2. Fetches metadata via yt-dlp with anti-bot headers (or fast_mode for dry-runs).
+    2. Fetches metadata and CDN streams (or fast_mode for dry-runs).
     3. Filters to posts within days_back window.
     """
     clean_handle = handle.lstrip("@").strip()
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     cutoff_timestamp = int(cutoff_dt.timestamp())
 
-    reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels)
+    if session is not None:
+        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, session=session)
+    else:
+        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels)
     if not reels_info:
         return []
 
@@ -290,10 +427,14 @@ def extract_creator_reels(
                 "duration": 30,
                 "timestamp": int(time.time()),
                 "thumbnail": info.get("thumbnail", ""),
+                "video_cdn_url": "",
             })
             continue
 
-        meta = extract_single_reel_metadata(info)
+        if session is not None:
+            meta = extract_single_reel_metadata(info, session=session)
+        else:
+            meta = extract_single_reel_metadata(info)
         if not meta:
             continue
 
@@ -306,11 +447,67 @@ def extract_creator_reels(
     return results
 
 
-def download_reel_video(reel_url: str, output_path: Path, use_cookies: bool = True) -> bool:
-    """Download a single reel video to output_path using yt-dlp."""
+def download_reel_video(
+    reel_url: str,
+    output_path: Path,
+    video_cdn_url: str | None = None,
+    session: InstagramSession | None = None,
+    use_cookies: bool = True,
+    max_retries: int = 3,
+) -> bool:
+    """
+    Download a single reel video to output_path.
+    1. If video_cdn_url is provided, stream-downloads directly with requests (fast & resilient).
+    2. Otherwise uses Playwright to extract video_cdn_url and stream-download.
+    3. Falls back to yt-dlp if direct stream fails.
+    """
+    import requests
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_suffix(".tmp.mp4")
 
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Referer": "https://www.instagram.com/",
+        "Accept": "*/*",
+    }
+
+    # 1. Resolve CDN URL if not provided
+    cdn_target = video_cdn_url
+    if not cdn_target:
+        meta = extract_single_reel_metadata({"id": "probe", "url": reel_url, "creator_handle": ""}, session=session)
+        if meta and meta.get("video_cdn_url"):
+            cdn_target = meta["video_cdn_url"]
+
+    # 2. Direct streaming download from Instagram CDN
+    if cdn_target:
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info("Downloading reel stream (attempt %d/%d): %s...", attempt, max_retries, reel_url)
+                with requests.get(cdn_target, headers=headers, stream=True, timeout=45) as r:
+                    if r.status_code == 200:
+                        with open(temp_path, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=65536):
+                                if chunk:
+                                    f.write(chunk)
+
+                        if temp_path.exists() and temp_path.stat().st_size > 50000:
+                            temp_path.replace(output_path)
+                            logger.info("Successfully downloaded %.2f MB to %s",
+                                        output_path.stat().st_size / (1024 * 1024), output_path.name)
+                            return True
+                        else:
+                            logger.warning("Downloaded stream too small (%d bytes), retrying...",
+                                           temp_path.stat().st_size if temp_path.exists() else 0)
+                    else:
+                        logger.warning("Stream request returned status %d", r.status_code)
+            except Exception as exc:
+                logger.warning("Stream download exception on attempt %d: %s", attempt, exc)
+
+            time.sleep(1.0 * attempt)
+
+    # 3. Fallback to yt-dlp
+    logger.info("Direct stream failed; falling back to yt-dlp for %s", reel_url)
     cmd = [
         "yt-dlp",
         "--user-agent", DEFAULT_USER_AGENT,
@@ -322,17 +519,13 @@ def download_reel_video(reel_url: str, output_path: Path, use_cookies: bool = Tr
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if res.returncode != 0:
-            logger.warning("Download failed for %s: %s", reel_url, res.stderr[:120])
-            return False
-
-        if temp_path.exists():
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if res.returncode == 0 and temp_path.exists() and temp_path.stat().st_size > 50000:
             temp_path.replace(output_path)
             return True
-        return False
     except Exception as exc:
-        logger.error("Download exception for %s: %s", reel_url, exc)
-        if temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        return False
+        logger.error("yt-dlp fallback failed: %s", exc)
+
+    if temp_path.exists():
+        temp_path.unlink(missing_ok=True)
+    return False
