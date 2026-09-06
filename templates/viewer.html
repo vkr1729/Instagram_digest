@@ -682,31 +682,60 @@
       }
     });
 
-    // Automatic Native Fullscreen on First User Interaction
-    function autoRequestFullscreen() {
-      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+    // Unified Fullscreen Toggle (Used by both 'F' key and Double-Tap)
+    function toggleUnifiedFullscreen() {
+      const shell = document.getElementById('appShell');
+      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+      if (!isFullscreen) {
         const docEl = document.documentElement;
         if (docEl.requestFullscreen) {
           docEl.requestFullscreen().catch(() => {});
         } else if (docEl.webkitRequestFullscreen) {
           try { docEl.webkitRequestFullscreen(); } catch (e) {}
         }
+        shell.classList.add('immersive-mode');
+        showToast('Fullscreen Active');
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        } else if (document.webkitExitFullscreen) {
+          try { document.webkitExitFullscreen(); } catch (e) {}
+        }
+        shell.classList.remove('immersive-mode');
+        showToast('Controls Restored');
       }
     }
 
-    // First Interaction Bootstrap (Unmutes audio, acquires wake lock & fullscreen)
+    // Sync UI with native fullscreen state changes (e.g. if user hits Esc key)
+    function onFullscreenChange() {
+      const shell = document.getElementById('appShell');
+      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      if (isFullscreen) {
+        shell.classList.add('immersive-mode');
+      } else {
+        shell.classList.remove('immersive-mode');
+      }
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+    // Un-mute active video on touch/click if browser temporarily muted it
+    function restoreAudioOnInteraction() {
+      if (!currentActiveCard) return;
+      const activeVideo = currentActiveCard.querySelector('.reel-video');
+      if (activeVideo && !isAudioMuted && activeVideo.muted) {
+        activeVideo.muted = false;
+      }
+    }
+    ['touchstart', 'touchend', 'click'].forEach(evt => {
+      window.addEventListener(evt, restoreAudioOnInteraction, { passive: true });
+    });
+
+    // First Interaction Bootstrap (Unmutes audio & acquires wake lock)
     function handleInitialInteraction() {
       isAudioMuted = false;
-      if (currentActiveCard) {
-        const activeVideo = currentActiveCard.querySelector('.reel-video');
-        if (activeVideo) {
-          activeVideo.muted = false;
-          if (activeVideo.paused) {
-            activeVideo.play().catch(() => {});
-          }
-        }
-      }
-      autoRequestFullscreen();
+      restoreAudioOnInteraction();
       requestWakeLock();
     }
     ['click', 'touchstart', 'keydown', 'scroll'].forEach(evt => {
@@ -715,15 +744,13 @@
     // Request wake lock immediately on load
     requestWakeLock();
 
-    // Double-Tap Immersive Mode (Collapses headers for pure video)
+    // Double-Tap to Toggle Unified Fullscreen Mode (Both mobile & desktop)
     let lastTapTime = 0;
     document.getElementById('feedContainer').addEventListener('click', (e) => {
       if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button')) return;
       const now = Date.now();
       if (now - lastTapTime < 300) {
-        const shell = document.getElementById('appShell');
-        shell.classList.toggle('immersive-mode');
-        showToast(shell.classList.contains('immersive-mode') ? 'Immersive full-screen active' : 'Controls restored');
+        toggleUnifiedFullscreen();
         lastTapTime = 0;
       } else {
         lastTapTime = now;
@@ -810,20 +837,9 @@
             video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'high';
           } else if (distance === 1) {
-            // Next reel: start with metadata to give active reel 100% bandwidth.
-            // Upgrade to auto-buffering as soon as active reel starts playing or has data.
+            // Next reel: low fetch priority with auto preloading so readyState is ready before swipe
+            video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'low';
-            const activeVideo = activeCard.querySelector('.reel-video');
-            if (activeVideo && (activeVideo.readyState >= 3 || !activeVideo.paused)) {
-              video.preload = 'auto';
-            } else {
-              video.preload = 'metadata';
-              if (activeVideo) {
-                const upgradeHandler = () => { video.preload = 'auto'; };
-                activeVideo.addEventListener('playing', upgradeHandler, { once: true });
-                activeVideo.addEventListener('canplay', upgradeHandler, { once: true });
-              }
-            }
           } else if (distance === 2) {
             // 2nd next reel: low fetch priority; metadata only
             if ('fetchPriority' in video) video.fetchPriority = 'low';
@@ -987,22 +1003,10 @@
       // Ignore if user is interacting with form controls
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
 
-      // 'F' or 'f' -> Toggle Fullscreen Mode
+      // 'F' or 'f' -> Toggle Unified Fullscreen Mode
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
-        if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-          if (document.documentElement.requestFullscreen) {
-            document.documentElement.requestFullscreen().catch(() => {});
-          } else if (document.documentElement.webkitRequestFullscreen) {
-            try { document.documentElement.webkitRequestFullscreen(); } catch (err) {}
-          }
-        } else {
-          if (document.exitFullscreen) {
-            document.exitFullscreen().catch(() => {});
-          } else if (document.webkitExitFullscreen) {
-            try { document.webkitExitFullscreen(); } catch (err) {}
-          }
-        }
+        toggleUnifiedFullscreen();
       }
 
       // Spacebar -> Toggle Video Play / Pause
@@ -1048,13 +1052,51 @@
     const observer = new IntersectionObserver((entries) => {
       if (isScrollingTransition) return;
       entries.forEach(entry => {
-        if (entry.isIntersecting && entry.intersectionRatio >= 0.55) {
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
           playCardVideo(entry.target);
         }
       });
-    }, { threshold: [0.55] });
+    }, { threshold: [0.5] });
 
     document.querySelectorAll('.reel-card').forEach(c => observer.observe(c));
+
+    // Scroll settlement listener to guarantee playback when scrolling stops
+    let scrollEndTimer = null;
+    const feed = document.getElementById('feedContainer');
+
+    function checkCenteredCard() {
+      if (isScrollingTransition) return;
+      const feedRect = feed.getBoundingClientRect();
+      const feedCenter = feedRect.top + feedRect.height / 2;
+      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
+        .filter(c => c.style.display !== 'none');
+
+      let closestCard = null;
+      let closestDist = Infinity;
+
+      visibleCards.forEach(card => {
+        const r = card.getBoundingClientRect();
+        const cardCenter = r.top + r.height / 2;
+        const dist = Math.abs(feedCenter - cardCenter);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestCard = card;
+        }
+      });
+
+      if (closestCard && closestCard !== currentActiveCard && closestDist < feedRect.height * 0.45) {
+        playCardVideo(closestCard);
+      }
+    }
+
+    feed.addEventListener('scroll', () => {
+      clearTimeout(scrollEndTimer);
+      scrollEndTimer = setTimeout(checkCenteredCard, 80);
+    }, { passive: true });
+
+    if ('onscrollend' in window) {
+      feed.addEventListener('scrollend', checkCenteredCard, { passive: true });
+    }
 
     // Initialize & Resume from First Unwatched Reel
     filterCategory('all');
