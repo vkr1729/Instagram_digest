@@ -55,9 +55,35 @@ def save_sources(sources: list[dict[str, Any]]) -> None:
     )
 
 
+def categorize_creator(handle: str, name: str) -> str:
+    """Intelligently map an Instagram creator into one of 4 thematic buckets."""
+    text = f"{handle} {name}".lower()
+    tech_kw = {"tech", "ai", "code", "coding", "developer", "software", "product", "data", "robot", "crypto", "computer", "hardware", "phone", "apple", "linux", "cloud", "founder", "engineering", "startup", "dev"}
+    health_kw = {"health", "doctor", "dr", "fitness", "fit", "liver", "diet", "nutrition", "gym", "workout", "body", "med", "medical", "wellness", "longevity", "muscle", "biohack", "clinic"}
+    explainer_kw = {"explain", "learn", "why", "news", "ca", "finance", "money", "economy", "tax", "invest", "law", "math", "physics", "facts", "daily", "insight", "edu", "education", "study", "market", "consulting", "analysis"}
+
+    clean_h = handle.lower()
+    if any(k in clean_h for k in ["tech", "code", "dev", "product", "ai"]):
+        return "tech"
+    if any(k in clean_h for k in ["doc", "dr", "fit", "health", "diet"]):
+        return "health"
+    if any(k in clean_h for k in ["finance", "ca", "news", "tv", "market", "money"]):
+        return "explainer"
+
+    tokens = set(re.findall(r"\w+", text))
+    if tokens & tech_kw:
+        return "tech"
+    if tokens & health_kw:
+        return "health"
+    if tokens & explainer_kw:
+        return "explainer"
+    return "culture"
+
+
 def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
     """
-    Sync followed accounts from Chrome session or local data export.
+    Sync followed accounts from authenticated Chrome browser session.
+    Filters out private/personal accounts and classifies into 4 thematic buckets.
     Caches results for 30 days unless force=True.
     Non-destructively updates sources.json.
     """
@@ -75,33 +101,96 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
         except Exception as exc:
             logger.warning("Could not read following cache: %s", exc)
 
+    # 1. Export fresh cookies from Chrome
+    cookie_exporter_script = config.ROOT_DIR / "cookie_exporter.py"
+    if cookie_exporter_script.exists():
+        try:
+            logger.info("Running cookie_exporter to refresh Chrome Instagram session...")
+            subprocess.run(["/usr/bin/python3", str(cookie_exporter_script)], check=True, capture_output=True, timeout=15)
+        except Exception as exc:
+            logger.warning("Could not run cookie_exporter: %s", exc)
+
     discovered_accounts: list[dict[str, Any]] = []
 
-    # Check for Instagram data export file (following.json)
-    export_candidates = [
-        config.DATA_DIR / "following.json",
-        config.ROOT_DIR / "following.json",
-    ]
-    for export_file in export_candidates:
-        if export_file.exists():
-            logger.info("Found Instagram export file at %s. Parsing...", export_file)
-            try:
-                raw = json.loads(export_file.read_text(encoding="utf-8"))
-                items = raw.get("relationships_following", raw) if isinstance(raw, dict) else raw
-                if isinstance(items, list):
-                    for entry in items:
-                        str_data = entry.get("string_list_data", [])
-                        val = str_data[0].get("value") if str_data else entry.get("value")
-                        if val:
-                            discovered_accounts.append({
-                                "handle": val.strip().lower(),
-                                "name": val.strip(),
-                                "category": "tech",
-                                "enabled": True
-                            })
-                logger.info("Parsed %d accounts from data export.", len(discovered_accounts))
-            except Exception as e:
-                logger.warning("Failed parsing export file %s: %s", export_file, e)
+    # 2. Query Instagram Following API with authenticated cookies
+    cookies_json_path = config.DATA_DIR / "cookies.json"
+    if cookies_json_path.exists():
+        try:
+            import requests
+            cdata = json.loads(cookies_json_path.read_text(encoding="utf-8"))
+            cookies_dict = cdata.get("cookies_dict", {})
+            user_id = cookies_dict.get("ds_user_id", "175246825")
+            csrftoken = cookies_dict.get("csrftoken", "")
+
+            headers = {
+                "User-Agent": DEFAULT_USER_AGENT,
+                "X-CSRFToken": csrftoken,
+                "X-IG-App-ID": "936619743392459",
+                "Referer": "https://www.instagram.com/",
+            }
+
+            max_id = None
+            page_count = 0
+            while True:
+                url = f"https://www.instagram.com/api/v1/friendships/{user_id}/following/?count=100"
+                if max_id:
+                    url += f"&max_id={max_id}"
+                resp = requests.get(url, headers=headers, cookies=cookies_dict, timeout=15)
+                if resp.status_code != 200:
+                    logger.warning("Following API returned %d: %s", resp.status_code, resp.text[:100])
+                    break
+                data = resp.json()
+                users = data.get("users", [])
+                page_count += 1
+                for u in users:
+                    # Filter out private/personal accounts
+                    if u.get("is_private", False):
+                        continue
+                    handle = u.get("username", "").strip().lower()
+                    name = u.get("full_name", "").strip() or handle
+                    if handle:
+                        cat = categorize_creator(handle, name)
+                        discovered_accounts.append({
+                            "handle": handle,
+                            "name": name,
+                            "category": cat,
+                            "enabled": True,
+                        })
+                max_id = data.get("next_max_id")
+                if not max_id:
+                    break
+            logger.info("Retrieved %d public channels from user's Instagram following list across %d pages.",
+                        len(discovered_accounts), page_count)
+        except Exception as exc:
+            logger.warning("Error querying Instagram Following API: %s", exc)
+
+    # 3. Check for local Instagram data export file (following.json) fallback
+    if not discovered_accounts:
+        export_candidates = [
+            config.DATA_DIR / "following.json",
+            config.ROOT_DIR / "following.json",
+        ]
+        for export_file in export_candidates:
+            if export_file.exists():
+                logger.info("Found Instagram export file at %s. Parsing...", export_file)
+                try:
+                    raw = json.loads(export_file.read_text(encoding="utf-8"))
+                    items = raw.get("relationships_following", raw) if isinstance(raw, dict) else raw
+                    if isinstance(items, list):
+                        for entry in items:
+                            str_data = entry.get("string_list_data", [])
+                            val = str_data[0].get("value") if str_data else entry.get("value")
+                            if val:
+                                h = val.strip().lower()
+                                discovered_accounts.append({
+                                    "handle": h,
+                                    "name": val.strip(),
+                                    "category": categorize_creator(h, val.strip()),
+                                    "enabled": True
+                                })
+                    logger.info("Parsed %d accounts from data export.", len(discovered_accounts))
+                except Exception as e:
+                    logger.warning("Failed parsing export file %s: %s", export_file, e)
 
     # Merge discovered accounts non-destructively with existing sources.json
     current_sources = load_sources()
@@ -112,6 +201,11 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
         if handle not in current_by_handle:
             current_sources.append(acc)
             current_by_handle[handle] = acc
+        else:
+            # Preserve user-customized category / enabled status if already set
+            existing = current_by_handle[handle]
+            if "category" not in existing or not existing["category"]:
+                existing["category"] = acc["category"]
 
     save_sources(current_sources)
 
@@ -151,6 +245,7 @@ class InstagramSession:
     def __init__(self) -> None:
         self._playwright = None
         self._browser = None
+        self._context = None
         self._page = None
 
     def __enter__(self) -> InstagramSession:
@@ -164,13 +259,28 @@ class InstagramSession:
         if not self._playwright:
             self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.launch(headless=True)
-            self._page = self._browser.new_page()
-            self._page.set_extra_http_headers({"User-Agent": DEFAULT_USER_AGENT})
+            self._context = self._browser.new_context(user_agent=DEFAULT_USER_AGENT)
+
+            # Inject authenticated cookies if available
+            cookies_file = config.DATA_DIR / "cookies.json"
+            if cookies_file.exists():
+                try:
+                    cdata = json.loads(cookies_file.read_text(encoding="utf-8"))
+                    pw_cookies = cdata.get("cookies_playwright", [])
+                    if pw_cookies:
+                        self._context.add_cookies(pw_cookies)
+                        logger.debug("Injected %d cookies into Playwright context.", len(pw_cookies))
+                except Exception as exc:
+                    logger.warning("Could not inject cookies: %s", exc)
+
+            self._page = self._context.new_page()
 
     def close(self) -> None:
         try:
             if self._page:
                 self._page.close()
+            if self._context:
+                self._context.close()
             if self._browser:
                 self._browser.close()
             if self._playwright:
@@ -179,6 +289,7 @@ class InstagramSession:
             pass
         finally:
             self._page = None
+            self._context = None
             self._browser = None
             self._playwright = None
 

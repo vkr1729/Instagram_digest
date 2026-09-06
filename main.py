@@ -49,24 +49,42 @@ def run_full_sync(
         logger.warning("No active sources found. Add creators to sources.json or run --sync-following.")
         return 1
 
-    # 3. Extract candidate reels across active creators
+    # 3. Extract candidate reels across active creators (balanced across categories)
     candidates: list[dict[str, Any]] = []
+
+    # Organize creators by category for balanced round-robin discovery
+    by_cat: dict[str, list[dict[str, Any]]] = {}
+    for src in active_sources:
+        cat = src.get("category", "culture")
+        by_cat.setdefault(cat, []).append(src)
+
+    ordered_sources: list[dict[str, Any]] = []
+    cats = ["tech", "health", "explainer", "culture"]
+    max_len = max((len(by_cat.get(c, [])) for c in cats), default=0)
+    for i in range(max_len):
+        for c in cats:
+            if i < len(by_cat.get(c, [])):
+                ordered_sources.append(by_cat[c][i])
+
+    target_candidate_count = max(config.TOP_DIGEST_COUNT + 35, 135)
     with extractor.InstagramSession() as session:
-        for src in active_sources:
+        for src in ordered_sources:
+            if len(candidates) >= target_candidate_count:
+                break
             handle = src.get("handle", "")
             if not handle:
                 continue
             reels = extractor.extract_creator_reels(
                 handle=handle,
-                max_reels=limit_per_creator,
+                max_reels=min(limit_per_creator, 5),
                 days_back=days_back,
-                fast_mode=dry_run,
+                fast_mode=True,  # Fast discovery from reels tab
                 session=session,
             )
             candidates.extend(reels)
-            time.sleep(0.3)
+            time.sleep(0.2)
 
-        logger.info("Extracted total %d candidate reels across all creators.", len(candidates))
+        logger.info("Extracted total %d candidate reels across creators.", len(candidates))
 
         # 4. Rank candidates using Fair-Share Viral Multiplier
         ranked_reels = ranker.rank_top_reels(
@@ -101,6 +119,14 @@ def run_full_sync(
                 # Download if not already cached
                 if not local_video_path.exists():
                     logger.info("Downloading reel [%s] #%02d @%s: %s", reel_id, rank, handle, reel["url"])
+                    # Enrich metadata if caption is generic
+                    if reel.get("caption", "").startswith("Reel by @"):
+                        meta = extractor.extract_single_reel_metadata(reel, session=session)
+                        if meta:
+                            for mk, mv in meta.items():
+                                if mv and mk not in ("rank", "rank_display", "viral_score"):
+                                    reel[mk] = mv
+
                     success = extractor.download_reel_video(
                         reel["url"],
                         local_video_path,
@@ -110,7 +136,7 @@ def run_full_sync(
                     if not success:
                         logger.warning("Skipping upload for failed download %s", reel_id)
                         continue
-                    time.sleep(0.5)
+                    time.sleep(0.3)
 
                 # Upload to Cloudflare R2 (or fallback to local)
                 public_url = storage_r2.upload_reel_to_r2(local_video_path, week_id=week_id, key_name=filename)

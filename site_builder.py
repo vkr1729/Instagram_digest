@@ -60,7 +60,16 @@ def build_site(
         local_url = f"/videos/{week_id}/{video_filename}"
 
         r2_item["video_url"] = r2_url
+        r2_item["r2_url"] = r2_url
+        r2_item["local_url"] = local_url
+
         local_item["video_url"] = local_url
+        local_item["r2_url"] = r2_url
+        local_item["local_url"] = local_url
+
+        item["r2_url"] = r2_url
+        item["local_url"] = local_url
+        item["video_url"] = r2_url
 
         r2_items.append(r2_item)
         local_items.append(local_item)

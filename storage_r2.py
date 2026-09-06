@@ -182,6 +182,15 @@ def upload_reel_to_r2(local_file: Path, week_id: str, key_name: str | None = Non
 
     s3 = get_s3_client()
     if s3 and config.R2_PUBLIC_DOMAIN:
+        public_url = f"{config.R2_PUBLIC_DOMAIN}/{r2_key}"
+        try:
+            # Check if already present on R2
+            s3.head_object(Bucket=config.R2_BUCKET_NAME, Key=r2_key)
+            logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
+            return public_url
+        except ClientError:
+            pass  # Does not exist yet, proceed to upload
+
         try:
             logger.info("Uploading %s to R2 (%s)...", local_file.name, r2_key)
             s3.upload_file(
@@ -190,7 +199,6 @@ def upload_reel_to_r2(local_file: Path, week_id: str, key_name: str | None = Non
                 r2_key,
                 ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=604800"},
             )
-            public_url = f"{config.R2_PUBLIC_DOMAIN}/{r2_key}"
             logger.info("Uploaded successfully: %s", public_url)
             return public_url
         except Exception as exc:
