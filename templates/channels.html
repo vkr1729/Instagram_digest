@@ -321,8 +321,13 @@
       background: rgba(255, 255, 255, 0.08);
       color: #d4d4d8;
     }
-    .cat-pill.tech { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+    .cat-pill.entertainment { background: rgba(236, 72, 153, 0.15); color: #f472b6; }
+    .cat-pill.finance { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+    .cat-pill.ai_tech { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+    .cat-pill.niche { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
     .cat-pill.health { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .cat-pill.food { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+    .cat-pill.tech { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
     .cat-pill.explainer { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
     .cat-pill.culture { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
 
@@ -429,10 +434,12 @@
         <button class="filter-pill active" data-filter="all" onclick="setCategoryFilter('all')">All Channels (<span id="countAll">0</span>)</button>
         <button class="filter-pill" data-filter="active" onclick="setCategoryFilter('active')">Active (<span id="countActive">0</span>)</button>
         <button class="filter-pill" data-filter="blacklisted" onclick="setCategoryFilter('blacklisted')">🚫 Muted (<span id="countMuted">0</span>)</button>
-        <button class="filter-pill" data-filter="tech" onclick="setCategoryFilter('tech')">💻 Tech</button>
+        <button class="filter-pill" data-filter="entertainment" onclick="setCategoryFilter('entertainment')">🎬 Entertainment</button>
+        <button class="filter-pill" data-filter="finance" onclick="setCategoryFilter('finance')">💰 Finance</button>
+        <button class="filter-pill" data-filter="ai_tech" onclick="setCategoryFilter('ai_tech')">💻 AI & Tech</button>
+        <button class="filter-pill" data-filter="niche" onclick="setCategoryFilter('niche')">🧠 Niche</button>
         <button class="filter-pill" data-filter="health" onclick="setCategoryFilter('health')">🏋️ Health</button>
-        <button class="filter-pill" data-filter="explainer" onclick="setCategoryFilter('explainer')">🧠 Explainer</button>
-        <button class="filter-pill" data-filter="culture" onclick="setCategoryFilter('culture')">🎨 Culture</button>
+        <button class="filter-pill" data-filter="food" onclick="setCategoryFilter('food')">🥗 Food</button>
       </div>
 
       <div class="action-toolbar">

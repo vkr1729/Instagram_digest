@@ -43,12 +43,14 @@ def test_uat_5_1_to_5_5_variant_1a_html_structure(tmp_path, monkeypatch):
     assert "@creator_0" in html
     assert "#01" in html
 
-    # UAT-5.4: 5 Story Category Circles with Instagram gradient styling
+    # UAT-5.4: 6 Story Category Circles with Instagram gradient styling
     assert "data-category=\"all\"" in html
-    assert "data-category=\"tech\"" in html
+    assert "data-category=\"entertainment\"" in html
+    assert "data-category=\"finance\"" in html
+    assert "data-category=\"ai_tech\"" in html
+    assert "data-category=\"niche\"" in html
     assert "data-category=\"health\"" in html
-    assert "data-category=\"explainer\"" in html
-    assert "data-category=\"culture\"" in html
+    assert "data-category=\"food\"" in html
 
     # UAT-5.5: Next 2 video DOM preloading
     assert html.count("preload=\"auto\"") >= 3

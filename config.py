@@ -47,7 +47,7 @@ GH_PAGES_REPO = os.getenv("GH_PAGES_REPO", "https://github.com/vkr1729/Instagram
 
 # Pipeline & Retention Limits
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "14"))
-TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "100"))
+TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "200"))
 MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
 R2_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024  # Strict 5 GB safety guard (out of 10 GB free)
 
@@ -56,13 +56,16 @@ DEFAULT_PLAYBACK_SPEED = 1.5
 AUTO_ADVANCE_DELAY_SECONDS = 0.5
 AVAILABLE_SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0]
 
-# Category Buckets (Matching TubeLM design)
+# Category Buckets & Target Quotas (200 Total)
+# 40% Entertainment, 15% Finance, 15% AI & Tech, 10% Niche, 10% Health, 10% Food
 CATEGORIES = [
-    {"id": "all", "label": "All Top 100", "emoji": "🔥"},
-    {"id": "tech", "label": "Tech & AI", "emoji": "💻"},
-    {"id": "health", "label": "Health & Wellness", "emoji": "🏋️"},
-    {"id": "explainer", "label": "Deep Explainer", "emoji": "🧠"},
-    {"id": "culture", "label": "Creative & Culture", "emoji": "🎨"},
+    {"id": "all", "label": "All Top 200", "emoji": "🔥"},
+    {"id": "entertainment", "label": "Entertainment", "emoji": "🎬", "target_pct": 0.40, "target_count": 80},
+    {"id": "finance", "label": "Finance", "emoji": "💰", "target_pct": 0.15, "target_count": 30},
+    {"id": "ai_tech", "label": "AI & Tech", "emoji": "💻", "target_pct": 0.15, "target_count": 30},
+    {"id": "niche", "label": "Niche", "emoji": "🧠", "target_pct": 0.10, "target_count": 20},
+    {"id": "health", "label": "Health", "emoji": "🏋️", "target_pct": 0.10, "target_count": 20},
+    {"id": "food", "label": "Food & Recipes", "emoji": "🥗", "target_pct": 0.10, "target_count": 20},
 ]
 
 # File Locations

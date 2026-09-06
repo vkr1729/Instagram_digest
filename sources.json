@@ -2,31 +2,31 @@
   {
     "handle": "mkbhd",
     "name": "Marques Brownlee",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "mrwhosetheboss",
     "name": "Arun Maini",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "sam_altman",
     "name": "Sam Altman",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "zuck",
     "name": "Mark Zuckerberg",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "lexfridman",
     "name": "Lex Fridman",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -56,199 +56,67 @@
   {
     "handle": "veritasium",
     "name": "Veritasium",
-    "category": "explainer",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "3blue1brown",
     "name": "3Blue1Brown",
-    "category": "explainer",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "cleoabram",
     "name": "Cleo Abram (Huge If True)",
-    "category": "explainer",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "kurzgesagt",
     "name": "Kurzgesagt – In a Nutshell",
-    "category": "explainer",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "austinkleon",
     "name": "Austin Kleon",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "natgeo",
     "name": "National Geographic",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "architecturaldigest",
     "name": "Architectural Digest",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "phanik.ig",
-    "name": "Phani Krishna",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "alberta.tech",
     "name": "Alberta Tech",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "itsnehasamuel",
-    "name": "Neha Upadhyay Samuel",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "casahiljain.official",
     "name": "CA Sahil Jain",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "rams.kalluru",
-    "name": "Rama Subba Reddy Kalluru",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "rem_superstar",
-    "name": "Wanying Hua",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "thebetterproductco",
     "name": "Dishank Shah",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "mhrjmr",
-    "name": "Mihir Ajmera",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "sathyasai.y",
-    "name": "Sathya Sai Reddy",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "nandishtella",
-    "name": "Nandish Tella",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "thekinganuj",
-    "name": "Anuj Kumar Kodam",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "daiyufeng_",
-    "name": "Dai Yufeng",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "deepguppta85",
-    "name": "Deep Gupta",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "devshree.17",
-    "name": "Devshree Bharatia",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "badrinathreddy",
-    "name": "Badrinath Reddy",
-    "category": "health",
-    "enabled": true
-  },
-  {
-    "handle": "avinashiitkgp",
-    "name": "Avinash Kumar",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "aritramitra",
-    "name": "Aritra Mitra",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "venkatamahanth",
-    "name": "venkatamahanth",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "kintalibalakishan",
-    "name": "Kintali Bala Kishan",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "yashkumar4u",
-    "name": "Yaswanth S",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "prathmeshkant",
-    "name": "Prathmesh Kant",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "moviesingapore",
     "name": "Movies Singapore",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "challanbc",
-    "name": "Chandra Challa",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "itsme_bhagavathi",
-    "name": "Bhagavathi 🦋",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "vishalnarula",
-    "name": "Vishal Narula",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "_djsuvan_",
-    "name": "Suvan Dural Jha",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
@@ -258,243 +126,165 @@
     "enabled": true
   },
   {
-    "handle": "pasirrismall",
-    "name": "Pasir Ris Mall",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "deloitted_memer",
-    "name": "Deloitted memer",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "sarathnalla23",
-    "name": "Sarath Nalla",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "venumrouthu",
-    "name": "venumrouthu",
-    "category": "culture",
-    "enabled": true
-  },
-  {
     "handle": "deon_tech",
     "name": "Deon Menezes",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "caitofalltraits",
     "name": "Caitanya Tan | Actor • Presenter • Voiceover Artist • Creator",
-    "category": "tech",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "aevytvdaily",
     "name": "AevyTV",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "_soniashenoy",
     "name": "Sonia Shenoy",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "unconventional.conversations",
-    "name": "Vamsi & Sruthakeerthi",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "with.prathamesh",
-    "name": "Prathamesh Shetty",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "cinema.positivity",
     "name": "Cinema Positivity ➕",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "mom_in_dubai",
-    "name": "VirdahJavedKhan",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "irais.browaeys",
-    "name": "Iraïs Browaeys",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "rohitraghv_",
-    "name": "Rohit Raghvendra",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "fictionarybooks",
     "name": "Fictionary",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "itsneerajanair",
     "name": "Neeraja",
-    "category": "tech",
+    "category": "food",
     "enabled": true
   },
   {
     "handle": "zarnagarg",
     "name": "Zarna Garg",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "_masalalab",
     "name": "Krish Ashok",
-    "category": "culture",
+    "category": "food",
     "enabled": true
   },
   {
     "handle": "thatguy_uday",
     "name": "Sarat Uday Boddeda",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "clickwise_ai",
     "name": "Clickwise AI",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "everypaisamatters",
     "name": "Every Paisa Matters",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "007ketan007",
-    "name": "007ketan007",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "nvidiaai",
     "name": "NVIDIA AI",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "chatgpt",
     "name": "ChatGPT",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "googlegemini",
     "name": "Google Gemini app",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "ravikirankommineni",
-    "name": "Ravikiran Kommineni",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "theintelligentinvestor7",
     "name": "Tanishq Malhotra",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "sandeepdasauthor",
     "name": "Sandeep Das",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "raj.ganpath",
     "name": "Raj Ganpath",
-    "category": "culture",
+    "category": "health",
     "enabled": true
   },
   {
     "handle": "gita_gopinath",
     "name": "Gita Gopinath",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "raunaqmorarka",
-    "name": "Raunaq Morarka",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "thebarbershopwithshantanu",
     "name": "The BarberShop with Shantanu",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "theartificialintelligence",
     "name": "Artificial Intelligence | AI",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "perplexity",
     "name": "Perplexity",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "blossominglife",
-    "name": "Vinay Kumar",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "uncover.robotics",
     "name": "AI & Robotics",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "theaifield",
     "name": "AI | Technology",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "raydalio",
     "name": "Ray Dalio",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "chatgptricks",
     "name": "AI / Tech",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "thevarunmayya",
     "name": "Varun Mayya",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -506,43 +296,37 @@
   {
     "handle": "codesensei.dev",
     "name": "Gowtham Paruchuru",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "sridhar19",
-    "name": "Sridhar Bollam",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "aravindsrinivas",
     "name": "Aravind Srinivas",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "techcrunch",
     "name": "TechCrunch",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "100xengineers",
     "name": "100xEngineers",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "sillysouthcomedy",
     "name": "Silly South Comedy - Telugu Stand Up Comedy",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "overpowered.ai",
     "name": "Overpowered",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -554,67 +338,31 @@
   {
     "handle": "soraofficial",
     "name": "Sora",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "rawthinks",
-    "name": "rawthinks podcast clips",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "tldr_newsletter",
-    "name": "TLDR Newsletter",
-    "category": "health",
-    "enabled": true
-  },
-  {
-    "handle": "anshulkamra",
-    "name": "anshul kamra",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "madstryke",
-    "name": "Madstryke",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "googledeepmind",
     "name": "Google DeepMind",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "monitormunchies",
     "name": "Murali Maddula",
-    "category": "culture",
+    "category": "food",
     "enabled": true
   },
   {
     "handle": "casarthakahuja",
     "name": "Sarthak Ahuja",
-    "category": "explainer",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "airesearches",
     "name": "AI researches | AI",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "tejashiremani",
-    "name": "Tejas Hiremani",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "uday_kiran_kankanala",
-    "name": "Uday Kiran Reddy",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -624,135 +372,87 @@
     "enabled": true
   },
   {
-    "handle": "robin.anil",
-    "name": "Robin Anil",
-    "category": "culture",
-    "enabled": true
-  },
-  {
     "handle": "parthknowsai",
     "name": "Parthknowsai",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "meta.ai",
     "name": "Meta AI",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "lalithajayabalan_",
-    "name": "Lalitha Jayabalan",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "theaipage",
     "name": "© The AI Page 👽",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "abhiswatchlist",
     "name": "Abhi",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "natoutofoffice",
     "name": "Natasha Starcheski | Out of Office",
-    "category": "culture",
+    "category": "food",
     "enabled": true
   },
   {
     "handle": "earthful.sisters",
     "name": "Earthful Sisters",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "dheerajsingh",
-    "name": "Dheeraj Kumar Singh",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "adityagarg9",
-    "name": "Aditya Garg",
-    "category": "culture",
+    "category": "food",
     "enabled": true
   },
   {
     "handle": "daytradertelugu",
     "name": "Day Trader తెలుగు | Finance",
-    "category": "explainer",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "evolving.ai",
     "name": "Evolving AI",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "mesa.school",
     "name": "Mesa School of Business",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "thethinkschool",
     "name": "Ganeshprasad Sridharan",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "simonsinek",
     "name": "Simon Sinek",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "grumble_dore",
-    "name": "Sriram Iyer",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "itsritish",
-    "name": "Ritish Puttaparthi",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "sid_harsha",
-    "name": "SID",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "futurism",
     "name": "Futurism",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "ankittawar",
-    "name": "Ankit Tawar",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "dasoham_",
     "name": "दासोहम",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "nrishaala",
     "name": "NRI Shaala by Aspora",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
@@ -764,25 +464,19 @@
   {
     "handle": "nonauppal",
     "name": "nona ☀️",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "ranjithsuda",
-    "name": "Ranjith Suda",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "storiesbytwoplusone",
     "name": "Arpitha Kowtal",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "financewithsharan",
     "name": "Sharan Hegde",
-    "category": "explainer",
+    "category": "finance",
     "enabled": true
   },
   {
@@ -792,105 +486,75 @@
     "enabled": true
   },
   {
-    "handle": "akhil.sangeeth",
-    "name": "akhil.sangeeth",
-    "category": "culture",
-    "enabled": true
-  },
-  {
     "handle": "openai",
     "name": "OpenAI",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "vanshxvermaa",
-    "name": "vansh",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "readandrisee",
-    "name": "Md Junaid",
-    "category": "health",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "psychotherapybar",
     "name": "Radhika Bapat",
-    "category": "culture",
+    "category": "health",
     "enabled": true
   },
   {
     "handle": "garikipatinarasimharaoofficial",
     "name": "Sri Garikipati Narasimha Rao",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "tanyaavats_",
     "name": "Tanya Vats 🇮🇳",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "nigeldsouza12",
     "name": "Nigel D'Souza",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "sagneet_withactingminds",
     "name": "Sagneet Kaur | Money Psychology",
-    "category": "explainer",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "thatcreditcardguy",
     "name": "Aly Hajiani",
-    "category": "explainer",
-    "enabled": true
-  },
-  {
-    "handle": "alishabeotra",
-    "name": "Alisha Beotra",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "theboardgamist",
     "name": "The Boardgamist",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "harpercarrollai",
     "name": "Harper Carroll  | AI Explained ✨",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "sheenamelwani",
     "name": "Sheena Melwani",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "therealindiandad",
     "name": "TRID",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "socho.abhi",
     "name": "Tvisha Tuli | Creator Economy | Business | AI",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "vishal.chowhan_",
-    "name": "Vishal Chowhan",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
@@ -900,63 +564,39 @@
     "enabled": true
   },
   {
-    "handle": "lavin_creator",
-    "name": "Vallabhaneni Lakshmi Suresh Chandra",
-    "category": "culture",
-    "enabled": true
-  },
-  {
     "handle": "amitandon17",
     "name": "Amit Tandon",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "kirtanshahcfp",
     "name": "Kirttan Shah",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "omega.hospitals",
-    "name": "Omega_hospitals",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "markmanson",
     "name": "Mark Manson",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "akhilavarunp",
-    "name": "Dr. Akhila Reddy",
-    "category": "health",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "dadaunplugged",
     "name": "Eric Lobo",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "vamsigiduthuri",
-    "name": "Vamsi Giduthuri",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "virdas",
     "name": "Vir Das",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "rationalrahul123",
     "name": "Rational Rahul - Telugu",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
@@ -968,61 +608,43 @@
   {
     "handle": "tjpower",
     "name": "Tj Power | Neuroscientist",
-    "category": "culture",
+    "category": "niche",
     "enabled": true
   },
   {
     "handle": "the.datascience.gal",
     "name": "Aishwarya Srinivasan | Data & AI | LinkedIn Top Voice",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "sukhada",
-    "name": "Sukhada Chaudhary",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "bgandtheboys",
     "name": "Biji Basheer",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "v.i.s.h.ai",
     "name": "Vishnu Vijayan",
-    "category": "tech",
-    "enabled": true
-  },
-  {
-    "handle": "pr4th1k",
-    "name": "Prathik Gonzalez",
-    "category": "culture",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "rohansehgalofficial",
     "name": "Rohan Sehgal",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "playfulparenthood",
-    "name": "Payal V. Narang - Child Psychologist & Mom Influencer",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "madhu_gogulapati",
     "name": "Cassette & Tapes",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "vaibhavsisinty",
     "name": "Vaibhav Sisinty",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -1034,61 +656,43 @@
   {
     "handle": "financebysanjay",
     "name": "Sanjay Kathuria",
-    "category": "explainer",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "finglory",
     "name": "Nidhi Nagar | Finance",
-    "category": "explainer",
-    "enabled": true
-  },
-  {
-    "handle": "charankotaru",
-    "name": "Charan Kotaru",
-    "category": "culture",
+    "category": "finance",
     "enabled": true
   },
   {
     "handle": "the.aiphilosopher",
     "name": "The AI Philosopher | Pablo M. Salcedo",
-    "category": "tech",
+    "category": "ai_tech",
     "enabled": true
   },
   {
     "handle": "actorguru_official",
     "name": "Sharwany Gurucharan Kodur",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "rajamamidanna",
     "name": "Raja Sekhar Mamidanna",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "mustang_rranjan",
-    "name": "Ronit Ranjan I Relationship & Emotional Clarity Coach",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "chalchitratalks",
     "name": "Chalchitra Talks",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "nkyadavalli",
-    "name": "Nanda Kishore",
-    "category": "culture",
+    "category": "entertainment",
     "enabled": true
   },
   {
     "handle": "aiyyoshraddha",
     "name": "Shraddha",
-    "category": "tech",
+    "category": "entertainment",
     "enabled": true
   },
   {
@@ -1100,24 +704,6 @@
   {
     "handle": "idris_workout2",
     "name": "Idris | Online Fitness Coach",
-    "category": "health",
-    "enabled": true
-  },
-  {
-    "handle": "harshinihari28",
-    "name": "HarshiniHari",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "ji_nitinjoshi",
-    "name": "Nitin Joshi",
-    "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "dr.samathatulla",
-    "name": "Samatha Tulla MD",
     "category": "health",
     "enabled": true
   }

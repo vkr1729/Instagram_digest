@@ -68,3 +68,38 @@ def test_uat_2_2_and_2_3_metadata_integrity_and_7day_filter(monkeypatch):
     for field in required_fields:
         assert field in recent
         assert recent[field] is not None
+
+
+def test_pinned_and_missing_timestamp_exclusion(monkeypatch):
+    """
+    Verify reels with missing/0 timestamps are strictly excluded from output.
+    """
+    monkeypatch.setattr(extractor, "discover_creator_reel_urls", lambda handle, max_reels: [
+        {"id": "reel_no_ts", "url": "https://www.instagram.com/reel/reel_no_ts/", "creator_handle": handle, "view_count": 50000},
+    ])
+    monkeypatch.setattr(extractor, "extract_single_reel_metadata", lambda info: {
+        "id": "reel_no_ts",
+        "url": info["url"],
+        "creator_handle": info["creator_handle"],
+        "caption": "Reel without valid date",
+        "view_count": 50000,
+        "like_count": 4000,
+        "comment_count": 250,
+        "duration": 30,
+        "timestamp": 0,
+        "thumbnail": "https://example.com/thumb.jpg",
+    })
+
+    reels = extractor.extract_creator_reels("mkbhd", max_reels=10, days_back=7)
+    assert len(reels) == 0, "Reels with missing/0 timestamp must be excluded"
+
+
+def test_categorize_creator_6_categories():
+    """Verify categorize_creator maps handles to the 6 new categories."""
+    assert extractor.categorize_creator("mkbhd", "Marques Brownlee") == "ai_tech"
+    assert extractor.categorize_creator("peterattiamd", "Dr. Peter Attia") == "health"
+    assert extractor.categorize_creator("casarthakahuja", "Sarthak Ahuja") == "finance"
+    assert extractor.categorize_creator("_masalalab", "Krish Ashok") == "food"
+    assert extractor.categorize_creator("chalchitratalks", "Chalchitra Talks") == "entertainment"
+    assert extractor.categorize_creator("veritasium", "Veritasium") == "niche"
+

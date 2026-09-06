@@ -17,7 +17,7 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
                 "id": "reel_01",
                 "creator_handle": "mkbhd",
                 "creator_name": "Marques Brownlee",
-                "category": "tech",
+                "category": "ai_tech",
                 "rank": 1,
                 "rank_display": "#01",
                 "view_count": 500000,
@@ -64,12 +64,12 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
     for html in (r2_html, local_html):
         assert "Instagram" in html
         assert "1.5x" in html
-        assert "data-category=\"tech\"" in html
+        assert "data-category=\"ai_tech\"" in html
         assert "data-category=\"health\"" in html
-        assert "Top 100" in html
-        assert "Tech &amp; AI" in html or "Tech & AI" in html
+        assert "Top 200" in html
+        assert "AI &amp; Tech" in html or "AI & Tech" in html
         assert "Health" in html
-        assert "Explainer" in html
+        assert "Entertainment" in html
         assert "preload=\"auto\"" in html
         assert "You're All Caught Up!" in html
         assert 'id="jumpBtn"' in html

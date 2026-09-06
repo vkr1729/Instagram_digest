@@ -55,21 +55,50 @@ def get_blacklisted_creators() -> set[str]:
     return set()
 
 
+CATEGORY_ALIASES = {
+    "tech": "ai_tech",
+    "explainer": "niche",
+    "culture": "entertainment",
+}
+
+
+def get_category_quotas(top_n: int) -> dict[str, int]:
+    """Calculate reel quotas per category based on configured percentages."""
+    cats = [c for c in getattr(config, "CATEGORIES", []) if c.get("id") != "all" and "target_pct" in c]
+    if cats:
+        return {c["id"]: max(1, round(top_n * c.get("target_pct", 0.10))) for c in cats}
+    # Fallback to standard 6 categories
+    return {
+        "entertainment": max(1, round(top_n * 0.40)),
+        "finance": max(1, round(top_n * 0.15)),
+        "ai_tech": max(1, round(top_n * 0.15)),
+        "niche": max(1, round(top_n * 0.10)),
+        "health": max(1, round(top_n * 0.10)),
+        "food": max(1, round(top_n * 0.10)),
+    }
+
+
 def rank_top_reels(
     candidates: list[dict[str, Any]],
     sources: list[dict[str, Any]],
     top_n: int = config.TOP_DIGEST_COUNT,
     max_per_creator: int = config.MAX_PER_CREATOR,
+    seed: str | int | None = None,
+    shuffle: bool = True,
 ) -> list[dict[str, Any]]:
     """
-    Execute Fair-Share Ranking:
-    1. Calculate baseline per creator.
-    2. Compute viral score for every candidate.
-    3. Guarantee at least 1 top reel for every active creator.
-    4. Cap maximum reels per creator (e.g. max 4).
-    5. Fill remaining slots with highest scoring outliers up to top_n.
-    6. Sort final pool descending by score and assign ranks #01 to #N.
+    Execute Fair-Share Ranking with Category Quotas & Deterministic Interleaving:
+    1. Calculate baseline per creator and viral scores.
+    2. Normalize category assignments across the 6 thematic buckets.
+    3. Guarantee representation (at least 1 top reel for every active creator).
+    4. Fill category quotas (40% Entertainment, 15% Finance, 15% AI & Tech, 10% Niche, 10% Health, 10% Food).
+    5. Cap maximum reels per creator (e.g. max 4).
+    6. Fill remaining slots with highest scoring outliers up to top_n.
+    7. Pseudo-randomly interleave/shuffle the final selected pool (using seed) so categories blend smoothly.
+    8. Assign sequential ranks #01 to #N.
     """
+    import random
+
     blacklist = get_blacklisted_creators()
     if blacklist:
         candidates = [c for c in candidates if c.get("creator_handle", "").lower().replace("@", "") not in blacklist]
@@ -80,12 +109,12 @@ def rank_top_reels(
         return []
 
     # Map sources by handle for category and display name lookup
-    sources_by_handle = {s["handle"].lower(): s for s in sources if "handle" in s}
+    sources_by_handle = {s["handle"].lower().replace("@", ""): s for s in sources if "handle" in s}
 
     # Group candidate reels by creator
     by_creator: dict[str, list[dict[str, Any]]] = {}
     for r in candidates:
-        h = r["creator_handle"].lower()
+        h = r["creator_handle"].lower().replace("@", "")
         by_creator.setdefault(h, []).append(r)
 
     # Calculate baselines and assign scores
@@ -94,7 +123,8 @@ def rank_top_reels(
         baseline = calculate_creator_baseline(creator_reels)
         src = sources_by_handle.get(handle, {})
         creator_name = src.get("name") or handle
-        category = src.get("category") or "tech"
+        raw_category = src.get("category") or "entertainment"
+        category = CATEGORY_ALIASES.get(raw_category, raw_category)
 
         for reel in creator_reels:
             score = compute_viral_score(reel, baseline)
@@ -104,10 +134,10 @@ def rank_top_reels(
             item["viral_score"] = score
             scored_pool.append(item)
 
-    # Sort each creator's reels descending by score
+    # Sort each creator's reels descending by viral_score
     creator_queues: dict[str, list[dict[str, Any]]] = {}
     for item in sorted(scored_pool, key=lambda x: x["viral_score"], reverse=True):
-        creator_queues.setdefault(item["creator_handle"].lower(), []).append(item)
+        creator_queues.setdefault(item["creator_handle"].lower().replace("@", ""), []).append(item)
 
     selected: list[dict[str, Any]] = []
     creator_counts: dict[str, int] = {h: 0 for h in creator_queues}
@@ -123,26 +153,66 @@ def rank_top_reels(
 
     logger.info("Guaranteed representation selected %d reels (1 per creator).", len(selected))
 
-    # Step 2: Pool remaining candidate reels across all creators
-    remaining_pool: list[dict[str, Any]] = []
+    # Step 2: Pool remaining candidate reels by category
+    quotas = get_category_quotas(top_n)
+    category_counts: dict[str, int] = {}
+    for s in selected:
+        cat = s.get("category", "entertainment")
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    # Group remaining reels by category
+    remaining_by_category: dict[str, list[dict[str, Any]]] = {}
     for q in creator_queues.values():
-        remaining_pool.extend(q)
+        for item in q:
+            cat = item.get("category", "entertainment")
+            remaining_by_category.setdefault(cat, []).append(item)
 
-    # Sort remaining candidates by score descending
-    remaining_pool.sort(key=lambda x: x["viral_score"], reverse=True)
+    for cat in remaining_by_category:
+        remaining_by_category[cat].sort(key=lambda x: x["viral_score"], reverse=True)
 
-    # Step 3: Fill up to top_n respecting max_per_creator cap
-    for item in remaining_pool:
-        if len(selected) >= top_n:
-            break
-        h = item["creator_handle"].lower()
-        if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
-            selected.append(item)
-            creator_counts[h] += 1
-            used_ids.add(item["id"])
+    # Step 3: Fulfill category quotas up to target count respecting creator caps
+    for cat, target in quotas.items():
+        cat_reels = remaining_by_category.get(cat, [])
+        for item in cat_reels:
+            if len(selected) >= top_n:
+                break
+            if category_counts.get(cat, 0) >= target:
+                break
+            h = item["creator_handle"].lower().replace("@", "")
+            if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
+                selected.append(item)
+                creator_counts[h] += 1
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+                used_ids.add(item["id"])
 
-    # Step 4: Final global sort by viral_score descending and assign ranks
-    selected.sort(key=lambda x: x["viral_score"], reverse=True)
+    # Step 4: Fill any remaining capacity up to top_n from the global pool
+    if len(selected) < top_n:
+        overflow_pool: list[dict[str, Any]] = []
+        for cat_reels in remaining_by_category.values():
+            for item in cat_reels:
+                if item["id"] not in used_ids:
+                    overflow_pool.append(item)
+        overflow_pool.sort(key=lambda x: x["viral_score"], reverse=True)
+
+        for item in overflow_pool:
+            if len(selected) >= top_n:
+                break
+            h = item["creator_handle"].lower().replace("@", "")
+            if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
+                selected.append(item)
+                creator_counts[h] += 1
+                used_ids.add(item["id"])
+
+    # Step 5: Deterministic Interleaving / Shuffling
+    # Mixes categories evenly across the feed so it's not clumped category-by-category
+    if shuffle:
+        rng_seed = str(seed if seed is not None else "instagram_digest_weekly")
+        rng = random.Random(rng_seed)
+        rng.shuffle(selected)
+    else:
+        selected.sort(key=lambda x: x["viral_score"], reverse=True)
+
+    # Step 6: Assign sequential ranks #01 to #N based on feed order
     for idx, item in enumerate(selected, 1):
         item["rank"] = idx
         item["rank_display"] = f"#{idx:02d}"

@@ -22,7 +22,7 @@ def setup_test_site(tmp_path_factory):
             "rank": 1,
             "rank_display": "#01",
             "view_count": 850000,
-            "category": "tech",
+            "category": "ai_tech",
             "caption": "MKBHD folding phone review",
             "thumbnail": "",
             "video_url": "data:video/mp4;base64,AAAA",
@@ -33,7 +33,7 @@ def setup_test_site(tmp_path_factory):
             "rank": 2,
             "rank_display": "#02",
             "view_count": 600000,
-            "category": "tech",
+            "category": "ai_tech",
             "caption": "Battery test comparison",
             "thumbnail": "",
             "video_url": "data:video/mp4;base64,AAAA",
@@ -100,11 +100,11 @@ def test_uat_6_2_story_category_filtering(setup_test_site):
         page.goto(file_url)
 
         # Initial state: 'all' category shows all 4 cards
-        tech_cards = page.locator(".reel-card[data-category='tech']")
+        tech_cards = page.locator(".reel-card[data-category='ai_tech']")
         health_cards = page.locator(".reel-card[data-category='health']")
 
-        # Click Tech category bubble
-        page.click(".story-bubble[data-category='tech']")
+        # Click AI & Tech category bubble
+        page.click(".story-bubble[data-category='ai_tech']")
 
         # Only tech cards should be visible
         for i in range(tech_cards.count()):
@@ -120,7 +120,7 @@ def test_uat_6_2_story_category_filtering(setup_test_site):
         for i in range(tech_cards.count()):
             assert not tech_cards.nth(i).is_visible()
 
-        # Click All Top 100 bubble to restore
+        # Click All Top 200 bubble to restore
         page.click(".story-bubble[data-category='all']")
         for i in range(tech_cards.count()):
             assert tech_cards.nth(i).is_visible()

@@ -71,28 +71,63 @@ def save_sources(sources: list[dict[str, Any]]) -> None:
 
 
 def categorize_creator(handle: str, name: str) -> str:
-    """Intelligently map an Instagram creator into one of 4 thematic buckets."""
-    text = f"{handle} {name}".lower()
-    tech_kw = {"tech", "ai", "code", "coding", "developer", "software", "product", "data", "robot", "crypto", "computer", "hardware", "phone", "apple", "linux", "cloud", "founder", "engineering", "startup", "dev"}
-    health_kw = {"health", "doctor", "dr", "fitness", "fit", "liver", "diet", "nutrition", "gym", "workout", "body", "med", "medical", "wellness", "longevity", "muscle", "biohack", "clinic"}
-    explainer_kw = {"explain", "learn", "why", "news", "ca", "finance", "money", "economy", "tax", "invest", "law", "math", "physics", "facts", "daily", "insight", "edu", "education", "study", "market", "consulting", "analysis"}
+    """Intelligently map an Instagram creator into one of 6 thematic buckets:
+    entertainment, finance, ai_tech, niche, health, food.
+    """
+    clean_h = handle.lstrip("@").lower().strip()
 
-    clean_h = handle.lower()
-    if any(k in clean_h for k in ["tech", "code", "dev", "product", "ai"]):
-        return "tech"
-    if any(k in clean_h for k in ["doc", "dr", "fit", "health", "diet"]):
+    # 1. First check if category is defined in sources.json
+    if config.SOURCES_FILE.exists():
+        try:
+            curated = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+            for s in curated:
+                if s.get("handle", "").lower().replace("@", "") == clean_h:
+                    cat = s.get("category")
+                    if cat:
+                        return cat
+        except Exception:
+            pass
+
+    text = f"{clean_h} {name}".lower()
+
+    # Keyword sets for the 6 categories
+    food_kw = {"food", "recipe", "recipes", "cook", "cooking", "chef", "kitchen", "protein", "calorie", "meal", "bake", "munchies", "masala"}
+    health_kw = {"health", "doctor", "dr", "fitness", "fit", "liver", "diet", "nutrition", "gym", "workout", "body", "med", "medical", "wellness", "longevity", "muscle", "biohack", "clinic", "cardio", "cardiologist", "rehab", "therapy", "mobility", "psychotherapy"}
+    finance_kw = {"finance", "money", "invest", "investing", "investor", "tax", "taxation", "ca", "nri", "wealth", "stock", "stocks", "market", "trading", "trader", "economy", "paisa", "credit", "cfp", "equity"}
+    tech_kw = {"tech", "ai", "code", "coding", "developer", "software", "product", "data", "robot", "robotics", "crypto", "computer", "hardware", "phone", "cloud", "engineering", "deepmind", "openai", "perplexity", "sora", "chatgpt", "gemini", "nvidia", "mkbhd", "gadget", "gadgets"}
+    entertainment_kw = {"movie", "movies", "cinema", "film", "review", "reviews", "comedy", "comedian", "standup", "actor", "acting", "humor", "satire", "sketch", "sketches", "joke", "jokes", "drama", "series", "entertainment", "reels", "boardgame", "tapes"}
+    niche_kw = {"science", "physics", "math", "learn", "explainer", "why", "facts", "study", "analysis", "school", "author", "book", "books", "philosophy", "creative", "artist", "architectural", "design", "geo", "natgeo", "unplugged", "veritasium"}
+
+    # Direct handle matching
+    if any(k in clean_h for k in ["recipe", "cook", "food", "munchies", "masala"]):
+        return "food"
+    if any(k in clean_h for k in ["doc", "dr", "fit", "health", "diet", "cardiologist"]):
         return "health"
-    if any(k in clean_h for k in ["finance", "ca", "news", "tv", "market", "money"]):
-        return "explainer"
+    if any(k in clean_h for k in ["finance", "ca", "tax", "invest", "money", "trader", "paisa"]):
+        return "finance"
+    if any(k in clean_h for k in ["ai", "tech", "code", "dev", "deepmind", "openai", "perplexity", "mkbhd"]):
+        return "ai_tech"
+    if any(k in clean_h for k in ["movie", "cinema", "comedy", "standup", "actor"]):
+        return "entertainment"
+    if any(k in clean_h for k in ["veritasium", "kurzgesagt", "3blue1brown", "cleoabram"]):
+        return "niche"
 
     tokens = set(re.findall(r"\w+", text))
-    if tokens & tech_kw:
-        return "tech"
+    if tokens & food_kw:
+        return "food"
     if tokens & health_kw:
         return "health"
-    if tokens & explainer_kw:
-        return "explainer"
-    return "culture"
+    if tokens & finance_kw:
+        return "finance"
+    if tokens & tech_kw:
+        return "ai_tech"
+    if tokens & entertainment_kw:
+        return "entertainment"
+    if tokens & niche_kw:
+        return "niche"
+
+    # Default fallback bucket
+    return "entertainment"
 
 
 def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
@@ -350,6 +385,22 @@ def discover_creator_reel_urls(
             href = a.get_attribute("href") or ""
             m = re.search(r"/(?:[a-zA-Z0-9._]+/)?reel/([a-zA-Z0-9_-]+)/?", href)
             if m:
+                # Check for pinned reel indicators (Instagram pin icon / aria-labels)
+                is_pinned = False
+                try:
+                    if a.locator('svg[aria-label*="Pin" i], svg[aria-label*="pin" i]').count() > 0:
+                        is_pinned = True
+                    else:
+                        a_html = a.inner_html()
+                        if re.search(r'aria-label=[\'"][^\'"]*pin[^\'"]*[\'"]', a_html, re.I):
+                            is_pinned = True
+                except Exception:
+                    pass
+
+                if is_pinned:
+                    logger.info("Skipping pinned reel %s for @%s", href, clean_handle)
+                    continue
+
                 shortcode = m.group(1)
                 full_url = f"https://www.instagram.com/reel/{shortcode}/"
                 views_text = a.inner_text().strip()
@@ -423,9 +474,21 @@ def extract_single_reel_metadata(
         like_count = int(reel_info.get("view_count", 10000) * 0.08)
         comment_count = int(reel_info.get("view_count", 10000) * 0.005)
         caption = title_text
-        timestamp = int(time.time())
+        timestamp = 0
 
-        if desc_text:
+        # 1. Primary: Extract exact ISO timestamp from <time datetime="..."> in DOM
+        try:
+            time_elem = page.query_selector("time[datetime]")
+            if time_elem:
+                dt_attr = time_elem.get_attribute("datetime")
+                if dt_attr:
+                    clean_dt = dt_attr.replace("Z", "+00:00")
+                    timestamp = int(datetime.fromisoformat(clean_dt).timestamp())
+        except Exception:
+            pass
+
+        # 2. Secondary: Parse date from og:description
+        if not timestamp and desc_text:
             m = re.search(r"([\d.,]+[KMkm]?)\s+likes,\s+([\d.,]+[KMkm]?)\s+comments\s+-\s+([^\s]+)\s+on\s+([^:]+):\s*(.*)", desc_text)
             if m:
                 l_str, c_str, user, date_str, cap = m.groups()
@@ -439,6 +502,21 @@ def extract_single_reel_metadata(
                     timestamp = int(dt.timestamp())
                 except ValueError:
                     pass
+
+        # 3. Tertiary: Check ld+json uploadDate
+        if not timestamp:
+            try:
+                ld_scripts = page.query_selector_all('script[type="application/ld+json"]')
+                for s in ld_scripts:
+                    s_content = s.inner_text()
+                    if "uploadDate" in s_content:
+                        ld_data = json.loads(s_content)
+                        if isinstance(ld_data, dict) and "uploadDate" in ld_data:
+                            dt = datetime.fromisoformat(ld_data["uploadDate"].replace("Z", "+00:00"))
+                            timestamp = int(dt.timestamp())
+                            break
+            except Exception:
+                pass
 
         # Find direct progressive MP4 stream in HTML
         candidates = [
@@ -494,7 +572,7 @@ def extract_single_reel_metadata(
                 "like_count": int(data.get("like_count") or 0),
                 "comment_count": int(data.get("comment_count") or 0),
                 "duration": data.get("duration") or 0,
-                "timestamp": data.get("timestamp") or int(time.time()),
+                "timestamp": int(data.get("timestamp") or 0),
                 "thumbnail": data.get("thumbnail") or reel_info.get("thumbnail", ""),
                 "video_cdn_url": data.get("url", ""),
             }
@@ -511,7 +589,7 @@ def extract_single_reel_metadata(
         "like_count": int(reel_info.get("view_count", 10000) * 0.08),
         "comment_count": int(reel_info.get("view_count", 10000) * 0.005),
         "duration": 30,
-        "timestamp": int(time.time()),
+        "timestamp": reel_info.get("timestamp") or 0,
         "thumbnail": reel_info.get("thumbnail", ""),
         "video_cdn_url": "",
     }
@@ -568,7 +646,9 @@ def extract_creator_reels(
             continue
 
         ts = meta.get("timestamp") or 0
-        if ts and ts < cutoff_timestamp:
+        if not ts or ts < cutoff_timestamp:
+            logger.info("Discarding reel %s: timestamp %s older than %d-day cutoff %s (or missing)",
+                        meta.get("id"), ts, days_back, cutoff_timestamp)
             continue
 
         results.append(meta)

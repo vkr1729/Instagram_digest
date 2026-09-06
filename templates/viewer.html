@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Instagram Digest — Weekly Top 100</title>
+  <title>Instagram Digest — Weekly Top 200</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://instagram-digest-media.kedarvreddy.workers.dev" crossorigin>
@@ -648,27 +648,35 @@
         </div>
       </header>
 
-      <!-- 5 Story Category Circles -->
+      <!-- Story Category Circles -->
       <nav class="story-bar" id="storyBar">
         <div class="story-bubble active" data-category="all" onclick="filterCategory('all')">
           <div class="story-ring"><div class="story-avatar">🔥</div></div>
-          <span class="story-title">Top 100</span>
+          <span class="story-title">Top 200</span>
         </div>
-        <div class="story-bubble" data-category="tech" onclick="filterCategory('tech')">
+        <div class="story-bubble" data-category="entertainment" onclick="filterCategory('entertainment')">
+          <div class="story-ring"><div class="story-avatar">🎬</div></div>
+          <span class="story-title">Entertainment</span>
+        </div>
+        <div class="story-bubble" data-category="finance" onclick="filterCategory('finance')">
+          <div class="story-ring"><div class="story-avatar">💰</div></div>
+          <span class="story-title">Finance</span>
+        </div>
+        <div class="story-bubble" data-category="ai_tech" onclick="filterCategory('ai_tech')">
           <div class="story-ring"><div class="story-avatar">💻</div></div>
-          <span class="story-title">Tech & AI</span>
+          <span class="story-title">AI & Tech</span>
+        </div>
+        <div class="story-bubble" data-category="niche" onclick="filterCategory('niche')">
+          <div class="story-ring"><div class="story-avatar">🧠</div></div>
+          <span class="story-title">Niche</span>
         </div>
         <div class="story-bubble" data-category="health" onclick="filterCategory('health')">
           <div class="story-ring"><div class="story-avatar">🏋️</div></div>
           <span class="story-title">Health</span>
         </div>
-        <div class="story-bubble" data-category="explainer" onclick="filterCategory('explainer')">
-          <div class="story-ring"><div class="story-avatar">🧠</div></div>
-          <span class="story-title">Explainer</span>
-        </div>
-        <div class="story-bubble" data-category="culture" onclick="filterCategory('culture')">
-          <div class="story-ring"><div class="story-avatar">🎨</div></div>
-          <span class="story-title">Culture</span>
+        <div class="story-bubble" data-category="food" onclick="filterCategory('food')">
+          <div class="story-ring"><div class="story-avatar">🥗</div></div>
+          <span class="story-title">Food</span>
         </div>
       </nav>
     </div>
@@ -963,7 +971,17 @@
       let visibleCount = 0;
 
       cards.forEach(card => {
-        const matchesCat = (cat === 'all' || card.dataset.category === cat);
+        const cardCat = card.dataset.category;
+        const matchesCat = (
+          cat === 'all' ||
+          cardCat === cat ||
+          (cat === 'ai_tech' && cardCat === 'tech') ||
+          (cat === 'tech' && (cardCat === 'ai_tech' || cardCat === 'tech')) ||
+          (cat === 'niche' && cardCat === 'explainer') ||
+          (cat === 'explainer' && (cardCat === 'niche' || cardCat === 'explainer')) ||
+          (cat === 'entertainment' && cardCat === 'culture') ||
+          (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
+        );
         const isWatched = watched.has(card.dataset.id);
 
         if (matchesCat && !isWatched) {

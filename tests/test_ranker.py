@@ -86,3 +86,75 @@ def test_rank_top_reels_guaranteed_representation_and_capping():
     for idx, item in enumerate(ranked, 1):
         assert item["rank"] == idx
         assert item["rank_display"] == f"#{idx:02d}"
+
+
+def test_category_quotas_and_deterministic_interleaving():
+    """
+    Verify 200-reel selection adheres to:
+    - 40% (80) Entertainment
+    - 15% (30) Finance
+    - 15% (30) AI & Tech
+    - 10% (20) Niche
+    - 10% (20) Health
+    - 10% (20) Food
+    - Categories are interleaved and not sequentially clumped.
+    """
+    from collections import Counter
+
+    categories_setup = {
+        "entertainment": 25,  # 25 creators
+        "finance": 12,        # 12 creators
+        "ai_tech": 12,        # 12 creators
+        "niche": 8,           # 8 creators
+        "health": 8,          # 8 creators
+        "food": 8,            # 8 creators
+    }
+
+    sources = []
+    candidates = []
+    reel_id = 0
+
+    for cat, num_creators in categories_setup.items():
+        for c_idx in range(num_creators):
+            handle = f"{cat}_creator_{c_idx}"
+            sources.append({
+                "handle": handle,
+                "name": f"{cat.title()} Creator {c_idx}",
+                "category": cat,
+            })
+            # Generate 5 candidate reels per creator
+            for r_idx in range(5):
+                candidates.append({
+                    "id": f"reel_{reel_id}",
+                    "creator_handle": handle,
+                    "view_count": 20000 + (r_idx * 5000),
+                    "like_count": 2000,
+                    "comment_count": 100,
+                })
+                reel_id += 1
+
+    ranked = rank_top_reels(
+        candidates,
+        sources,
+        top_n=200,
+        max_per_creator=4,
+        seed="2026-09-06",
+        shuffle=True,
+    )
+
+    assert len(ranked) == 200
+
+    # Verify exact category quotas
+    counts = Counter(r["category"] for r in ranked)
+    assert counts["entertainment"] == 80  # 40%
+    assert counts["finance"] == 30        # 15%
+    assert counts["ai_tech"] == 30        # 15%
+    assert counts["niche"] == 20          # 10%
+    assert counts["health"] == 20         # 10%
+    assert counts["food"] == 20           # 10%
+
+    # Verify interleaving (categories should not be clumped in a single 80-length block)
+    first_10_cats = [r["category"] for r in ranked[:10]]
+    # In first 10 reels, there should be at least 3 distinct categories
+    assert len(set(first_10_cats)) >= 3, f"Categories are clumped: {first_10_cats}"
+

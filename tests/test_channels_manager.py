@@ -59,26 +59,46 @@ def test_channel_manager_api_routes(tmp_path, monkeypatch):
 
 def test_channel_manager_page_live():
     """Verify GET /channels returns 200 and loads channel rows via Playwright."""
+    import socket
+    import threading
+    from http.server import ThreadingHTTPServer
     from playwright.sync_api import sync_playwright
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        res = page.goto("http://127.0.0.1:8080/channels")
-        assert res.status == 200
+    server = None
+    server_thread = None
+    port = 8080
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+        sock.close()
+        server = ThreadingHTTPServer(("127.0.0.1", port), local_server.LocalDigestHandler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+    except OSError:
+        sock.close()
 
-        # Wait for channels to load
-        page.wait_for_selector(".channel-row")
-        rows = page.locator(".channel-row")
-        assert rows.count() > 0
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            res = page.goto("http://127.0.0.1:8080/channels")
+            assert res.status == 200
 
-        # Test search filter
-        search_input = page.locator("#searchInput")
-        search_input.fill("mkbhd")
-        page.wait_for_timeout(200)
+            # Wait for channels to load
+            page.wait_for_selector(".channel-row")
+            rows = page.locator(".channel-row")
+            assert rows.count() > 0
 
-        filtered_rows = page.locator(".channel-row")
-        assert filtered_rows.count() >= 1
-        assert "mkbhd" in filtered_rows.first.inner_text().lower()
+            # Test search filter
+            search_input = page.locator("#searchInput")
+            search_input.fill("mkbhd")
+            page.wait_for_timeout(200)
 
-        browser.close()
+            filtered_rows = page.locator(".channel-row")
+            assert filtered_rows.count() >= 1
+            assert "mkbhd" in filtered_rows.first.inner_text().lower()
+
+            browser.close()
+    finally:
+        if server:
+            server.shutdown()
