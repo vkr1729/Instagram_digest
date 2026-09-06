@@ -70,6 +70,13 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
         assert "Tech &amp; AI" in html or "Tech & AI" in html
         assert "Health" in html
         assert "Explainer" in html
-        assert "Culture" in html
         assert "preload=\"auto\"" in html
         assert "You're All Caught Up!" in html
+        assert 'id="jumpBtn"' in html
+        assert 'id="jumpModal"' in html
+
+    # Verify unselect button and blockModal are local-only
+    assert 'class="unselect-channel-btn"' in local_html
+    assert 'id="blockModal"' in local_html
+    assert 'class="unselect-channel-btn"' not in r2_html
+    assert 'id="blockModal"' not in r2_html

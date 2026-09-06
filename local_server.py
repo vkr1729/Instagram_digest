@@ -102,6 +102,22 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API Blacklist route -> /api/blacklist
+        if clean_path == "/api/blacklist":
+            data = {"creators": []}
+            if config.BLACKLIST_FILE.exists():
+                try:
+                    data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "File Not Found")
 
     def do_POST(self):
@@ -154,6 +170,96 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 logger.error("Failed writing watched.json: %s", e)
 
             resp = {"success": True, "watched": watched_data.get(week_id, [])}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path == "/api/watched/bulk":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+            try:
+                payload = json.loads(post_body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            week_id = payload.get("week_id", "default")
+            watched_ids = payload.get("watched_ids", [])
+
+            watched_data = {}
+            if config.WATCHED_FILE.exists():
+                try:
+                    watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            current_set = set(watched_data.get(week_id, []))
+            for wid in watched_ids:
+                if wid:
+                    current_set.add(wid)
+
+            watched_data[week_id] = list(current_set)
+            try:
+                config.WATCHED_FILE.parent.mkdir(parents=True, exist_ok=True)
+                config.WATCHED_FILE.write_text(json.dumps(watched_data, indent=2), encoding="utf-8")
+            except Exception as e:
+                logger.error("Failed bulk writing watched.json: %s", e)
+
+            resp = {"success": True, "watched": watched_data.get(week_id, [])}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path == "/api/blacklist":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+            try:
+                payload = json.loads(post_body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            handle = payload.get("creator_handle", "").strip().lower().replace("@", "")
+            action = payload.get("action", "add")
+
+            data = {"creators": []}
+            if config.BLACKLIST_FILE.exists():
+                try:
+                    data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            creators = set(c.lower().replace("@", "") for c in data.get("creators", []))
+            if action == "remove":
+                creators.discard(handle)
+            elif handle:
+                creators.add(handle)
+
+            data["creators"] = sorted(list(creators))
+            try:
+                config.BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+                config.BLACKLIST_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                logger.info("Updated blacklist.json with %d creators.", len(data["creators"]))
+            except Exception as e:
+                logger.error("Failed saving blacklist.json: %s", e)
+
+            # Also remove creator from sources.json so it never syncs or extracts again
+            if handle and action == "add" and config.SOURCES_FILE.exists():
+                try:
+                    sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                    new_sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") != handle]
+                    config.SOURCES_FILE.write_text(json.dumps(new_sources, indent=2, ensure_ascii=False), encoding="utf-8")
+                    logger.info("Removed @%s from sources.json permanently.", handle)
+                except Exception as e:
+                    logger.warning("Could not prune sources.json: %s", e)
+
+            resp = {"success": True, "blacklisted": data["creators"]}
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

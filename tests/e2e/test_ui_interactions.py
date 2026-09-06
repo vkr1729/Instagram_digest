@@ -361,3 +361,76 @@ def test_uat_6_11_keyboard_shortcuts_and_week_switcher(setup_test_site):
         page.keyboard.press("f")
 
         browser.close()
+
+
+def test_uat_6_12_jump_to_reel_and_mark_prior_watched(setup_test_site):
+    """UAT-6.12: Jump directly to reel #X marks preceding reels as watched and updates rank display."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        # Clear localStorage for clean state
+        page.evaluate("() => localStorage.clear()")
+        page.reload()
+
+        # Check jump button exists and shows initial #1/4
+        jump_btn = page.locator("#jumpBtn")
+        assert jump_btn.is_visible()
+        assert "#1/4" in jump_btn.inner_text().replace(" ", "").replace("\n", "")
+
+        # Open jump modal using keyboard shortcut 'g'
+        page.keyboard.press("g")
+        jump_modal = page.locator("#jumpModal")
+        assert jump_modal.evaluate("el => el.classList.contains('active')") is True
+
+        # Input reel number 3 and submit
+        page.fill("#jumpInput", "3")
+        page.click(".jump-submit-btn")
+
+        # Verify jump modal closed
+        assert jump_modal.evaluate("el => el.classList.contains('active')") is False
+
+        # Verify reels 1 and 2 are stored as watched in localStorage
+        watched_json = page.evaluate("() => localStorage.getItem('ig_digest_watched_ids_2026-09-06')")
+        assert watched_json is not None
+        watched_ids = json.loads(watched_json)
+        assert "reel_tech_1" in watched_ids
+        assert "reel_tech_2" in watched_ids
+        assert "reel_health_1" not in watched_ids
+
+        # Verify active card rank display updated to 3
+        rank_display = page.locator("#currentRankDisplay")
+        assert rank_display.inner_text() == "3"
+
+        browser.close()
+
+
+def test_uat_6_13_unselect_channel_local_only(setup_test_site):
+    """UAT-6.13: Local dashboard has unselect buttons; clicking opens confirmation modal."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        # Verify unselect buttons exist on local site
+        unselect_btns = page.locator(".unselect-channel-btn")
+        assert unselect_btns.count() >= 1
+
+        # Click unselect button on first reel
+        unselect_btns.first.click()
+
+        # Check confirmation modal opened with creator handle
+        block_modal = page.locator("#blockModal")
+        assert block_modal.evaluate("el => el.classList.contains('active')") is True
+        assert "@mkbhd" in page.locator("#blockCreatorHandle").inner_text()
+
+        # Close modal
+        page.click(".modal-btn-cancel")
+        assert block_modal.evaluate("el => el.classList.contains('active')") is False
+
+        browser.close()

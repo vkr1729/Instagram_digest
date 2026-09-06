@@ -37,12 +37,27 @@ def get_cookie_args() -> list[str]:
     return ["--cookies-from-browser", "chrome"]
 
 
+def get_blacklisted_creators() -> set[str]:
+    """Retrieve set of blacklisted creator handles (lowercase)."""
+    if hasattr(config, "BLACKLIST_FILE") and config.BLACKLIST_FILE.exists():
+        try:
+            data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+            return set(h.lower().replace("@", "") for h in data.get("creators", []))
+        except Exception:
+            pass
+    return set()
+
+
 def load_sources() -> list[dict[str, Any]]:
-    """Load tracked creators from sources.json."""
+    """Load tracked creators from sources.json, excluding blacklisted channels."""
     if not config.SOURCES_FILE.exists():
         return []
     try:
-        return json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+        sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+        blacklist = get_blacklisted_creators()
+        if blacklist:
+            return [s for s in sources if s.get("handle", "").lower().replace("@", "") not in blacklist]
+        return sources
     except Exception as exc:
         logger.error("Error reading sources.json: %s", exc)
         return []
@@ -195,9 +210,12 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
     # Merge discovered accounts non-destructively with existing sources.json
     current_sources = load_sources()
     current_by_handle = {s["handle"].lower(): s for s in current_sources if "handle" in s}
+    blacklist = get_blacklisted_creators()
 
     for acc in discovered_accounts:
         handle = acc["handle"].lower()
+        if handle in blacklist:
+            continue
         if handle not in current_by_handle:
             current_sources.append(acc)
             current_by_handle[handle] = acc

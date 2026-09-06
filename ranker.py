@@ -44,6 +44,17 @@ def compute_viral_score(reel: dict[str, Any], baseline_views: float) -> float:
     return round(score, 3)
 
 
+def get_blacklisted_creators() -> set[str]:
+    """Retrieve set of blacklisted creator handles (lowercase)."""
+    if hasattr(config, "BLACKLIST_FILE") and config.BLACKLIST_FILE.exists():
+        try:
+            data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+            return set(h.lower().replace("@", "") for h in data.get("creators", []))
+        except Exception:
+            pass
+    return set()
+
+
 def rank_top_reels(
     candidates: list[dict[str, Any]],
     sources: list[dict[str, Any]],
@@ -59,6 +70,11 @@ def rank_top_reels(
     5. Fill remaining slots with highest scoring outliers up to top_n.
     6. Sort final pool descending by score and assign ranks #01 to #N.
     """
+    blacklist = get_blacklisted_creators()
+    if blacklist:
+        candidates = [c for c in candidates if c.get("creator_handle", "").lower().replace("@", "") not in blacklist]
+        sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") not in blacklist]
+
     if not candidates:
         logger.warning("No candidate reels provided to ranker.")
         return []
