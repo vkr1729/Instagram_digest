@@ -8,6 +8,7 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 from http import HTTPStatus
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -22,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 class LocalDigestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler supporting partial video range streaming and on-demand sync API."""
+    protocol_version = "HTTP/1.1"
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -114,9 +116,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(file_size))
             self.send_header("Accept-Ranges", "bytes")
-            self.end_headers()
-            with video_path.open("rb") as f:
-                shutil.copyfileobj(f, self.wfile)
+            try:
+                with video_path.open("rb") as f:
+                    shutil.copyfileobj(f, self.wfile)
+            except (ConnectionResetError, BrokenPipeError):
+                pass
             return
 
         # Partial range request (e.g. bytes=0-1024)

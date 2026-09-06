@@ -12,8 +12,9 @@ from site_builder import build_site
 
 
 @pytest.fixture(scope="module")
-def setup_test_site():
-    """Generate a mock site with 4 test reels across categories."""
+def setup_test_site(tmp_path_factory):
+    """Generate a mock site with 4 test reels across categories in an isolated temporary directory."""
+    import unittest.mock as mock
     mock_items = [
         {
             "id": "reel_tech_1",
@@ -60,8 +61,9 @@ def setup_test_site():
             "video_url": "data:video/mp4;base64,AAAA",
         }
     ]
-
-    _, local_index = build_site({"run_date": "2026-09-06", "items": mock_items})
+    test_dir = tmp_path_factory.mktemp("test_site")
+    with mock.patch.object(config, "SITE_DIR", test_dir):
+        _, local_index = build_site({"run_date": "2026-09-06", "items": mock_items})
     return local_index
 
 
