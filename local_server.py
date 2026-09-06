@@ -25,6 +25,9 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler supporting partial video range streaming and on-demand sync API."""
     protocol_version = "HTTP/1.1"
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         clean_path = parsed.path
@@ -111,6 +114,68 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             body = json.dumps(data).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # Web Route: /channels
+        if clean_path in ("/channels", "/channels/"):
+            channels_template = config.TEMPLATES_DIR / "channels.html"
+            if channels_template.exists():
+                content = channels_template.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        # API Route: /api/channels
+        if clean_path == "/api/channels":
+            sources = []
+            if config.SOURCES_FILE.exists():
+                try:
+                    sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            blacklist = set()
+            if config.BLACKLIST_FILE.exists():
+                try:
+                    b_data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+                    blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
+                except Exception:
+                    pass
+
+            source_map = {}
+            for s in sources:
+                h = s.get("handle", "").lower().replace("@", "")
+                if h:
+                    source_map[h] = {
+                        "handle": h,
+                        "name": s.get("name", h),
+                        "category": s.get("category", "culture"),
+                        "is_blacklisted": (h in blacklist),
+                    }
+
+            for bh in blacklist:
+                if bh not in source_map:
+                    source_map[bh] = {
+                        "handle": bh,
+                        "name": bh,
+                        "category": "culture",
+                        "is_blacklisted": True,
+                    }
+
+            channel_list = sorted(list(source_map.values()), key=lambda x: x["handle"])
+            resp_data = {
+                "total": len(channel_list),
+                "channels": channel_list,
+            }
+            body = json.dumps(resp_data, ensure_ascii=False).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -260,6 +325,75 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     logger.warning("Could not prune sources.json: %s", e)
 
             resp = {"success": True, "blacklisted": data["creators"]}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path == "/api/channels/bulk-unselect":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+            try:
+                payload = json.loads(post_body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            handles_in = payload.get("creator_handles", [])
+            action = payload.get("action", "add")  # "add" to mute, "remove" to restore
+            clean_handles = set(h.lower().replace("@", "").strip() for h in handles_in if h)
+
+            b_data = {"creators": []}
+            if config.BLACKLIST_FILE.exists():
+                try:
+                    b_data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
+
+            sources = []
+            if config.SOURCES_FILE.exists():
+                try:
+                    sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            if action == "add":
+                blacklist.update(clean_handles)
+                # Prune from sources.json
+                sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") not in clean_handles]
+            elif action == "remove":
+                blacklist.difference_update(clean_handles)
+                # Restore to sources.json if missing
+                existing_handles = set(s.get("handle", "").lower().replace("@", "") for s in sources)
+                for h in clean_handles:
+                    if h not in existing_handles:
+                        sources.append({
+                            "handle": h,
+                            "name": h,
+                            "category": "culture",
+                            "enabled": True
+                        })
+
+            b_data["creators"] = sorted(list(blacklist))
+            try:
+                config.BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+                config.BLACKLIST_FILE.write_text(json.dumps(b_data, indent=2), encoding="utf-8")
+                config.SOURCES_FILE.write_text(json.dumps(sources, indent=2, ensure_ascii=False), encoding="utf-8")
+                logger.info("Bulk updated channels: %d muted total, %d active sources.", len(b_data["creators"]), len(sources))
+            except Exception as e:
+                logger.error("Error writing bulk channel updates: %s", e)
+
+            resp = {
+                "success": True,
+                "action": action,
+                "modified_count": len(clean_handles),
+                "total_blacklisted": len(b_data["creators"]),
+                "total_sources": len(sources),
+            }
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

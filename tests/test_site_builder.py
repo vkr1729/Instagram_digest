@@ -75,8 +75,8 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
         assert 'id="jumpBtn"' in html
         assert 'id="jumpModal"' in html
 
-    # Verify unselect button and blockModal are local-only
+    # Verify unselect button and channels link are local-only
     assert 'class="unselect-channel-btn"' in local_html
-    assert 'id="blockModal"' in local_html
+    assert 'href="/channels"' in local_html
     assert 'class="unselect-channel-btn"' not in r2_html
-    assert 'id="blockModal"' not in r2_html
+    assert 'href="/channels"' not in r2_html

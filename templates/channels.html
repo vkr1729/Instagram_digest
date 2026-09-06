@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Channel Manager — Instagram Digest</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Grand+Hotel&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-pitch: #000000;
+      --bg-card: #12131a;
+      --bg-card-hover: #191a24;
+      --border-subtle: rgba(255, 255, 255, 0.1);
+      --border-focus: rgba(240, 148, 51, 0.5);
+      --ig-gradient: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+      --text-main: #f5f5f7;
+      --text-muted: #8e8e93;
+      --danger: #ff453a;
+      --success: #30d158;
+      --pill-bg: rgba(255, 255, 255, 0.1);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      background: var(--bg-pitch);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 16px 80px;
+    }
+    .container {
+      width: 100%;
+      max-width: 860px;
+    }
+
+    /* Top Nav */
+    header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 0 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 20px;
+    }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #fff;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      background: var(--pill-bg);
+      border: 1px solid var(--border-subtle);
+      padding: 8px 14px;
+      border-radius: 20px;
+      transition: background 0.15s ease;
+    }
+    .back-link:hover { background: rgba(255, 255, 255, 0.2); }
+    .brand-title {
+      font-family: 'Grand Hotel', cursive;
+      font-size: 30px;
+      color: #fff;
+    }
+
+    /* Page Header */
+    .intro-banner {
+      margin-bottom: 20px;
+    }
+    .intro-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge-count {
+      font-size: 12px;
+      font-weight: 700;
+      background: var(--pill-bg);
+      border: 1px solid var(--border-subtle);
+      padding: 3px 10px;
+      border-radius: 12px;
+      color: #a1a1aa;
+    }
+    .intro-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Controls Bar */
+    .controls-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      position: sticky;
+      top: 10px;
+      z-index: 50;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+    .search-input-wrapper {
+      position: relative;
+      width: 100%;
+    }
+    .search-input {
+      width: 100%;
+      background: #090a0d;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 12px 16px 12px 40px;
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+    .search-input:focus { border-color: #f09433; }
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 15px;
+      color: #71717a;
+    }
+
+    /* Filter Tabs */
+    .filter-pills {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .filter-pills::-webkit-scrollbar { display: none; }
+    .filter-pill {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: #a1a1aa;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .filter-pill:hover { color: #fff; border-color: rgba(255, 255, 255, 0.3); }
+    .filter-pill.active {
+      background: #fff;
+      color: #000;
+      border-color: #fff;
+    }
+
+    /* Bulk Action Toolbar */
+    .action-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .select-all-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+    .select-all-label input[type="checkbox"] {
+      width: 17px;
+      height: 17px;
+      accent-color: #f09433;
+      cursor: pointer;
+    }
+    .selection-counter {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .toolbar-buttons {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .btn-bulk-danger {
+      background: var(--danger);
+      border: none;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: opacity 0.15s ease, transform 0.1s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .btn-bulk-danger:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-bulk-danger:not(:disabled):hover { opacity: 0.9; }
+    .btn-bulk-danger:not(:disabled):active { transform: scale(0.97); }
+
+    .btn-bulk-restore {
+      background: rgba(48, 209, 88, 0.2);
+      border: 1px solid rgba(48, 209, 88, 0.4);
+      color: var(--success);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .btn-bulk-restore:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .btn-bulk-restore:not(:disabled):hover {
+      background: rgba(48, 209, 88, 0.35);
+      color: #fff;
+    }
+
+    /* Channel List */
+    .channels-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .channel-row {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 14px;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .channel-row:hover {
+      background: var(--bg-card-hover);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .channel-row.is-blacklisted {
+      opacity: 0.6;
+      border-color: rgba(255, 69, 58, 0.25);
+    }
+    .row-checkbox {
+      width: 18px;
+      height: 18px;
+      accent-color: #f09433;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .avatar-initial {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #2c2d3a, #14151e);
+      border: 1.5px solid rgba(255, 255, 255, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 16px;
+      color: #fff;
+      flex-shrink: 0;
+    }
+    .channel-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .channel-handle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 3px;
+    }
+    .channel-handle {
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+      text-decoration: none;
+    }
+    .channel-handle:hover { text-decoration: underline; color: #f09433; }
+    .channel-name {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cat-pill {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 8px;
+      text-transform: capitalize;
+      background: rgba(255, 255, 255, 0.08);
+      color: #d4d4d8;
+    }
+    .cat-pill.tech { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+    .cat-pill.health { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .cat-pill.explainer { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+    .cat-pill.culture { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+
+    .status-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+    .status-badge.active {
+      background: rgba(48, 209, 88, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(48, 209, 88, 0.3);
+    }
+    .status-badge.muted {
+      background: rgba(255, 69, 58, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(255, 69, 58, 0.3);
+    }
+
+    .btn-row-action {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+    .btn-row-action:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+    .btn-row-action.danger:hover {
+      background: rgba(255, 69, 58, 0.2);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .btn-row-action.restore:hover {
+      background: rgba(48, 209, 88, 0.2);
+      border-color: var(--success);
+      color: var(--success);
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e202a;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    }
+    .toast.visible { opacity: 1; }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+    .empty-state h3 { color: #fff; margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Top Nav -->
+    <header>
+      <a href="/" class="back-link">← Back to Digest</a>
+      <div class="brand-title">Instagram</div>
+    </header>
+
+    <!-- Intro Banner -->
+    <div class="intro-banner">
+      <h1 class="intro-title">
+        Channel Manager
+        <span class="badge-count" id="totalCountBadge">...</span>
+      </h1>
+      <p class="intro-desc">
+        Bulk-select junk channels to exclude them permanently from your weekly digest and future 30-day refreshes.
+      </p>
+    </div>
+
+    <!-- Controls Card (Sticky) -->
+    <div class="controls-card">
+      <div class="search-input-wrapper">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" class="search-input" placeholder="Search by handle or name (e.g. mkbhd, fitness)..." oninput="applyFilters()">
+      </div>
+
+      <div class="filter-pills">
+        <button class="filter-pill active" data-filter="all" onclick="setCategoryFilter('all')">All Channels (<span id="countAll">0</span>)</button>
+        <button class="filter-pill" data-filter="active" onclick="setCategoryFilter('active')">Active (<span id="countActive">0</span>)</button>
+        <button class="filter-pill" data-filter="blacklisted" onclick="setCategoryFilter('blacklisted')">🚫 Muted (<span id="countMuted">0</span>)</button>
+        <button class="filter-pill" data-filter="tech" onclick="setCategoryFilter('tech')">💻 Tech</button>
+        <button class="filter-pill" data-filter="health" onclick="setCategoryFilter('health')">🏋️ Health</button>
+        <button class="filter-pill" data-filter="explainer" onclick="setCategoryFilter('explainer')">🧠 Explainer</button>
+        <button class="filter-pill" data-filter="culture" onclick="setCategoryFilter('culture')">🎨 Culture</button>
+      </div>
+
+      <div class="action-toolbar">
+        <label class="select-all-label">
+          <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)">
+          <span>Select All Filtered</span>
+        </label>
+        <span class="selection-counter" id="selectionCounter">0 selected</span>
+
+        <div class="toolbar-buttons">
+          <button class="btn-bulk-restore" id="bulkRestoreBtn" onclick="bulkAction('remove')" disabled>
+            ↺ Restore Selected (<span class="sel-num">0</span>)
+          </button>
+          <button class="btn-bulk-danger" id="bulkMuteBtn" onclick="bulkAction('add')" disabled>
+            🚫 Bulk Mute (<span class="sel-num">0</span>)
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Channels List -->
+    <div class="channels-list" id="channelsList">
+      <div class="empty-state"><h3>Loading channels...</h3></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Changes saved</div>
+
+  <script>
+    let allChannels = [];
+    let selectedHandles = new Set();
+    let currentCategoryFilter = 'all';
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('visible');
+      setTimeout(() => t.classList.remove('visible'), 2000);
+    }
+
+    async function loadChannels() {
+      try {
+        const res = await fetch('/api/channels');
+        const data = await res.json();
+        allChannels = data.channels || [];
+        updateCounts();
+        applyFilters();
+      } catch (err) {
+        document.getElementById('channelsList').innerHTML = '<div class="empty-state"><h3>Failed to load channels</h3><p>Make sure local server is running.</p></div>';
+      }
+    }
+
+    function updateCounts() {
+      const total = allChannels.length;
+      const muted = allChannels.filter(c => c.is_blacklisted).length;
+      const active = total - muted;
+
+      document.getElementById('totalCountBadge').textContent = total + ' Channels';
+      document.getElementById('countAll').textContent = total;
+      document.getElementById('countActive').textContent = active;
+      document.getElementById('countMuted').textContent = muted;
+    }
+
+    function setCategoryFilter(filter) {
+      currentCategoryFilter = filter;
+      document.querySelectorAll('.filter-pill').forEach(b => {
+        b.classList.toggle('active', b.dataset.filter === filter);
+      });
+      applyFilters();
+    }
+
+    function getFilteredChannels() {
+      const q = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+      return allChannels.filter(c => {
+        const matchSearch = !q || c.handle.toLowerCase().includes(q) || (c.name && c.name.toLowerCase().includes(q));
+        if (!matchSearch) return false;
+
+        if (currentCategoryFilter === 'all') return true;
+        if (currentCategoryFilter === 'active') return !c.is_blacklisted;
+        if (currentCategoryFilter === 'blacklisted') return c.is_blacklisted;
+        return (c.category && c.category.toLowerCase() === currentCategoryFilter);
+      });
+    }
+
+    function applyFilters() {
+      const filtered = getFilteredChannels();
+      const listEl = document.getElementById('channelsList');
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = '<div class="empty-state"><h3>No channels found</h3><p>Try a different search term or category filter.</p></div>';
+        updateToolbarState();
+        return;
+      }
+
+      listEl.innerHTML = filtered.map(c => {
+        const isChecked = selectedHandles.has(c.handle);
+        const initial = (c.handle[0] || '?').toUpperCase();
+        return `
+          <div class="channel-row ${c.is_blacklisted ? 'is-blacklisted' : ''}" data-handle="${c.handle}">
+            <input type="checkbox" class="row-checkbox" value="${c.handle}" ${isChecked ? 'checked' : ''} onchange="toggleRowSelect('${c.handle}', this.checked)">
+            <div class="avatar-initial">${initial}</div>
+            <div class="channel-info">
+              <div class="channel-handle-row">
+                <a href="https://instagram.com/${c.handle}" target="_blank" rel="noopener" class="channel-handle">@${c.handle}</a>
+                <span class="cat-pill ${c.category || 'culture'}">${c.category || 'other'}</span>
+              </div>
+              <div class="channel-name">${c.name || '@' + c.handle}</div>
+            </div>
+            <span class="status-badge ${c.is_blacklisted ? 'muted' : 'active'}">
+              ${c.is_blacklisted ? '🚫 Muted' : '✓ Active'}
+            </span>
+            ${c.is_blacklisted
+              ? `<button class="btn-row-action restore" onclick="singleAction('${c.handle}', 'remove')">↺ Restore</button>`
+              : `<button class="btn-row-action danger" onclick="singleAction('${c.handle}', 'add')">🚫 Mute</button>`
+            }
+          </div>
+        `;
+      }).join('');
+
+      updateToolbarState();
+    }
+
+    function toggleRowSelect(handle, checked) {
+      if (checked) {
+        selectedHandles.add(handle);
+      } else {
+        selectedHandles.delete(handle);
+      }
+      updateToolbarState();
+    }
+
+    function toggleSelectAll(checked) {
+      const filtered = getFilteredChannels();
+      filtered.forEach(c => {
+        if (checked) {
+          selectedHandles.add(c.handle);
+        } else {
+          selectedHandles.delete(c.handle);
+        }
+      });
+      applyFilters();
+    }
+
+    function updateToolbarState() {
+      const filtered = getFilteredChannels();
+      const selCount = selectedHandles.size;
+
+      document.getElementById('selectionCounter').textContent = selCount + ' selected';
+      document.querySelectorAll('.sel-num').forEach(el => el.textContent = selCount);
+
+      const muteBtn = document.getElementById('bulkMuteBtn');
+      const restoreBtn = document.getElementById('bulkRestoreBtn');
+
+      muteBtn.disabled = (selCount === 0);
+      restoreBtn.disabled = (selCount === 0);
+
+      // Check master checkbox state
+      const masterCheckbox = document.getElementById('selectAllCheckbox');
+      if (filtered.length > 0) {
+        const allSelected = filtered.every(c => selectedHandles.has(c.handle));
+        masterCheckbox.checked = allSelected;
+      } else {
+        masterCheckbox.checked = false;
+      }
+    }
+
+    async function bulkAction(action) {
+      if (selectedHandles.size === 0) return;
+      const handles = Array.from(selectedHandles);
+
+      try {
+        const res = await fetch('/api/channels/bulk-unselect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ creator_handles: handles, action })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const actionWord = (action === 'add') ? 'muted' : 'restored';
+          showToast(`${handles.length} channels ${actionWord}`);
+
+          // Update local models
+          const isBlacklisted = (action === 'add');
+          allChannels.forEach(c => {
+            if (selectedHandles.has(c.handle)) {
+              c.is_blacklisted = isBlacklisted;
+            }
+          });
+
+          selectedHandles.clear();
+          updateCounts();
+          applyFilters();
+        }
+      } catch (err) {
+        showToast('Operation failed');
+      }
+    }
+
+    async function singleAction(handle, action) {
+      try {
+        const res = await fetch('/api/channels/bulk-unselect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ creator_handles: [handle], action })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const c = allChannels.find(ch => ch.handle === handle);
+          if (c) c.is_blacklisted = (action === 'add');
+          showToast(`@${handle} ${action === 'add' ? 'muted' : 'restored'}`);
+          selectedHandles.delete(handle);
+          updateCounts();
+          applyFilters();
+        }
+      } catch (err) {
+        showToast('Operation failed');
+      }
+    }
+
+    // Initialize
+    loadChannels();
+  </script>
+</body>
+</html>

@@ -132,12 +132,6 @@
     "enabled": true
   },
   {
-    "handle": "homescreenentertainment",
-    "name": "Home Screen Entertainment",
-    "category": "tech",
-    "enabled": true
-  },
-  {
     "handle": "thebetterproductco",
     "name": "Dishank Shah",
     "category": "tech",
@@ -516,12 +510,6 @@
     "enabled": true
   },
   {
-    "handle": "theverticalplaylistsouth",
-    "name": "theverticalplaylistsouth",
-    "category": "explainer",
-    "enabled": true
-  },
-  {
     "handle": "sridhar19",
     "name": "Sridhar Bollam",
     "category": "culture",
@@ -693,12 +681,6 @@
     "handle": "adityagarg9",
     "name": "Aditya Garg",
     "category": "culture",
-    "enabled": true
-  },
-  {
-    "handle": "cnbctv18india",
-    "name": "CNBC-TV18",
-    "category": "explainer",
     "enabled": true
   },
   {

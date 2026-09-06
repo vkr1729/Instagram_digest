@@ -629,6 +629,11 @@
           <button class="speed-btn" id="speedToggleBtn" onclick="cycleSpeed()" title="Adjust Playback Speed">
             ⚡ <span id="speedDisplay">1.5x</span>
           </button>
+          {% if is_local %}
+          <a href="/channels" class="speed-btn" style="text-decoration:none;" title="Manage Channels & Subscriptions">
+            👥 Channels
+          </a>
+          {% endif %}
           <select class="week-selector" id="weekSelector" onchange="switchWeek(this.value)" title="Switch Weekly Digest">
             {% if available_weeks %}
               {% for w in available_weeks %}
@@ -695,7 +700,7 @@
             <span class="rank-pill">{{ item.rank_display }}</span>
             <span class="views-label">{{ "{:,}".format(item.view_count) }} views</span>
             {% if is_local %}
-            <button class="unselect-channel-btn" onclick="promptBlockCreator('{{ item.creator_handle }}', event)" title="Unselect / Mute @{{ item.creator_handle }}">🚫</button>
+            <button class="unselect-channel-btn" onclick="unselectCreator('{{ item.creator_handle }}', event)" title="Unselect @{{ item.creator_handle }} (Shortcut: B)">🚫</button>
             {% endif %}
           </div>
           <div class="caption-snippet" onclick="this.classList.toggle('expanded')">
@@ -728,24 +733,6 @@
         <button class="modal-close-btn" onclick="closeModal('jumpModal')">Cancel</button>
       </div>
     </div>
-
-    {% if is_local %}
-    <!-- Unselect Channel Confirmation Modal (Local Only) -->
-    <div class="modal-overlay" id="blockModal" onclick="handleModalBackdrop(event, 'blockModal')">
-      <div class="modal-dialog">
-        <div class="modal-icon-badge">🚫</div>
-        <h3 class="modal-title">Unselect Channel</h3>
-        <p class="modal-desc">
-          Mute <strong id="blockCreatorHandle" style="color: #fff;"></strong> permanently?<br>
-          Reels from this creator will be removed from your feed and permanently excluded from future 30-day refreshes.
-        </p>
-        <div class="modal-actions">
-          <button class="modal-btn-cancel" onclick="closeModal('blockModal')">Cancel</button>
-          <button class="modal-btn-danger" id="confirmBlockBtn" onclick="confirmBlockCreator()">Unselect</button>
-        </div>
-      </div>
-    </div>
-    {% endif %}
   </div>
 
   <script>
@@ -1307,64 +1294,105 @@
       showToast('Jumped to Reel #' + targetRank);
     }
 
-    // Unselect Creator Channel (Local Only)
-    let pendingBlockHandle = null;
-
-    function promptBlockCreator(handle, e) {
+    // Instant Unselect Creator Channel (Local Only, No Popup, Seamless Advance)
+    function unselectCreator(handle, e) {
       if (e) {
         e.stopPropagation();
         e.preventDefault();
       }
-      pendingBlockHandle = handle.replace('@', '').toLowerCase();
-      const handleEl = document.getElementById('blockCreatorHandle');
-      if (handleEl) handleEl.textContent = '@' + pendingBlockHandle;
-      openModal('blockModal');
-    }
+      if (!handle) return;
+      const cleanHandle = handle.replace('@', '').trim().toLowerCase();
 
-    function confirmBlockCreator() {
-      if (!pendingBlockHandle) return;
-      const handle = pendingBlockHandle;
-      closeModal('blockModal');
+      // Find all cards by this creator
+      const cardsToRemove = Array.from(document.querySelectorAll('.reel-card')).filter(card => {
+        const badge = card.querySelector('.creator-badge');
+        return badge && badge.textContent.replace('@', '').trim().toLowerCase() === cleanHandle;
+      });
 
-      // Call local backend to blacklist and prune from sources.json
+      if (cardsToRemove.length === 0) return;
+
+      // Identify where to advance if the active card is being removed
+      const allVisible = Array.from(document.querySelectorAll('.reel-card'))
+        .filter(c => c.style.display !== 'none');
+      const isActiveRemoved = currentActiveCard && cardsToRemove.includes(currentActiveCard);
+
+      let targetCard = null;
+      if (isActiveRemoved) {
+        const currentIdx = allVisible.indexOf(currentActiveCard);
+        // Look ahead for the next visible card not by this creator
+        for (let i = currentIdx + 1; i < allVisible.length; i++) {
+          if (!cardsToRemove.includes(allVisible[i])) {
+            targetCard = allVisible[i];
+            break;
+          }
+        }
+        // If reached end, look behind
+        if (!targetCard) {
+          for (let i = currentIdx - 1; i >= 0; i--) {
+            if (!cardsToRemove.includes(allVisible[i])) {
+              targetCard = allVisible[i];
+              break;
+            }
+          }
+        }
+      }
+
+      // Remove cards from DOM
+      cardsToRemove.forEach(c => {
+        const v = c.querySelector('video');
+        if (v) v.pause();
+        c.remove();
+      });
+
+      // Show immediate feedback
+      showToast('@' + cleanHandle + ' unselected & muted');
+
+      // Seamlessly advance or stay in place (NEVER reset to reel #1)
+      if (isActiveRemoved) {
+        if (targetCard) {
+          targetCard.scrollIntoView({ behavior: 'smooth' });
+          playCardVideo(targetCard);
+        } else {
+          // No more reels in this category
+          const celebration = document.getElementById('celebrationScreen');
+          if (celebration) celebration.classList.add('active');
+          currentActiveCard = null;
+        }
+      } else if (currentActiveCard) {
+        // Keep playing current card and update rank display
+        playCardVideo(currentActiveCard);
+      }
+
+      // Send to local server backend (updates blacklist.json and prunes sources.json)
       fetch('/api/blacklist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ creator_handle: handle, action: 'add' })
-      })
-      .then(r => r.json())
-      .then(res => {
-        // Remove cards matching this creator handle from DOM
-        const cardsToRemove = Array.from(document.querySelectorAll('.reel-card')).filter(card => {
-          const badge = card.querySelector('.creator-badge');
-          return badge && badge.textContent.replace('@', '').trim().toLowerCase() === handle;
-        });
-
-        cardsToRemove.forEach(c => {
-          const v = c.querySelector('video');
-          if (v) v.pause();
-          c.remove();
-        });
-
-        showToast('@' + handle + ' unselected & muted');
-        filterCategory(currentCategory);
-      })
-      .catch(err => {
-        showToast('Failed to mute @' + handle);
-      });
+        body: JSON.stringify({ creator_handle: cleanHandle, action: 'add' })
+      }).catch(() => {});
     }
 
-    // Desktop Keyboard Controls: F (fullscreen), Space (play/pause), ArrowDown/Up (next/prev), G (jump)
+    // Desktop Keyboard Controls: F (fullscreen), Space (play/pause), ArrowDown/Up (next/prev), G (jump), B (unselect)
     window.addEventListener('keydown', (e) => {
       // Escape closes any active modal
       if (e.key === 'Escape') {
         closeModal('jumpModal');
-        closeModal('blockModal');
         return;
       }
 
       // Ignore if user is interacting with form controls
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+
+      // 'B' or 'b' -> Instant blacklist/unselect creator of current active reel
+      if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault();
+        if (currentActiveCard) {
+          const badge = currentActiveCard.querySelector('.creator-badge');
+          if (badge) {
+            unselectCreator(badge.textContent);
+          }
+        }
+        return;
+      }
 
       // 'G' or 'g' -> Open Jump to Reel modal
       if (e.key === 'g' || e.key === 'G') {

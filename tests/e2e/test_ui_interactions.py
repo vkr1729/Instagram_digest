@@ -408,8 +408,8 @@ def test_uat_6_12_jump_to_reel_and_mark_prior_watched(setup_test_site):
         browser.close()
 
 
-def test_uat_6_13_unselect_channel_local_only(setup_test_site):
-    """UAT-6.13: Local dashboard has unselect buttons; clicking opens confirmation modal."""
+def test_uat_6_13_unselect_channel_instant_and_seamless(setup_test_site):
+    """UAT-6.13: Local unselect skips popup, seamlessly advances to next reel, and works via 'b' shortcut."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -417,20 +417,41 @@ def test_uat_6_13_unselect_channel_local_only(setup_test_site):
         page = browser.new_page()
         page.goto(file_url)
 
+        # Clear localStorage for clean state
+        page.evaluate("() => localStorage.clear()")
+        page.reload()
+
         # Verify unselect buttons exist on local site
         unselect_btns = page.locator(".unselect-channel-btn")
-        assert unselect_btns.count() >= 1
+        initial_count = page.locator(".reel-card").count()
+        assert initial_count == 4
 
-        # Click unselect button on first reel
+        # Click unselect button on active reel #1 (@mkbhd)
         unselect_btns.first.click()
 
-        # Check confirmation modal opened with creator handle
-        block_modal = page.locator("#blockModal")
-        assert block_modal.evaluate("el => el.classList.contains('active')") is True
-        assert "@mkbhd" in page.locator("#blockCreatorHandle").inner_text()
+        # Verify toast showed instant feedback (no popup)
+        toast = page.locator("#globalToast")
+        assert "mkbhd" in toast.inner_text().lower()
 
-        # Close modal
-        page.click(".modal-btn-cancel")
-        assert block_modal.evaluate("el => el.classList.contains('active')") is False
+        # Verify reel count decreased by 1
+        assert page.locator(".reel-card").count() == 3
+
+        # Verify next reel (@mrwhosetheboss, rank #2) is now active, NOT resetting to anything missing
+        active_card = page.locator(".reel-card").first
+        badge = active_card.locator(".creator-badge")
+        assert "@mrwhosetheboss" in badge.inner_text()
+
+        # Test 'b' keyboard shortcut on active reel
+        page.keyboard.press("b")
+
+        # Verify toast showed instant feedback for mrwhosetheboss
+        assert "mrwhosetheboss" in toast.inner_text().lower()
+
+        # Reel count decreased to 2
+        assert page.locator(".reel-card").count() == 2
+
+        # Reel #3 (@hubermanlab) is now at the top
+        active_card_new = page.locator(".reel-card").first
+        assert "@hubermanlab" in active_card_new.locator(".creator-badge").inner_text()
 
         browser.close()
