@@ -1,0 +1,98 @@
+[
+  {
+    "handle": "mkbhd",
+    "name": "Marques Brownlee",
+    "category": "tech",
+    "enabled": true
+  },
+  {
+    "handle": "mrwhosetheboss",
+    "name": "Arun Maini",
+    "category": "tech",
+    "enabled": true
+  },
+  {
+    "handle": "sam_altman",
+    "name": "Sam Altman",
+    "category": "tech",
+    "enabled": true
+  },
+  {
+    "handle": "zuck",
+    "name": "Mark Zuckerberg",
+    "category": "tech",
+    "enabled": true
+  },
+  {
+    "handle": "lexfridman",
+    "name": "Lex Fridman",
+    "category": "tech",
+    "enabled": true
+  },
+  {
+    "handle": "hubermanlab",
+    "name": "Dr. Andrew Huberman",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "peterattiamd",
+    "name": "Dr. Peter Attia",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "foundmyfitness",
+    "name": "Dr. Rhonda Patrick",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "drbradstanfield",
+    "name": "Dr. Brad Stanfield",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "veritasium",
+    "name": "Veritasium",
+    "category": "explainer",
+    "enabled": true
+  },
+  {
+    "handle": "3blue1brown",
+    "name": "3Blue1Brown",
+    "category": "explainer",
+    "enabled": true
+  },
+  {
+    "handle": "cleoabram",
+    "name": "Cleo Abram (Huge If True)",
+    "category": "explainer",
+    "enabled": true
+  },
+  {
+    "handle": "kurzgesagt",
+    "name": "Kurzgesagt – In a Nutshell",
+    "category": "explainer",
+    "enabled": true
+  },
+  {
+    "handle": "austinkleon",
+    "name": "Austin Kleon",
+    "category": "culture",
+    "enabled": true
+  },
+  {
+    "handle": "natgeo",
+    "name": "National Geographic",
+    "category": "culture",
+    "enabled": true
+  },
+  {
+    "handle": "architecturaldigest",
+    "name": "Architectural Digest",
+    "category": "culture",
+    "enabled": true
+  }
+]

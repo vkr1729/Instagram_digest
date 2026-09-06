@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Instagram Digest — Weekly Top 100</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Grand+Hotel&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-pitch: #000000;
+      --bg-card: #0e0f14;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --ig-gradient: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+      --text-main: #f5f5f7;
+      --text-muted: #8e8e93;
+      --accent-pill: rgba(255, 255, 255, 0.12);
+      --accent-orange: #f09433;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      background: var(--bg-pitch);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    /* Outer App Shell */
+    .app-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 440px;
+      margin: 0 auto;
+      background: var(--bg-pitch);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 0 50px rgba(0, 0, 0, 0.9);
+    }
+    @media (min-width: 768px) {
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #08090d;
+      }
+      .app-shell {
+        height: 92vh;
+        border-radius: 36px;
+        border: 4px solid #1e2029;
+      }
+    }
+
+    /* Top App Header */
+    .top-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 18px 8px;
+      background: var(--bg-pitch);
+      z-index: 20;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .brand-logo {
+      font-family: 'Grand Hotel', cursive;
+      font-size: 28px;
+      color: #fff;
+      letter-spacing: 0.5px;
+      user-select: none;
+    }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .speed-btn {
+      background: var(--accent-pill);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .speed-btn:hover { background: rgba(255, 255, 255, 0.2); }
+    .week-selector {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 5px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    /* 5 Story Category Circles */
+    .story-bar {
+      display: flex;
+      gap: 12px;
+      padding: 8px 16px 12px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      background: var(--bg-pitch);
+      z-index: 20;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .story-bar::-webkit-scrollbar { display: none; }
+    .story-bubble {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .story-ring {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      padding: 2px;
+      background: rgba(255, 255, 255, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+    }
+    .story-bubble.active .story-ring {
+      background: var(--ig-gradient);
+      box-shadow: 0 0 12px rgba(220, 39, 67, 0.5);
+      transform: scale(1.04);
+    }
+    .story-avatar {
+      width: 100%;
+      height: 100%;
+      background: #14151a;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      border: 2px solid var(--bg-pitch);
+    }
+    .story-title {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .story-bubble.active .story-title {
+      color: #fff;
+      font-weight: 600;
+    }
+
+    /* Video Feed Container (CSS Scroll-Snap) */
+    .feed-container {
+      flex: 1;
+      overflow-y: scroll;
+      scroll-snap-type: y mandatory;
+      scrollbar-width: none;
+      position: relative;
+    }
+    .feed-container::-webkit-scrollbar { display: none; }
+
+    /* Single Reel Card */
+    .reel-card {
+      width: 100%;
+      height: 100%;
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      position: relative;
+      background: #090a0f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .reel-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #000;
+    }
+
+    /* Hairline Top Progress Bar */
+    .reel-progress {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2.5px;
+      background: rgba(255, 255, 255, 0.2);
+      z-index: 15;
+    }
+    .reel-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: #fff;
+      transition: width 0.1s linear;
+    }
+
+    /* Variant 1A: Natural Bottom Left Text Scrim */
+    .bottom-scrim {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 50px 16px 20px;
+      background: linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.45) 60%, transparent 100%);
+      z-index: 10;
+      pointer-events: none;
+    }
+    .bottom-scrim * { pointer-events: auto; }
+
+    .creator-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .creator-badge {
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      text-decoration: none;
+    }
+    .rank-pill {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent-orange);
+      background: rgba(240, 148, 51, 0.15);
+      padding: 2px 7px;
+      border-radius: 8px;
+      border: 1px solid rgba(240, 148, 51, 0.3);
+    }
+    .views-label {
+      font-size: 11px;
+      color: #a1a1aa;
+      margin-left: auto;
+    }
+    .caption-snippet {
+      font-size: 12px;
+      color: #e4e4e7;
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .caption-snippet.expanded {
+      -webkit-line-clamp: unset;
+    }
+
+    /* Play/Pause Center Touch Overlay */
+    .play-pause-indicator {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      color: #fff;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 12;
+    }
+    .play-pause-indicator.visible {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1.1);
+    }
+
+    /* 0.5s Auto-advance Countdown Toast */
+    .countdown-toast {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(14, 15, 20, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #fff;
+      padding: 5px 14px;
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 18;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .countdown-toast.visible { opacity: 1; }
+
+    /* Celebratory "All Caught Up" Screen */
+    .celebration-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      padding: 30px;
+      text-align: center;
+      background: #000;
+    }
+    .celebration-screen.active { display: flex; }
+    .party-emoji { font-size: 54px; margin-bottom: 16px; }
+    .celebration-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; color: #fff; }
+    .celebration-sub { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 24px; max-width: 280px; }
+    .reset-btn {
+      background: var(--ig-gradient);
+      border: none;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 22px;
+      border-radius: 22px;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(220, 39, 67, 0.4);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="top-header">
+      <div class="brand-logo">Instagram</div>
+      <div class="header-controls">
+        <button class="speed-btn" id="speedToggleBtn" onclick="cycleSpeed()" title="Adjust Playback Speed">
+          ⚡ <span id="speedDisplay">1.5x</span>
+        </button>
+        <span class="week-pill" id="weekBadge">Week {{ week_id|default('Sync') }}</span>
+      </div>
+    </header>
+
+    <!-- 5 Story Category Circles -->
+    <nav class="story-bar" id="storyBar">
+      <div class="story-bubble active" data-category="all" onclick="filterCategory('all')">
+        <div class="story-ring"><div class="story-avatar">🔥</div></div>
+        <span class="story-title">Top 100</span>
+      </div>
+      <div class="story-bubble" data-category="tech" onclick="filterCategory('tech')">
+        <div class="story-ring"><div class="story-avatar">💻</div></div>
+        <span class="story-title">Tech & AI</span>
+      </div>
+      <div class="story-bubble" data-category="health" onclick="filterCategory('health')">
+        <div class="story-ring"><div class="story-avatar">🏋️</div></div>
+        <span class="story-title">Health</span>
+      </div>
+      <div class="story-bubble" data-category="explainer" onclick="filterCategory('explainer')">
+        <div class="story-ring"><div class="story-avatar">🧠</div></div>
+        <span class="story-title">Explainer</span>
+      </div>
+      <div class="story-bubble" data-category="culture" onclick="filterCategory('culture')">
+        <div class="story-ring"><div class="story-avatar">🎨</div></div>
+        <span class="story-title">Culture</span>
+      </div>
+    </nav>
+
+    <!-- Video Feed Container -->
+    <main class="feed-container" id="feedContainer">
+      {% for item in items %}
+      <article class="reel-card" data-id="{{ item.id }}" data-category="{{ item.category }}" data-index="{{ loop.index0 }}">
+        <div class="reel-progress"><div class="reel-progress-fill"></div></div>
+        <div class="countdown-toast">Next reel in 0.5s...</div>
+        <div class="play-pause-indicator">▶</div>
+
+        <!-- HTML5 Video Tag with Next-2 Preload -->
+        <video 
+          class="reel-video"
+          src="{{ item.video_url }}"
+          poster="{{ item.thumbnail }}"
+          playsinline
+          muted
+          {% if loop.index0 < 3 %}preload="auto"{% else %}preload="metadata"{% endif %}
+          loop="false"
+        ></video>
+
+        <!-- Variant 1A: Soft Natural Bottom Scrim -->
+        <div class="bottom-scrim">
+          <div class="creator-meta">
+            <span class="creator-badge">@{{ item.creator_handle }}</span>
+            <span class="rank-pill">{{ item.rank_display }}</span>
+            <span class="views-label">{{ "{:,}".format(item.view_count) }} views</span>
+          </div>
+          <div class="caption-snippet" onclick="this.classList.toggle('expanded')">
+            {{ item.caption|default('Watch full reel on Instagram', true) }}
+          </div>
+        </div>
+      </article>
+      {% endfor %}
+
+      <!-- Celebratory All Caught Up Screen -->
+      <div class="celebration-screen" id="celebrationScreen">
+        <div class="party-emoji">🎉</div>
+        <h2 class="celebration-title">You're All Caught Up!</h2>
+        <p class="celebration-sub">You have watched all the top reels in this feed without falling into the infinite doom-scrolling loop.</p>
+        <button class="reset-btn" onclick="resetWatchedHistory()">Rewatch All Reels</button>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // State Variables
+    let currentSpeed = 1.5;
+    const availableSpeeds = [1.0, 1.25, 1.5, 1.75, 2.0];
+    let currentCategory = 'all';
+    let activeCardIndex = 0;
+    let autoAdvanceTimeout = null;
+
+    // LocalStorage Watched IDs Set
+    const STORAGE_KEY = 'ig_digest_watched_ids';
+    function getWatchedIds() {
+      try {
+        return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'));
+      } catch (e) {
+        return new Set();
+      }
+    }
+    function markAsWatched(reelId) {
+      const set = getWatchedIds();
+      set.add(reelId);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(set)));
+    }
+    function resetWatchedHistory() {
+      localStorage.removeItem(STORAGE_KEY);
+      filterCategory(currentCategory);
+    }
+
+    // Playback Speed Cycling
+    function cycleSpeed() {
+      const nextIdx = (availableSpeeds.indexOf(currentSpeed) + 1) % availableSpeeds.length;
+      currentSpeed = availableSpeeds[nextIdx];
+      document.getElementById('speedDisplay').textContent = currentSpeed + 'x';
+
+      // Apply to all video elements
+      document.querySelectorAll('.reel-video').forEach(v => {
+        v.playbackRate = currentSpeed;
+      });
+    }
+
+    // Story Category Filtering
+    function filterCategory(cat) {
+      currentCategory = cat;
+      const watched = getWatchedIds();
+      const bubbles = document.querySelectorAll('.story-bubble');
+      bubbles.forEach(b => b.classList.toggle('active', b.dataset.category === cat));
+
+      const cards = Array.from(document.querySelectorAll('.reel-card'));
+      let visibleCount = 0;
+
+      cards.forEach(card => {
+        const matchesCat = (cat === 'all' || card.dataset.category === cat);
+        const isWatched = watched.has(card.dataset.id);
+
+        if (matchesCat && !isWatched) {
+          card.style.display = 'flex';
+          visibleCount++;
+        } else {
+          card.style.display = 'none';
+          const video = card.querySelector('video');
+          if (video) { video.pause(); video.currentTime = 0; }
+        }
+      });
+
+      const celebration = document.getElementById('celebrationScreen');
+      if (visibleCount === 0) {
+        celebration.classList.add('active');
+      } else {
+        celebration.classList.remove('active');
+        // Scroll to first visible card
+        const firstVisible = cards.find(c => c.style.display !== 'none');
+        if (firstVisible) {
+          firstVisible.scrollIntoView();
+          playCardVideo(firstVisible);
+        }
+      }
+    }
+
+    // Video Playback & 0.5s Auto-Advance
+    function playCardVideo(card) {
+      if (!card) return;
+      const video = card.querySelector('.reel-video');
+      if (!video) return;
+
+      // Pause all other videos
+      document.querySelectorAll('.reel-video').forEach(v => {
+        if (v !== video) {
+          v.pause();
+          v.currentTime = 0;
+        }
+      });
+
+      video.playbackRate = currentSpeed;
+      video.muted = false; // unmuted if allowed, browser may require initial tap
+      video.play().catch(() => {
+        video.muted = true;
+        video.play();
+      });
+
+      // Preload next 2 videos for MRT travel resiliency
+      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
+        .filter(c => c.style.display !== 'none');
+      const idx = visibleCards.indexOf(card);
+      if (idx !== -1) {
+        if (visibleCards[idx + 1]) {
+          const nextV = visibleCards[idx + 1].querySelector('video');
+          if (nextV) nextV.preload = 'auto';
+        }
+        if (visibleCards[idx + 2]) {
+          const nextV2 = visibleCards[idx + 2].querySelector('video');
+          if (nextV2) nextV2.preload = 'auto';
+        }
+      }
+    }
+
+    // Wire Up Video Events (Progress & Auto-Advance)
+    document.querySelectorAll('.reel-card').forEach(card => {
+      const video = card.querySelector('.reel-video');
+      const fill = card.querySelector('.reel-progress-fill');
+      const toast = card.querySelector('.countdown-toast');
+      const playIcon = card.querySelector('.play-pause-indicator');
+
+      // Update hairline progress
+      video.addEventListener('timeupdate', () => {
+        if (video.duration) {
+          const pct = (video.currentTime / video.duration) * 100;
+          fill.style.width = pct + '%';
+        }
+      });
+
+      // Tap card to toggle play/pause
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet')) return;
+        if (video.paused) {
+          video.play();
+          playIcon.textContent = '▶';
+          playIcon.classList.add('visible');
+          setTimeout(() => playIcon.classList.remove('visible'), 400);
+        } else {
+          video.pause();
+          playIcon.textContent = '❚❚';
+          playIcon.classList.add('visible');
+          setTimeout(() => playIcon.classList.remove('visible'), 400);
+        }
+      });
+
+      // Video Ended Event -> 0.5s auto advance
+      video.addEventListener('ended', () => {
+        markAsWatched(card.dataset.id);
+        toast.classList.add('visible');
+
+        clearTimeout(autoAdvanceTimeout);
+        autoAdvanceTimeout = setTimeout(() => {
+          toast.classList.remove('visible');
+          advanceToNextReel(card);
+        }, 500); // exactly 0.5s
+      });
+    });
+
+    // Advance to next unread visible card
+    function advanceToNextReel(currentCard) {
+      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
+        .filter(c => c.style.display !== 'none');
+      const currentIndex = visibleCards.indexOf(currentCard);
+
+      if (currentIndex !== -1 && currentIndex + 1 < visibleCards.length) {
+        const nextCard = visibleCards[currentIndex + 1];
+        nextCard.scrollIntoView({ behavior: 'smooth' });
+        playCardVideo(nextCard);
+      } else {
+        // Reached end of unread feed
+        filterCategory(currentCategory);
+      }
+    }
+
+    // IntersectionObserver to play video when snapped into view
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          playCardVideo(entry.target);
+        }
+      });
+    }, { threshold: 0.6 });
+
+    document.querySelectorAll('.reel-card').forEach(c => observer.observe(c));
+
+    // Initialize
+    filterCategory('all');
+  </script>
+</body>
+</html>
