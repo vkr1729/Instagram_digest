@@ -55,11 +55,11 @@ def run_full_sync(
     # Organize creators by category for balanced round-robin discovery
     by_cat: dict[str, list[dict[str, Any]]] = {}
     for src in active_sources:
-        cat = src.get("category", "culture")
+        cat = src.get("category", "entertainment")
         by_cat.setdefault(cat, []).append(src)
 
     ordered_sources: list[dict[str, Any]] = []
-    cats = ["tech", "health", "explainer", "culture"]
+    cats = ["entertainment", "finance", "ai_tech", "niche", "health", "food"]
     max_len = max((len(by_cat.get(c, [])) for c in cats), default=0)
     for i in range(max_len):
         for c in cats:

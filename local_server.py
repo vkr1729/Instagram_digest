@@ -157,7 +157,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     source_map[h] = {
                         "handle": h,
                         "name": s.get("name", h),
-                        "category": s.get("category", "culture"),
+                        "category": s.get("category", "entertainment"),
                         "is_blacklisted": (h in blacklist),
                     }
 
@@ -166,7 +166,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     source_map[bh] = {
                         "handle": bh,
                         "name": bh,
-                        "category": "culture",
+                        "category": "entertainment",
                         "is_blacklisted": True,
                     }
 
@@ -374,7 +374,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                         sources.append({
                             "handle": h,
                             "name": h,
-                            "category": "culture",
+                            "category": "entertainment",
                             "enabled": True
                         })
 
