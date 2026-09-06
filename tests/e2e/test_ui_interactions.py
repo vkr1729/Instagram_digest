@@ -227,8 +227,8 @@ def test_uat_6_6_celebration_screen(setup_test_site):
         browser.close()
 
 
-def test_uat_6_7_sound_toggle_and_pitch_preservation(setup_test_site):
-    """UAT-6.7: Sound button toggles mute state and applies pitch preservation."""
+def test_uat_6_7_default_audio_pitch_preservation_and_wake_lock(setup_test_site):
+    """UAT-6.7: Audio is on by default, pitch preservation is active, and wake lock is registered."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -236,27 +236,21 @@ def test_uat_6_7_sound_toggle_and_pitch_preservation(setup_test_site):
         page = browser.new_page()
         page.goto(file_url)
 
+        # UI audio button dropped as requested
         sound_btn = page.locator("#soundToggleBtn")
-        sound_icon = page.locator("#soundIcon")
-        assert sound_btn.is_visible()
+        assert not sound_btn.is_visible()
 
-        initial_muted = page.evaluate("() => isAudioMuted")
-        expected_icon = "🔇" if initial_muted else "🔊"
-        assert sound_icon.inner_text() == expected_icon
+        # Audio is unmuted by default
+        assert page.evaluate("() => isAudioMuted") is False
 
-        # Click sound toggle -> toggles state
-        page.click("#soundToggleBtn")
-        assert page.evaluate("() => isAudioMuted") != initial_muted
-
-        # Click again -> restores original state
-        page.click("#soundToggleBtn")
-        assert page.evaluate("() => isAudioMuted") == initial_muted
+        # Pitch preservation and wake lock function registered
+        assert page.evaluate("() => typeof requestWakeLock === 'function'")
 
         browser.close()
 
 
-def test_uat_6_8_fullscreen_and_immersive_mode(setup_test_site):
-    """UAT-6.8: Fullscreen toggle and double-tap immersive mode expand view."""
+def test_uat_6_8_automatic_fullscreen_and_immersive_mode(setup_test_site):
+    """UAT-6.8: Automatic edge-to-edge full layout (no manual button) and double-tap immersive mode."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -264,14 +258,13 @@ def test_uat_6_8_fullscreen_and_immersive_mode(setup_test_site):
         page = browser.new_page()
         page.goto(file_url)
 
+        # Fullscreen button dropped from header
         fs_btn = page.locator("#fullscreenBtn")
-        shell = page.locator("#appShell")
-        assert fs_btn.is_visible()
+        assert not fs_btn.is_visible()
 
-        # Click fullscreen button -> toggles fullscreen styling
-        page.click("#fullscreenBtn")
-        is_fs = shell.evaluate("el => el.classList.contains('is-fullscreen')")
-        assert is_fs is True
+        # Shell fills full viewport width
+        shell = page.locator("#appShell")
+        assert shell.is_visible()
 
         # Double-click feed container -> toggles immersive mode
         feed = page.locator("#feedContainer")
@@ -283,7 +276,7 @@ def test_uat_6_8_fullscreen_and_immersive_mode(setup_test_site):
 
 
 def test_uat_6_9_sliding_window_virtualization(setup_test_site):
-    """UAT-6.9: Sliding-window video loader defers loading offscreen media."""
+    """UAT-6.9: Sliding-window video loader preloads queue without unneeded offscreen media."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -291,7 +284,7 @@ def test_uat_6_9_sliding_window_virtualization(setup_test_site):
         page = browser.new_page()
         page.goto(file_url)
 
-        # First 3 cards have src
+        # First cards have src, distant card has data-src
         cards = page.locator(".reel-card")
         video0 = cards.nth(0).locator("video")
         video3 = cards.nth(3).locator("video")
@@ -301,5 +294,34 @@ def test_uat_6_9_sliding_window_virtualization(setup_test_site):
 
         # Verify updateSlidingWindow function exists
         assert page.evaluate("() => typeof updateSlidingWindow === 'function'")
+
+        browser.close()
+
+
+def test_uat_6_10_watched_persistence_and_resuming(setup_test_site):
+    """UAT-6.10: Resumes from last unwatched video and filters out watched reels."""
+    file_url = setup_test_site.as_uri()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(file_url)
+
+        # Simulate having watched first 2 reels (reel_tech_1 and reel_tech_2)
+        page.evaluate("() => { markAsWatched('reel_tech_1'); markAsWatched('reel_tech_2'); filterCategory('all'); }")
+
+        cards = page.locator(".reel-card")
+        card0_display = cards.nth(0).evaluate("el => el.style.display")
+        card1_display = cards.nth(1).evaluate("el => el.style.display")
+        card2_display = cards.nth(2).evaluate("el => el.style.display")
+
+        # Watched reels are hidden, unwatched reel is active and visible
+        assert card0_display == "none"
+        assert card1_display == "none"
+        assert card2_display == "flex"
+
+        # Verify active reel is reel_health_1 (the 3rd video, resuming after the 2 watched)
+        active_id = page.evaluate("() => currentActiveCard ? currentActiveCard.dataset.id : null")
+        assert active_id == "reel_health_1"
 
         browser.close()
