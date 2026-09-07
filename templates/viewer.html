@@ -546,29 +546,44 @@
     .creator-meta {
       display: flex;
       align-items: center;
-      gap: 7px;
-      margin-bottom: 6px;
-      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 2px;
+      flex-wrap: nowrap;
+      white-space: nowrap;
+      width: 100%;
     }
     .creator-badge {
       font-size: 13px;
       font-weight: 700;
       color: #fff;
       text-decoration: none;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 1;
+      white-space: nowrap;
     }
     .rank-pill {
       font-size: 11px;
       font-weight: 700;
       color: var(--accent-orange);
       background: rgba(240, 148, 51, 0.15);
-      padding: 2px 7px;
+      padding: 2px 6px;
       border-radius: 8px;
       border: 1px solid rgba(240, 148, 51, 0.3);
+      flex-shrink: 0;
     }
     .views-label {
       font-size: 11px;
       color: #a1a1aa;
+      flex-shrink: 0;
+    }
+    .reel-actions {
       margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
     }
     .boost-speed-btn {
       background: rgba(255, 255, 255, 0.16);
@@ -922,17 +937,21 @@
             <span class="creator-badge">@{{ item.creator_handle }}</span>
             <span class="rank-pill">{{ item.rank_display }}</span>
             <span class="views-label">{{ "{:,}".format(item.view_count) }} views</span>
-            <button class="boost-speed-btn" onclick="toggleReelSpeed(this, event)" title="Toggle 2x Speed for this reel">2x</button>
-            <button class="whatsapp-share-btn" onclick="shareReelWhatsApp('{{ item.id }}', '{{ item.r2_url }}', event)" title="Share via WhatsApp">
-              <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.312.045-.694.062-2.146-.539-1.854-.768-3.04-2.656-3.134-2.779-.093-.122-.746-.992-.746-1.892 0-.899.472-1.34.641-1.523.169-.183.37-.229.493-.229.123 0 .247.001.353.006.113.006.264-.043.414.316.155.371.53 1.293.576 1.386.046.093.078.201.016.324-.063.124-.093.2-.185.31-.093.109-.196.243-.28.327-.094.093-.192.195-.082.384.11.189.489.807 1.05 1.306.721.642 1.328.841 1.517.933.189.093.298.077.408-.046.11-.124.471-.548.597-.735.124-.188.25-.157.418-.094.169.063 1.07.505 1.254.597.185.093.308.138.354.216.045.077.045.449-.099.854z"/></svg> Share
-            </button>
-            {% if is_local %}
-            <button class="unselect-channel-btn" onclick="unselectCreator('{{ item.creator_handle }}', event)" title="Unselect @{{ item.creator_handle }} (Shortcut: B)">🚫</button>
-            {% endif %}
+            <div class="reel-actions">
+              <button class="boost-speed-btn" onclick="toggleReelSpeed(this, event)" title="Toggle 2x Speed for this reel">2x</button>
+              <button class="whatsapp-share-btn" onclick="shareReelWhatsApp('{{ item.id }}', '{{ item.r2_url }}', event)" title="Share via WhatsApp">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.312.045-.694.062-2.146-.539-1.854-.768-3.04-2.656-3.134-2.779-.093-.122-.746-.992-.746-1.892 0-.899.472-1.34.641-1.523.169-.183.37-.229.493-.229.123 0 .247.001.353.006.113.006.264-.043.414.316.155.371.53 1.293.576 1.386.046.093.078.201.016.324-.063.124-.093.2-.185.31-.093.109-.196.243-.28.327-.094.093-.192.195-.082.384.11.189.489.807 1.05 1.306.721.642 1.328.841 1.517.933.189.093.298.077.408-.046.11-.124.471-.548.597-.735.124-.188.25-.157.418-.094.169.063 1.07.505 1.254.597.185.093.308.138.354.216.045.077.045.449-.099.854z"/></svg> Share
+              </button>
+              {% if is_local %}
+              <button class="unselect-channel-btn" onclick="unselectCreator('{{ item.creator_handle }}', event)" title="Unselect @{{ item.creator_handle }} (Shortcut: B)">🚫</button>
+              {% endif %}
+            </div>
           </div>
+          {% if item.caption and not item.caption.startswith('Reel by @') and item.caption != 'Watch full reel on Instagram' %}
           <div class="caption-snippet" onclick="this.classList.toggle('expanded')">
-            {{ item.caption|default('Watch full reel on Instagram', true) }}
+            {{ item.caption }}
           </div>
+          {% endif %}
         </div>
       </article>
       {% endfor %}
@@ -1116,7 +1135,7 @@
 
       if (btn) {
         btn.classList.toggle('active', !isBoosted);
-        btn.textContent = !isBoosted ? '⚡ 2x' : '2x';
+        btn.textContent = '2x';
       }
       showToast(targetRate === 2.0 ? 'Boosted to 2x for this reel' : `Speed reset to ${targetRate}x`);
     }
@@ -1129,17 +1148,26 @@
       const basePath = inArchive
         ? origin + window.location.pathname.replace(/\/archive\/.*$/, '')
         : origin + window.location.pathname.replace(/\/[^\/]*$/, '');
-      const shareUrl = `${basePath}/share/${reelId}.html`;
-      const text = `Watch this reel on Instagram Digest: ${shareUrl}`;
+      const shareUrl = `${basePath}/share/${reelId}.html?v=2`;
+
+      window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(shareUrl)}`;
+
+      if (navigator.share) {
+        navigator.share({
+          url: shareUrl
+        }).catch(() => {
+          window.location.href = window.__dispatchedShareUrl;
+        });
+        return;
+      }
 
       const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
       if (isMobile) {
-        // Direct WhatsApp deep link on mobile prevents opening orphaned blank SFSafariViewController
-        window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(text)}`;
+        // Direct WhatsApp deep link on mobile without prefix text allows WhatsApp to unfurl preview
         window.location.href = window.__dispatchedShareUrl;
       } else {
         // Desktop browser fallback
-        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(shareUrl)}`, '_blank');
       }
     }
 

@@ -127,6 +127,32 @@ def test_bottom_2x_booster_and_auto_reset(mobile_page: Page):
     assert "active" not in second_card.locator(".boost-speed-btn").evaluate("el => el.className")
 
 
+def test_reel_actions_layout_nowrap(mobile_page: Page):
+    """Verify 2x speed button and WhatsApp share button remain on a single line and never wrap when toggled."""
+    first_card = mobile_page.locator(".reel-card").first
+    boost_btn = first_card.locator(".boost-speed-btn")
+    share_btn = first_card.locator(".whatsapp-share-btn")
+
+    assert boost_btn.is_visible()
+    assert share_btn.is_visible()
+
+    # Initial vertical alignment on the same row
+    box1 = boost_btn.bounding_box()
+    box2 = share_btn.bounding_box()
+    assert abs(box1["y"] - box2["y"]) < 4, "Buttons must be on the same horizontal row"
+
+    # Click 2x booster
+    boost_btn.click()
+
+    # Text must stay compact ('2x', not expanding to '⚡ 2x' which forced wrapping)
+    assert boost_btn.text_content().strip() == "2x"
+
+    # Verify buttons remain strictly on the same row without wrapping
+    box1_after = boost_btn.bounding_box()
+    box2_after = share_btn.bounding_box()
+    assert abs(box1_after["y"] - box2_after["y"]) < 4, "Buttons must remain on the same horizontal row after 2x activation"
+
+
 def test_double_tap_fullscreen_toggle_and_return(mobile_page: Page):
     """Verify center double-tap toggles fullscreen on and OFF (resolving Feedback #5)."""
     shell = mobile_page.locator("#appShell")

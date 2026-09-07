@@ -82,3 +82,53 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
     assert 'href="/channels"' in local_html
     assert 'class="unselect-channel-btn"' not in r2_html
     assert 'href="/channels"' not in r2_html
+
+
+def test_build_site_share_pages(tmp_path, monkeypatch):
+    """Verify share/{reel_id}.html generation, 1200x630 OG tags, and single video view."""
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+
+    sample_digest = {
+        "run_date": "2026-09-06",
+        "items": [
+            {
+                "id": "reel_test_share",
+                "creator_handle": "testcreator",
+                "creator_name": "Test Creator",
+                "category": "ai_tech",
+                "rank": 1,
+                "rank_display": "#01",
+                "view_count": 100000,
+                "caption": "Reel by @testcreator",  # Redundant caption that should be omitted
+                "thumbnail": "https://pub-r2.dev/thumbnails/reel_test_share.jpg",
+                "video_url": "https://pub-r2.dev/videos/reel_test_share.mp4",
+            }
+        ]
+    }
+
+    r2_url_map = {
+        "reel_test_share": "https://pub-r2.dev/videos/reel_test_share.mp4"
+    }
+
+    build_site(sample_digest, r2_uploaded_urls=r2_url_map)
+
+    share_file = tmp_path / "share" / "reel_test_share.html"
+    assert share_file.exists(), "Share HTML page must be generated"
+
+    html = share_file.read_text(encoding="utf-8")
+
+    # Verify 1200x630 OG image specifications
+    assert '<meta property="og:image:width" content="1200">' in html
+    assert '<meta property="og:image:height" content="630">' in html
+    assert 'content="https://pub-r2.dev/thumbnails/reel_test_share.jpg"' in html
+
+    # Verify single-video player
+    assert '<video src="https://pub-r2.dev/videos/reel_test_share.mp4"' in html
+
+    # Verify 'Open in Instagram Digest App' button is REMOVED
+    assert "Open in Instagram Digest App" not in html
+
+    # Verify redundant 'Reel by @' is NOT displayed in body or description
+    assert '<p style="margin:14px 0 4px' not in html
+    assert 'content="Watch @testcreator on Instagram Digest"' in html
+

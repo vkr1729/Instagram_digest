@@ -105,7 +105,11 @@ def build_site(
             if matches:
                 try:
                     subprocess.run(
-                        ["ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]), "-vframes", "1", "-q:v", "2", str(thumb_file)],
+                        [
+                            "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]),
+                            "-vf", "split[a][b];[a]scale=1200:630:force_original_aspect_ratio=increase,crop=1200:630,boxblur=25:5[bg];[b]scale=-1:630[fg];[bg][fg]overlay=(W-w)/2:0",
+                            "-vframes", "1", "-q:v", "2", str(thumb_file)
+                        ],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
                     )
                 except Exception:
@@ -181,10 +185,17 @@ def build_site(
         if not reel_id:
             continue
         thumb = item.get("thumbnail") or f"{config.PAGES_BASE_URL}/apple-touch-icon.png"
-        caption = (item.get("caption") or "Watch on Instagram Digest").replace('"', '&quot;').replace('<', '&lt;')
+        raw_caption = (item.get("caption") or "").replace('"', '&quot;').replace('<', '&lt;').strip()
         handle = item.get("creator_handle", "")
         rank_dsp = item.get("rank_display", "#01")
         video_url = item.get("r2_url", "")
+
+        caption_block = ""
+        if raw_caption and not raw_caption.startswith("Reel by @") and raw_caption != "Watch on Instagram Digest":
+            caption_block = f'<p style="margin:14px 0 4px;font-size:13px;color:#d1d5db;line-height:1.4;text-align:left;width:100%;">{raw_caption[:180]}</p>'
+
+        og_desc = raw_caption[:220] if (raw_caption and not raw_caption.startswith("Reel by @")) else f"Watch @{handle} on Instagram Digest"
+
         share_page_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -196,13 +207,13 @@ def build_site(
   <meta property="og:site_name" content="Instagram Digest">
   <meta property="og:type" content="video.other">
   <meta property="og:title" content="Reel by @{handle} ({rank_dsp})">
-  <meta property="og:description" content="{caption[:220]}">
+  <meta property="og:description" content="{og_desc}">
   <meta property="og:url" content="{config.PAGES_BASE_URL}/share/{reel_id}.html">
   <meta property="og:image" content="{thumb}">
   <meta property="og:image:secure_url" content="{thumb}">
   <meta property="og:image:type" content="image/jpeg">
-  <meta property="og:image:width" content="720">
-  <meta property="og:image:height" content="1280">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
 
   <!-- Video Stream for Browser Players -->
   <meta property="og:video" content="{video_url}">
@@ -215,7 +226,7 @@ def build_site(
   <!-- Twitter / X Summary Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Reel by @{handle} ({rank_dsp})">
-  <meta name="twitter:description" content="{caption[:220]}">
+  <meta name="twitter:description" content="{og_desc}">
   <meta name="twitter:image" content="{thumb}">
 </head>
 <body style="background:#000;color:#fff;margin:0;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif;">
@@ -227,8 +238,7 @@ def build_site(
     <div style="position:relative;width:100%;aspect-ratio:9/16;background:#111;border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.8);">
       <video src="{video_url}" poster="{thumb}" controls playsinline autoplay loop style="width:100%;height:100%;object-fit:cover;display:block;"></video>
     </div>
-    <p style="margin:14px 0 8px;font-size:13px;color:#d1d5db;line-height:1.4;text-align:left;width:100%;">{caption[:180]}</p>
-    <a href="../index.html?reel={reel_id}" style="margin-top:10px;width:100%;background:#f09433;color:#000;font-weight:700;font-size:14px;padding:12px 0;border-radius:24px;text-align:center;text-decoration:none;display:block;box-shadow:0 4px 15px rgba(240,148,51,0.4);">Open in Instagram Digest App &rarr;</a>
+    {caption_block}
   </div>
 </body>
 </html>"""
