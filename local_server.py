@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import threading
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -20,13 +21,61 @@ import extractor
 logger = logging.getLogger("InstagramDigest.LocalServer")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+_STATE_LOCK = threading.Lock()
+
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Safely write JSON to disk via atomic replace under process/thread uniqueness."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}_{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
 
 class LocalDigestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler supporting partial video range streaming and on-demand sync API."""
     protocol_version = "HTTP/1.1"
 
     def do_HEAD(self):
-        self.do_GET()
+        parsed = urlparse(self.path)
+        clean_path = parsed.path
+
+        if clean_path in ("/", "/index.html"):
+            local_index = config.SITE_DIR / "local_index.html"
+            if not local_index.exists():
+                local_index = config.SITE_DIR / "index.html"
+            if local_index.exists():
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(local_index.stat().st_size))
+                self.end_headers()
+                return
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+
+        if clean_path.startswith("/videos/"):
+            video_rel = clean_path.replace("/videos/", "")
+            video_path = config.VIDEOS_DIR / video_rel
+            if video_path.exists() and video_path.is_file():
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(video_path.stat().st_size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+
+        file_path = config.SITE_DIR / clean_path.lstrip("/")
+        if file_path.exists() and file_path.is_file():
+            content_type = self.guess_type(str(file_path))
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_path.stat().st_size))
+            self.end_headers()
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.end_headers()
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -215,24 +264,24 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             action = payload.get("action", "add")
             reel_id = payload.get("reel_id")
 
-            watched_data = {}
-            if config.WATCHED_FILE.exists():
+            with _STATE_LOCK:
+                watched_data = {}
+                if config.WATCHED_FILE.exists():
+                    try:
+                        watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+
+                if action == "reset":
+                    watched_data[week_id] = []
+                elif reel_id:
+                    current_list = list(dict.fromkeys(watched_data.get(week_id, []) + [reel_id]))
+                    watched_data[week_id] = current_list
+
                 try:
-                    watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            if action == "reset":
-                watched_data[week_id] = []
-            elif reel_id:
-                current_list = list(dict.fromkeys(watched_data.get(week_id, []) + [reel_id]))
-                watched_data[week_id] = current_list
-
-            try:
-                config.WATCHED_FILE.parent.mkdir(parents=True, exist_ok=True)
-                config.WATCHED_FILE.write_text(json.dumps(watched_data, indent=2), encoding="utf-8")
-            except Exception as e:
-                logger.error("Failed writing watched.json: %s", e)
+                    _atomic_write_json(config.WATCHED_FILE, watched_data)
+                except Exception as e:
+                    logger.error("Failed writing watched.json: %s", e)
 
             resp = {"success": True, "watched": watched_data.get(week_id, [])}
             body = json.dumps(resp).encode("utf-8")
@@ -254,24 +303,24 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             week_id = payload.get("week_id", "default")
             watched_ids = payload.get("watched_ids", [])
 
-            watched_data = {}
-            if config.WATCHED_FILE.exists():
+            with _STATE_LOCK:
+                watched_data = {}
+                if config.WATCHED_FILE.exists():
+                    try:
+                        watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+
+                current_set = set(watched_data.get(week_id, []))
+                for wid in watched_ids:
+                    if wid:
+                        current_set.add(wid)
+
+                watched_data[week_id] = list(current_set)
                 try:
-                    watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            current_set = set(watched_data.get(week_id, []))
-            for wid in watched_ids:
-                if wid:
-                    current_set.add(wid)
-
-            watched_data[week_id] = list(current_set)
-            try:
-                config.WATCHED_FILE.parent.mkdir(parents=True, exist_ok=True)
-                config.WATCHED_FILE.write_text(json.dumps(watched_data, indent=2), encoding="utf-8")
-            except Exception as e:
-                logger.error("Failed bulk writing watched.json: %s", e)
+                    _atomic_write_json(config.WATCHED_FILE, watched_data)
+                except Exception as e:
+                    logger.error("Failed bulk writing watched.json: %s", e)
 
             resp = {"success": True, "watched": watched_data.get(week_id, [])}
             body = json.dumps(resp).encode("utf-8")
@@ -293,36 +342,36 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             handle = payload.get("creator_handle", "").strip().lower().replace("@", "")
             action = payload.get("action", "add")
 
-            data = {"creators": []}
-            if config.BLACKLIST_FILE.exists():
+            with _STATE_LOCK:
+                data = {"creators": []}
+                if config.BLACKLIST_FILE.exists():
+                    try:
+                        data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+
+                creators = set(c.lower().replace("@", "") for c in data.get("creators", []))
+                if action == "remove":
+                    creators.discard(handle)
+                elif handle:
+                    creators.add(handle)
+
+                data["creators"] = sorted(list(creators))
                 try:
-                    data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            creators = set(c.lower().replace("@", "") for c in data.get("creators", []))
-            if action == "remove":
-                creators.discard(handle)
-            elif handle:
-                creators.add(handle)
-
-            data["creators"] = sorted(list(creators))
-            try:
-                config.BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-                config.BLACKLIST_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                logger.info("Updated blacklist.json with %d creators.", len(data["creators"]))
-            except Exception as e:
-                logger.error("Failed saving blacklist.json: %s", e)
-
-            # Also remove creator from sources.json so it never syncs or extracts again
-            if handle and action == "add" and config.SOURCES_FILE.exists():
-                try:
-                    sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
-                    new_sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") != handle]
-                    config.SOURCES_FILE.write_text(json.dumps(new_sources, indent=2, ensure_ascii=False), encoding="utf-8")
-                    logger.info("Removed @%s from sources.json permanently.", handle)
+                    _atomic_write_json(config.BLACKLIST_FILE, data)
+                    logger.info("Updated blacklist.json with %d creators.", len(data["creators"]))
                 except Exception as e:
-                    logger.warning("Could not prune sources.json: %s", e)
+                    logger.error("Failed saving blacklist.json: %s", e)
+
+                # Also remove creator from sources.json so it never syncs or extracts again
+                if handle and action == "add" and config.SOURCES_FILE.exists():
+                    try:
+                        sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                        new_sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") != handle]
+                        _atomic_write_json(config.SOURCES_FILE, new_sources)
+                        logger.info("Removed @%s from sources.json permanently.", handle)
+                    except Exception as e:
+                        logger.warning("Could not prune sources.json: %s", e)
 
             resp = {"success": True, "blacklisted": data["creators"]}
             body = json.dumps(resp).encode("utf-8")
@@ -345,47 +394,47 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             action = payload.get("action", "add")  # "add" to mute, "remove" to restore
             clean_handles = set(h.lower().replace("@", "").strip() for h in handles_in if h)
 
-            b_data = {"creators": []}
-            if config.BLACKLIST_FILE.exists():
+            with _STATE_LOCK:
+                b_data = {"creators": []}
+                if config.BLACKLIST_FILE.exists():
+                    try:
+                        b_data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+
+                blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
+
+                sources = []
+                if config.SOURCES_FILE.exists():
+                    try:
+                        sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+
+                if action == "add":
+                    blacklist.update(clean_handles)
+                    # Prune from sources.json
+                    sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") not in clean_handles]
+                elif action == "remove":
+                    blacklist.difference_update(clean_handles)
+                    # Restore to sources.json if missing
+                    existing_handles = set(s.get("handle", "").lower().replace("@", "") for s in sources)
+                    for h in clean_handles:
+                        if h not in existing_handles:
+                            sources.append({
+                                "handle": h,
+                                "name": h,
+                                "category": "entertainment",
+                                "enabled": True
+                            })
+
+                b_data["creators"] = sorted(list(blacklist))
                 try:
-                    b_data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
-
-            sources = []
-            if config.SOURCES_FILE.exists():
-                try:
-                    sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            if action == "add":
-                blacklist.update(clean_handles)
-                # Prune from sources.json
-                sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") not in clean_handles]
-            elif action == "remove":
-                blacklist.difference_update(clean_handles)
-                # Restore to sources.json if missing
-                existing_handles = set(s.get("handle", "").lower().replace("@", "") for s in sources)
-                for h in clean_handles:
-                    if h not in existing_handles:
-                        sources.append({
-                            "handle": h,
-                            "name": h,
-                            "category": "entertainment",
-                            "enabled": True
-                        })
-
-            b_data["creators"] = sorted(list(blacklist))
-            try:
-                config.BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-                config.BLACKLIST_FILE.write_text(json.dumps(b_data, indent=2), encoding="utf-8")
-                config.SOURCES_FILE.write_text(json.dumps(sources, indent=2, ensure_ascii=False), encoding="utf-8")
-                logger.info("Bulk updated channels: %d muted total, %d active sources.", len(b_data["creators"]), len(sources))
-            except Exception as e:
-                logger.error("Error writing bulk channel updates: %s", e)
+                    _atomic_write_json(config.BLACKLIST_FILE, b_data)
+                    _atomic_write_json(config.SOURCES_FILE, sources)
+                    logger.info("Bulk updated channels: %d muted total, %d active sources.", len(b_data["creators"]), len(sources))
+                except Exception as e:
+                    logger.error("Error writing bulk channel updates: %s", e)
 
             resp = {
                 "success": True,
@@ -482,4 +531,8 @@ def run_local_server(port: int = 8080) -> None:
 
 
 if __name__ == "__main__":
-    run_local_server()
+    import argparse
+    parser = argparse.ArgumentParser(description="Instagram Digest Local Server")
+    parser.add_argument("--port", type=int, default=8080, help="Port to bind (default: 8080)")
+    args = parser.parse_args()
+    run_local_server(port=args.port)

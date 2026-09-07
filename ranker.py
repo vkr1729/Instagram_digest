@@ -47,13 +47,16 @@ def compute_viral_score(reel: dict[str, Any], baseline_views: float) -> float:
     damped_reach = math.pow(reach_ratio, 0.75) * log_scale
 
     # 3. Bayesian-smoothed engagement rate (weights comments 2x, Laplace smoothing prior)
-    smooth_engagement = (likes + (comments * 2.0) + 5.0) / (views + 100.0)
+    if reel.get("metrics_estimated"):
+        smooth_engagement = 0.0
+    else:
+        smooth_engagement = (likes + (comments * 2.0) + 5.0) / (views + 100.0)
 
     # 4. Composite viral score
     score = damped_reach * (1.0 + (smooth_engagement * 4.0))
 
     # 5. Mild recency bonus within 7-day window if timestamp is present
-    ts = reel.get("timestamp")
+    ts = reel.get("timestamp") or 0
     if ts:
         age_hours = max(0.0, (datetime.now(timezone.utc).timestamp() - ts) / 3600.0)
         recency_factor = 1.0 / math.pow((age_hours + 12.0) / 24.0, 0.15)

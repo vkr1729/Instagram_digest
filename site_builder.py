@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,9 +17,32 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 import config
+import storage_r2
 
 logger = logging.getLogger("InstagramDigest.SiteBuilder")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _prune_site_assets(current_ids: set[str], keep_week_ids: set[str]) -> None:
+    """Prune stale share pages, thumbnails, and archives no longer in current retention window."""
+    share_dir = config.SITE_DIR / "share"
+    if share_dir.exists():
+        for f in share_dir.glob("*.html"):
+            if f.stem not in current_ids:
+                f.unlink(missing_ok=True)
+
+    thumb_dir = config.SITE_DIR / "thumbnails"
+    if thumb_dir.exists():
+        for f in thumb_dir.glob("*.jpg"):
+            if f.stem not in current_ids:
+                f.unlink(missing_ok=True)
+
+    archive_dir = config.SITE_DIR / "archive"
+    if archive_dir.exists():
+        for f in archive_dir.glob("*.html"):
+            wk = f.stem.replace("local_", "")
+            if wk not in keep_week_ids:
+                f.unlink(missing_ok=True)
 
 
 def build_site(
@@ -49,14 +73,16 @@ def build_site(
     r2_items = []
     local_items = []
     url_map = r2_uploaded_urls or {}
-
     for item in raw_items:
+        if r2_uploaded_urls is not None and item.get("id") not in url_map:
+            continue  # never render a card we cannot play
+
         r2_item = dict(item)
         local_item = dict(item)
 
         # Video URL resolution
         video_filename = f"{item.get('rank', 1):02d}_{item.get('creator_handle')}_{item.get('id')}.mp4"
-        r2_url = url_map.get(item["id"]) or f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{video_filename}"
+        r2_url = url_map.get(item.get("id")) or f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{video_filename}"
         local_url = f"/videos/{week_id}/{video_filename}"
 
         r2_item["video_url"] = r2_url
@@ -74,14 +100,26 @@ def build_site(
         r2_items.append(r2_item)
         local_items.append(local_item)
 
-    # Discover available weekly batches
+    # Discover available weekly batches (only list weeks that still exist locally or on R2)
     archive_dir = config.SITE_DIR / "archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     available_week_ids = set()
+    s3 = storage_r2.get_s3_client()
     if hasattr(config, "DIGESTS_DIR") and config.DIGESTS_DIR.exists():
         for f in config.DIGESTS_DIR.glob("*.json"):
-            available_week_ids.add(f.stem)
+            wk = f.stem
+            local_has_videos = (config.VIDEOS_DIR / wk).exists() and any((config.VIDEOS_DIR / wk).glob("*.mp4"))
+            r2_has_videos = False
+            if s3 and config.R2_PUBLIC_DOMAIN:
+                try:
+                    resp = s3.list_objects_v2(Bucket=config.R2_BUCKET_NAME, Prefix=f"videos/{wk}/", MaxKeys=1)
+                    if resp.get("KeyCount", 0) > 0:
+                        r2_has_videos = True
+                except Exception:
+                    pass
+            if local_has_videos or r2_has_videos or wk == week_id:
+                available_week_ids.add(wk)
     available_week_ids.add(week_id)
 
     # Limit available weeks to RETENTION_WEEKS
@@ -96,9 +134,12 @@ def build_site(
     thumb_dir.mkdir(parents=True, exist_ok=True)
     week_video_dir = config.VIDEOS_DIR / week_id
 
-    for item in r2_items:
-        reel_id = item.get("id", "")
-        item["share_url"] = f"{config.PAGES_BASE_URL}/share/{reel_id}.html"
+    # Prune stale assets (C6)
+    current_ids = {i["id"] for i in r2_items if i.get("id")}
+    _prune_site_assets(current_ids=current_ids, keep_week_ids=set(sorted_weeks))
+
+    # Multi-threaded thumbnail generation with -q:v 5 (B4, P3)
+    def _make_thumb(reel_id: str) -> None:
         thumb_file = thumb_dir / f"{reel_id}.jpg"
         if not thumb_file.exists() and week_video_dir.exists() and shutil.which("ffmpeg"):
             matches = list(week_video_dir.glob(f"*_{reel_id}.mp4"))
@@ -108,12 +149,20 @@ def build_site(
                         [
                             "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]),
                             "-vf", "split[a][b];[a]scale=1200:630:force_original_aspect_ratio=increase,crop=1200:630,boxblur=25:5[bg];[b]scale=-1:630[fg];[bg][fg]overlay=(W-w)/2:0",
-                            "-vframes", "1", "-q:v", "2", str(thumb_file)
+                            "-vframes", "1", "-q:v", "5", str(thumb_file)
                         ],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
                     )
                 except Exception:
                     pass
+
+    with ThreadPoolExecutor(max_workers=4) as thumb_executor:
+        list(thumb_executor.map(_make_thumb, list(current_ids)))
+
+    for item in r2_items:
+        reel_id = item.get("id", "")
+        item["share_url"] = f"{config.PAGES_BASE_URL}/share/{reel_id}.html"
+        thumb_file = thumb_dir / f"{reel_id}.jpg"
         if thumb_file.exists():
             item["thumbnail"] = f"{config.PAGES_BASE_URL}/thumbnails/{reel_id}.jpg"
         elif not item.get("thumbnail"):
@@ -227,7 +276,7 @@ def build_site(
       <span style="background:rgba(255,255,255,0.15);padding:3px 8px;border-radius:12px;font-size:12px;font-weight:600;">{rank_dsp}</span>
     </div>
     <div style="position:relative;width:100%;aspect-ratio:9/16;background:#111;border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.8);">
-      <video src="{video_url}" poster="{thumb}" controls playsinline autoplay loop style="width:100%;height:100%;object-fit:cover;display:block;"></video>
+      <video src="{video_url}" poster="{thumb}" controls playsinline autoplay loop onerror="this.outerHTML='<p style=\\'padding:40px;color:#999;text-align:center\\'>This reel has expired from the weekly digest.</p>'" style="width:100%;height:100%;object-fit:cover;display:block;"></video>
     </div>
     {caption_block}
   </div>
@@ -239,9 +288,14 @@ def build_site(
     (archive_dir / f"{week_id}.html").write_text(rendered_r2, encoding="utf-8")
     (archive_dir / f"local_{week_id}.html").write_text(rendered_local, encoding="utf-8")
 
-    # 4. Write data.json API payload
+    # 4. Write data.json API payload (pruned to playable reels when a URL map was provided)
+    data_payload = dict(digest_data)
+    data_payload["run_date"] = week_id
+    if r2_uploaded_urls is not None:
+        data_payload["items"] = [i for i in raw_items if i.get("id") in current_ids]
+        data_payload["count"] = len(data_payload["items"])
     (config.SITE_DIR / "data.json").write_text(
-        json.dumps(digest_data, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(data_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
     # 5. Write .nojekyll for GitHub Pages

@@ -188,8 +188,8 @@ def test_uat_6_4_and_6_5_auto_advance_and_watched_persistence(setup_test_site):
         # Wait 700ms (0.5s timer + buffer)
         page.wait_for_timeout(700)
 
-        # Verify watched ID is saved in localStorage
-        watched_json = page.evaluate("() => localStorage.getItem('ig_digest_watched_ids')")
+        # Verify watched ID is saved in localStorage (using STORAGE_KEY)
+        watched_json = page.evaluate("() => localStorage.getItem(STORAGE_KEY) || localStorage.getItem('ig_digest_watched_ids')")
         assert watched_json is not None
         assert "reel_tech_1" in watched_json
 
@@ -211,7 +211,7 @@ def test_uat_6_6_celebration_screen(setup_test_site):
         # Mark all 4 reel IDs as watched
         page.evaluate("""() => {
             const allIds = ['reel_tech_1', 'reel_tech_2', 'reel_health_1', 'reel_explainer_1'];
-            localStorage.setItem('ig_digest_watched_ids', JSON.stringify(allIds));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(allIds));
             filterCategory('all');
         }""")
 

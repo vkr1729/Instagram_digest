@@ -292,14 +292,30 @@ def parse_view_count_text(text: str) -> int:
         return 0
 
 
+class InstagramBlocked(RuntimeError):
+    """Instagram served a login/challenge wall instead of content."""
+
+
+_BLOCK_MARKERS = ("/accounts/login", "/challenge/", "/accounts/suspended")
+
+
+def _assert_not_blocked(page, context: str) -> None:
+    url = getattr(page, "url", "") or ""
+    if any(m in url for m in _BLOCK_MARKERS):
+        raise InstagramBlocked(f"{context}: redirected to {url}")
+
+
 class InstagramSession:
     """Reusable Playwright browser session for high-speed, rate-limit-resistant extraction."""
+
+    RECYCLE_EVERY = 40
 
     def __init__(self) -> None:
         self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
+        self._nav_count = 0
 
     def __enter__(self) -> InstagramSession:
         self.start()
@@ -308,25 +324,31 @@ class InstagramSession:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
+    def _inject_cookies(self) -> None:
+        if not self._context:
+            return
+        cookies_file = config.DATA_DIR / "cookies.json"
+        if cookies_file.exists():
+            try:
+                cdata = json.loads(cookies_file.read_text(encoding="utf-8"))
+                pw_cookies = cdata.get("cookies_playwright", [])
+                if pw_cookies:
+                    self._context.add_cookies(pw_cookies)
+                    logger.debug("Injected %d cookies into Playwright context.", len(pw_cookies))
+            except Exception as exc:
+                logger.warning("Could not inject cookies: %s", exc)
+
+    def _open_context(self) -> None:
+        self._context = self._browser.new_context(user_agent=DEFAULT_USER_AGENT)
+        self._inject_cookies()
+        self._page = self._context.new_page()
+        self._nav_count = 0
+
     def start(self) -> None:
         if not self._playwright:
             self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.launch(headless=True)
-            self._context = self._browser.new_context(user_agent=DEFAULT_USER_AGENT)
-
-            # Inject authenticated cookies if available
-            cookies_file = config.DATA_DIR / "cookies.json"
-            if cookies_file.exists():
-                try:
-                    cdata = json.loads(cookies_file.read_text(encoding="utf-8"))
-                    pw_cookies = cdata.get("cookies_playwright", [])
-                    if pw_cookies:
-                        self._context.add_cookies(pw_cookies)
-                        logger.debug("Injected %d cookies into Playwright context.", len(pw_cookies))
-                except Exception as exc:
-                    logger.warning("Could not inject cookies: %s", exc)
-
-            self._page = self._context.new_page()
+            self._open_context()
 
     def close(self) -> None:
         try:
@@ -345,9 +367,21 @@ class InstagramSession:
             self._context = None
             self._browser = None
             self._playwright = None
+            self._nav_count = 0
 
     def get_page(self):
         self.start()
+        if self._nav_count >= self.RECYCLE_EVERY:
+            logger.info("Recycling Playwright context after %d navigations.", self._nav_count)
+            try:
+                if self._page:
+                    self._page.close()
+                if self._context:
+                    self._context.close()
+            except Exception:
+                pass
+            self._open_context()
+        self._nav_count += 1
         return self._page
 
 
@@ -374,6 +408,7 @@ def discover_creator_reel_urls(
             page = local_session.get_page()
 
         page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+        _assert_not_blocked(page, f"@{clean_handle}")
 
         try:
             page.wait_for_selector("a[href*='/reel/']", timeout=5000)
@@ -422,6 +457,8 @@ def discover_creator_reel_urls(
 
             if len(reels_found) >= max_reels:
                 break
+    except InstagramBlocked:
+        raise
     except Exception as exc:
         logger.warning("Playwright reel link discovery exception for @%s: %s", clean_handle, exc)
     finally:
@@ -471,8 +508,9 @@ def extract_single_reel_metadata(
         desc_text = og_desc.get_attribute("content") if og_desc else ""
         thumb_url = og_image.get_attribute("content") if og_image else reel_info.get("thumbnail", "")
 
-        like_count = int(reel_info.get("view_count", 10000) * 0.08)
-        comment_count = int(reel_info.get("view_count", 10000) * 0.005)
+        metrics_estimated = True
+        like_count = 0
+        comment_count = 0
         caption = title_text
         timestamp = 0
 
@@ -494,6 +532,7 @@ def extract_single_reel_metadata(
                 l_str, c_str, user, date_str, cap = m.groups()
                 like_count = parse_view_count_text(l_str)
                 comment_count = parse_view_count_text(c_str)
+                metrics_estimated = False
                 clean_cap = cap.strip(" \"'")
                 if clean_cap:
                     caption = clean_cap
@@ -531,13 +570,14 @@ def extract_single_reel_metadata(
             "url": reel_url,
             "creator_handle": creator_handle,
             "caption": caption or f"Reel by @{creator_handle}",
-            "view_count": reel_info.get("view_count") or like_count * 10,
+            "view_count": reel_info.get("view_count", 0),
             "like_count": like_count,
             "comment_count": comment_count,
             "duration": 30,
             "timestamp": timestamp,
             "thumbnail": thumb_url,
             "video_cdn_url": video_cdn_url,
+            "metrics_estimated": metrics_estimated,
         }
     except Exception as exc:
         logger.debug("Playwright extraction failed on %s: %s; trying yt-dlp fallback...", reel_url, exc)
@@ -575,6 +615,7 @@ def extract_single_reel_metadata(
                 "timestamp": int(data.get("timestamp") or 0),
                 "thumbnail": data.get("thumbnail") or reel_info.get("thumbnail", ""),
                 "video_cdn_url": data.get("url", ""),
+                "metrics_estimated": False,
             }
     except Exception as exc:
         logger.warning("yt-dlp fallback failed for %s: %s", reel_url, exc)
@@ -584,14 +625,15 @@ def extract_single_reel_metadata(
         "id": reel_info["id"],
         "url": reel_url,
         "creator_handle": creator_handle,
-        "caption": f"Reel by @{creator_handle}",
-        "view_count": reel_info.get("view_count", 10000),
-        "like_count": int(reel_info.get("view_count", 10000) * 0.08),
-        "comment_count": int(reel_info.get("view_count", 10000) * 0.005),
-        "duration": 30,
+        "caption": reel_info.get("caption") or f"Reel by @{creator_handle}",
+        "view_count": reel_info.get("view_count", 0),
+        "like_count": 0,
+        "comment_count": 0,
+        "duration": 0,
         "timestamp": reel_info.get("timestamp") or 0,
         "thumbnail": reel_info.get("thumbnail", ""),
-        "video_cdn_url": "",
+        "video_cdn_url": reel_info.get("video_cdn_url", ""),
+        "metrics_estimated": True,
     }
 
 
@@ -627,14 +669,15 @@ def extract_creator_reels(
                 "id": info["id"],
                 "url": info["url"],
                 "creator_handle": clean_handle,
-                "caption": f"Reel by @{clean_handle}",
-                "view_count": info.get("view_count", 10000),
-                "like_count": int(info.get("view_count", 10000) * 0.08),
-                "comment_count": int(info.get("view_count", 10000) * 0.005),
-                "duration": 30,
-                "timestamp": int(time.time()),
+                "caption": "",
+                "view_count": info.get("view_count", 0),
+                "like_count": 0,
+                "comment_count": 0,
+                "duration": 0,
+                "timestamp": 0,
                 "thumbnail": info.get("thumbnail", ""),
                 "video_cdn_url": "",
+                "metrics_estimated": True,
             })
             continue
 
@@ -681,9 +724,11 @@ def download_reel_video(
         "Accept": "*/*",
     }
 
-    # 1. Resolve CDN URL if not provided
+    # 1. Resolve CDN URL if not provided (never reopen Playwright here:
+    # the pipeline closes the browser session before downloads, so a missing
+    # CDN URL falls straight through to the yt-dlp fallback below)
     cdn_target = video_cdn_url
-    if not cdn_target:
+    if not cdn_target and session is not None:
         meta = extract_single_reel_metadata({"id": "probe", "url": reel_url, "creator_handle": ""}, session=session)
         if meta and meta.get("video_cdn_url"):
             cdn_target = meta["video_cdn_url"]

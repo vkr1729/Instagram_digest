@@ -98,6 +98,7 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     logger.info("Purging Cloudflare R2 objects older than %s (%d-day rolling window)...", cutoff_dt.date(), max_age_days)
 
+    stale_keys: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
     try:
         for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix="videos/"):
@@ -120,14 +121,40 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
                     is_stale = True
 
                 if is_stale:
-                    logger.info("Deleting expired R2 object: %s (LastModified: %s)", key, last_modified)
-                    s3.delete_object(Bucket=config.R2_BUCKET_NAME, Key=key)
-                    purged.append(key)
+                    stale_keys.append(key)
+
+        # Batch delete in chunks of up to 1000 keys
+        for i in range(0, len(stale_keys), 1000):
+            chunk = stale_keys[i : i + 1000]
+            logger.info("Batch deleting %d expired R2 objects...", len(chunk))
+            s3.delete_objects(
+                Bucket=config.R2_BUCKET_NAME,
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+            )
+            purged.extend(chunk)
     except ClientError as e:
         logger.warning("Error during R2 purge: %s", e)
 
     logger.info("Purged %d expired objects from Cloudflare R2.", len(purged))
     return purged
+
+
+def get_existing_r2_keys(prefix: str = "videos/") -> set[str]:
+    """List all existing keys on R2 with given prefix in a single/paginated scan."""
+    s3 = get_s3_client()
+    if not s3:
+        return set()
+    keys: set[str] = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    try:
+        for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                k = obj.get("Key")
+                if k:
+                    keys.add(k)
+    except Exception as exc:
+        logger.warning("Error listing R2 keys for prefix %s: %s", prefix, exc)
+    return keys
 
 
 def purge_expired_local_videos(max_age_days: int = config.RETENTION_DAYS) -> list[str]:
@@ -166,10 +193,16 @@ def purge_expired_local_videos(max_age_days: int = config.RETENTION_DAYS) -> lis
     return purged
 
 
-def upload_reel_to_r2(local_file: Path, week_id: str, key_name: str | None = None) -> str:
+def upload_reel_to_r2(
+    local_file: Path,
+    week_id: str,
+    key_name: str | None = None,
+    existing_keys: set[str] | None = None,
+) -> str:
     """
     Upload a local video file to Cloudflare R2.
     Returns the public CDN URL (or local fallback path if R2 is not configured).
+    Never returns a local fallback path when remote R2 is configured and fails.
     """
     if not local_file.exists():
         logger.warning("Local file does not exist: %s", local_file)
@@ -183,13 +216,19 @@ def upload_reel_to_r2(local_file: Path, week_id: str, key_name: str | None = Non
     s3 = get_s3_client()
     if s3 and config.R2_PUBLIC_DOMAIN:
         public_url = f"{config.R2_PUBLIC_DOMAIN}/{r2_key}"
-        try:
-            # Check if already present on R2
-            s3.head_object(Bucket=config.R2_BUCKET_NAME, Key=r2_key)
-            logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
-            return public_url
-        except ClientError:
-            pass  # Does not exist yet, proceed to upload
+
+        # Check if already present on R2 (fast-path via pre-scanned keys or head_object)
+        if existing_keys is not None:
+            if r2_key in existing_keys:
+                logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
+                return public_url
+        else:
+            try:
+                s3.head_object(Bucket=config.R2_BUCKET_NAME, Key=r2_key)
+                logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
+                return public_url
+            except ClientError:
+                pass  # Does not exist yet, proceed to upload
 
         try:
             logger.info("Uploading %s to R2 (%s)...", local_file.name, r2_key)
@@ -200,9 +239,12 @@ def upload_reel_to_r2(local_file: Path, week_id: str, key_name: str | None = Non
                 ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=1209600, immutable"},
             )
             logger.info("Uploaded successfully: %s", public_url)
+            if existing_keys is not None:
+                existing_keys.add(r2_key)
             return public_url
         except Exception as exc:
-            logger.error("Failed uploading to R2: %s. Using local fallback.", exc)
+            logger.error("Failed uploading to R2: %s", exc)
+            return ""  # Remote configured but upload failed; caller must drop this unplayable reel
 
-    # Local fallback path for local server playback
-    return f"/videos/{week_id}/{key_name}"
+    # Local fallback path only if R2 is not configured at all
+    return f"/videos/{week_id}/{key_name}" if not s3 else ""

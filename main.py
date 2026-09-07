@@ -7,9 +7,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import sys
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,10 @@ import storage_r2
 
 logger = logging.getLogger("InstagramDigest.Main")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+MIN_CANDIDATE_RATIO = 0.5      # fraction of the expected candidate count
+MAX_EMPTY_CREATOR_RATIO = 0.6  # fraction of creators that returned 0 reels
+MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)
 
 
 def run_full_sync(
@@ -66,6 +72,7 @@ def run_full_sync(
             if i < len(by_cat.get(c, [])):
                 ordered_sources.append(by_cat[c][i])
 
+    ranked_reels: list[dict[str, Any]] = []
     with extractor.InstagramSession() as session:
         candidates_cache_file = config.DATA_DIR / "candidates_cache.json"
         if candidates_cache_file.exists():
@@ -77,23 +84,51 @@ def run_full_sync(
                 candidates = []
 
         if not candidates:
-            # Ensure candidate gathering covers all active creators so all category quotas can be fulfilled
-            for idx, src in enumerate(ordered_sources, 1):
-                handle = src.get("handle", "")
-                if not handle:
-                    continue
-                cat = src.get("category", "")
-                max_candidate_reels = 6 if cat == "food" else min(limit_per_creator, 5)
-                logger.info("[%d/%d] Extracting candidate reels for @%s (%s)...", idx, len(ordered_sources), handle, cat)
-                reels = extractor.extract_creator_reels(
-                    handle=handle,
-                    max_reels=max_candidate_reels,
-                    days_back=days_back,
-                    fast_mode=True,  # Fast discovery from reels tab
-                    session=session,
+            expected = 0
+            empty_creators = 0
+            empty_streak = 0
+            try:
+                # Ensure candidate gathering covers all active creators so all category quotas can be fulfilled
+                for idx, src in enumerate(ordered_sources, 1):
+                    handle = src.get("handle", "")
+                    if not handle:
+                        continue
+                    cat = src.get("category", "")
+                    max_candidate_reels = 6 if cat == "food" else min(limit_per_creator, 5)
+                    expected += max_candidate_reels
+                    logger.info("[%d/%d] Extracting candidate reels for @%s (%s)...", idx, len(ordered_sources), handle, cat)
+                    reels = extractor.extract_creator_reels(
+                        handle=handle,
+                        max_reels=max_candidate_reels,
+                        days_back=days_back,
+                        fast_mode=True,  # Fast discovery from reels tab
+                        session=session,
+                    )
+                    if not reels:
+                        empty_creators += 1
+                        empty_streak += 1
+                        if empty_streak >= 2:
+                            pause = min(120, 10 * 2 ** (empty_streak - 2))
+                            logger.warning("Two empty creators in a row; backing off %ds.", pause)
+                            time.sleep(pause)
+                    else:
+                        empty_streak = 0
+
+                    candidates.extend(reels)
+                    time.sleep(random.uniform(1.2, 2.8))
+            except extractor.InstagramBlocked as exc:
+                logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
+                candidates_cache_file.unlink(missing_ok=True)
+                return 2
+
+            if (len(candidates) < MIN_CANDIDATE_RATIO * expected
+                    or empty_creators > MAX_EMPTY_CREATOR_RATIO * len(ordered_sources)):
+                logger.error(
+                    "Viability gate failed: %d candidates (expected >=%d), %d/%d creators empty. Aborting.",
+                    len(candidates), int(MIN_CANDIDATE_RATIO * expected), empty_creators, len(ordered_sources)
                 )
-                candidates.extend(reels)
-                time.sleep(0.2)
+                candidates_cache_file.unlink(missing_ok=True)
+                return 2
 
             logger.info("Extracted total %d candidate reels across creators.", len(candidates))
             try:
@@ -101,81 +136,130 @@ def run_full_sync(
             except Exception:
                 pass
 
-        # 4. Rank candidates using Fair-Share Viral Multiplier
-        ranked_reels = ranker.rank_top_reels(
+        # 4. Two-Pass Selection & Ranking (C3):
+        # Pass 1: Cheap reach-only ranking to shortlist (2x top digest size)
+        shortlist = ranker.rank_top_reels(
             candidates=candidates,
+            sources=active_sources,
+            top_n=config.TOP_DIGEST_COUNT * 2,
+            max_per_creator=config.MAX_PER_CREATOR + 2,
+            shuffle=False,
+        )
+
+        # Enrich shortlist with real metadata and filter by cutoff date
+        cutoff_ts = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
+        enriched: list[dict[str, Any]] = []
+        logger.info("Enriching shortlist of %d reels with real metadata...", len(shortlist))
+        for reel in shortlist:
+            meta = extractor.extract_single_reel_metadata(reel, session=session)
+            if not meta or (meta.get("timestamp") or 0) < cutoff_ts:
+                logger.info(
+                    "Skipping reel %s: too old, pinned, or unknown date (%s < %s)",
+                    (meta or {}).get("id"), (meta or {}).get("timestamp"), cutoff_ts,
+                )
+                continue
+            enriched.append(meta)
+
+        # Pass 2: Final ranking on enriched candidates
+        ranked_reels = ranker.rank_top_reels(
+            candidates=enriched if enriched else shortlist,
             sources=active_sources,
             top_n=config.TOP_DIGEST_COUNT,
             max_per_creator=config.MAX_PER_CREATOR,
         )
 
-        if not ranked_reels:
-            logger.warning("No reels qualified for Top Digest.")
-            if candidates:
-                ranked_reels = candidates[:config.TOP_DIGEST_COUNT]
+    if not ranked_reels:
+        logger.warning("No reels qualified for Top Digest.")
 
-        # Save digest batch payload
+    # 5. Media Download and R2 Upload (Multi-threaded B1, C4 closed browser session)
+    uploaded_url_map: dict[str, str] = {}
+    if not dry_run and ranked_reels:
+        week_videos_dir = config.VIDEOS_DIR / week_id
+        week_videos_dir.mkdir(parents=True, exist_ok=True)
+
+        existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+
+        logger.info("Downloading and syncing Top %d reels with worker pool...", len(ranked_reels))
+
+        def process_reel(reel: dict[str, Any]) -> tuple[str, str]:
+            reel_id = reel["id"]
+            handle = reel["creator_handle"]
+            rank = reel.get("rank", 1)
+            filename = f"{rank:02d}_{handle}_{reel_id}.mp4"
+            local_video_path = week_videos_dir / filename
+
+            # Check if this reel was already downloaded under a previous rank prefix
+            existing_matches = list(week_videos_dir.glob(f"*_{handle}_{reel_id}.mp4")) or list(week_videos_dir.glob(f"*_{reel_id}.mp4"))
+            if existing_matches:
+                matched_file = existing_matches[0]
+                if matched_file.resolve() != local_video_path.resolve():
+                    try:
+                        matched_file.rename(local_video_path)
+                    except Exception:
+                        pass
+
+            # Download if not already cached
+            if not local_video_path.exists():
+                logger.info("Downloading reel [%s] #%02d @%s: %s", reel_id, rank, handle, reel["url"])
+                success = extractor.download_reel_video(
+                    reel["url"],
+                    local_video_path,
+                    video_cdn_url=reel.get("video_cdn_url"),
+                )
+                if not success:
+                    logger.warning("Skipping upload for failed download %s", reel_id)
+                    return (reel_id, "")
+
+            # Upload to Cloudflare R2 (or fallback to local if R2 not configured)
+            public_url = storage_r2.upload_reel_to_r2(
+                local_video_path,
+                week_id=week_id,
+                key_name=filename,
+                existing_keys=existing_r2_keys,
+            )
+            return (reel_id, public_url)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_id = {executor.submit(process_reel, r): r["id"] for r in ranked_reels}
+            for future in as_completed(future_to_id):
+                try:
+                    rid, url = future.result()
+                    if url:
+                        uploaded_url_map[rid] = url
+                except Exception as exc:
+                    rid = future_to_id[future]
+                    logger.warning("Worker error processing reel %s: %s", rid, exc)
+
+        # Drop unplayable reels (C2)
+        dropped = [r["id"] for r in ranked_reels if r["id"] not in uploaded_url_map]
+        if dropped:
+            logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
+            ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
+
+        # 6. Save digest batch payload (only playable reels saved!)
         ranker.save_digest_batch(ranked_reels, run_date=week_id)
 
-        # 5. Media Download and R2 Upload
-        uploaded_url_map: dict[str, str] = {}
-        if not dry_run and ranked_reels:
-            week_videos_dir = config.VIDEOS_DIR / week_id
-            week_videos_dir.mkdir(parents=True, exist_ok=True)
+        # 7. Execute 14-Day Rolling Purge (both R2 and local disk)
+        storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
+        storage_r2.purge_expired_local_videos(max_age_days=config.RETENTION_DAYS)
+    else:
+        # Dry-run: save ranked reels
+        ranker.save_digest_batch(ranked_reels, run_date=week_id)
 
-            logger.info("Downloading and syncing Top %d reels...", len(ranked_reels))
-            for reel in ranked_reels:
-                reel_id = reel["id"]
-                handle = reel["creator_handle"]
-                rank = reel.get("rank", 1)
-                filename = f"{rank:02d}_{handle}_{reel_id}.mp4"
-                local_video_path = week_videos_dir / filename
-
-                # Check if this reel was already downloaded under a previous rank prefix
-                existing_matches = list(week_videos_dir.glob(f"*_{handle}_{reel_id}.mp4")) or list(week_videos_dir.glob(f"*_{reel_id}.mp4"))
-                if existing_matches:
-                    matched_file = existing_matches[0]
-                    if matched_file.resolve() != local_video_path.resolve():
-                        matched_file.rename(local_video_path)
-
-                # Download if not already cached
-                if not local_video_path.exists():
-                    logger.info("Downloading reel [%s] #%02d @%s: %s", reel_id, rank, handle, reel["url"])
-                    # Enrich metadata if caption is generic
-                    if reel.get("caption", "").startswith("Reel by @"):
-                        meta = extractor.extract_single_reel_metadata(reel, session=session)
-                        if meta:
-                            for mk, mv in meta.items():
-                                if mv and mk not in ("rank", "rank_display", "viral_score"):
-                                    reel[mk] = mv
-
-                    success = extractor.download_reel_video(
-                        reel["url"],
-                        local_video_path,
-                        video_cdn_url=reel.get("video_cdn_url"),
-                        session=session,
-                    )
-                    if not success:
-                        logger.warning("Skipping upload for failed download %s", reel_id)
-                        continue
-                    time.sleep(0.3)
-
-                # Upload to Cloudflare R2 (or fallback to local)
-                public_url = storage_r2.upload_reel_to_r2(local_video_path, week_id=week_id, key_name=filename)
-                uploaded_url_map[reel_id] = public_url
-
-            # 6. Execute 14-Day Rolling Purge (both R2 and local disk)
-            storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
-            storage_r2.purge_expired_local_videos(max_age_days=config.RETENTION_DAYS)
-
-    # 7. Compile Variant 1A Static Viewer Site
+    # 8. Compile Variant 1A Static Viewer Site
     r2_index, local_index = site_builder.build_site(
         digest_data={"run_date": week_id, "items": ranked_reels},
-        r2_uploaded_urls=uploaded_url_map,
+        r2_uploaded_urls=uploaded_url_map if not dry_run else None,
     )
 
-    # 8. Deploy to GitHub Pages
+    # 9. Deploy to GitHub Pages (Viability & Minimum items gate)
     if deploy and not dry_run:
+        if len(ranked_reels) < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
+                len(ranked_reels), MIN_DEPLOY_ITEMS
+            )
+            return 2
         site_builder.deploy_to_gh_pages()
 
     logger.info("Weekly sync completed successfully! Local viewer ready at %s", local_index)

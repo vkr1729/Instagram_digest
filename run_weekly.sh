@@ -26,7 +26,17 @@ fi
 
 # 2. Run full sync and deployment
 echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running full pipeline (sync + deploy)..." >> "$LOG_FILE"
+set +e
 .venv/bin/python main.py --sync --deploy >> "$LOG_FILE" 2>&1
+EXIT_CODE=$?
+set -e
 
-echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Weekly Friday Digest completed successfully!" >> "$LOG_FILE"
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Weekly Friday Digest completed successfully!" >> "$LOG_FILE"
+elif [ $EXIT_CODE -eq 2 ]; then
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sync aborted by viability gate or block detection; preserved previous working digest." >> "$LOG_FILE"
+else
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sync failed with exit code $EXIT_CODE!" >> "$LOG_FILE"
+    exit $EXIT_CODE
+fi
 echo "=================================================================" >> "$LOG_FILE"

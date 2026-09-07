@@ -741,6 +741,31 @@
     .seek-hud.visible { opacity: 1; }
     .seek-hud-delta { color: #f09433; font-weight: 700; font-size: 12px; }
 
+    /* Tap-to-Unmute Scrim Pill */
+    .mute-pill {
+      position: absolute;
+      top: max(72px, env(safe-area-inset-top, 72px));
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      color: #fff;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      z-index: 25;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      border: 1px solid rgba(255,255,255,0.15);
+      pointer-events: auto;
+    }
+    .mute-pill.visible { display: flex; }
+
     /* Double Tap Skip Ripple Indicators */
     .skip-ripple {
       position: absolute;
@@ -917,14 +942,15 @@
       <article class="reel-card" data-id="{{ item.id }}" data-category="{{ item.category }}" data-index="{{ loop.index0 }}">
         <div class="reel-progress"><div class="reel-progress-fill"></div></div>
         <div class="countdown-toast">Next reel in 0.5s...</div>
+        <div class="mute-pill" onclick="unmuteFromPill(this, event)">🔇 Tap for sound</div>
         <div class="play-pause-indicator">▶</div>
 
         <!-- HTML5 Video Tag with Virtualized Sliding-Window Loader -->
         <video 
           class="reel-video"
-          {% if loop.index0 < 3 %}src="{{ item.video_url }}"{% endif %}
+          {% if loop.index0 < 3 %}src="{{ item.video_url }}" poster="{{ item.thumbnail }}"{% endif %}
           data-src="{{ item.video_url }}"
-          poster="{{ item.thumbnail }}"
+          data-poster="{{ item.thumbnail }}"
           playsinline
           webkit-playsinline
           x5-playsinline
@@ -936,7 +962,7 @@
           <div class="creator-meta">
             <span class="creator-badge">@{{ item.creator_handle }}</span>
             <span class="rank-pill">{{ item.rank_display }}</span>
-            <span class="views-label">{{ "{:,}".format(item.view_count) }} views</span>
+            <span class="views-label">{{ "{:,}".format(item.view_count|default(0)) }} views</span>
             <div class="reel-actions">
               <button class="boost-speed-btn" onclick="toggleReelSpeed(this, event)" title="Toggle 2x Speed for this reel">2x</button>
               <button class="whatsapp-share-btn" onclick="shareReelWhatsApp('{{ item.id }}', '{{ item.creator_handle }}', event)" title="Share via WhatsApp">
@@ -989,23 +1015,38 @@
     let autoAdvanceTimeout = null;
     let isScrollingTransition = false;
     let currentActiveCard = null;
+    let navGen = 0;
+    let lastProgressAt = performance.now();
+    let lastProgressTime = -1;
+    let pendingSingleTapTimer = null;
 
     // Current Week ID & Week-Scoped LocalStorage Keys
     const currentWeekId = "{{ week_id|default('current') }}";
     const STORAGE_KEY = 'ig_digest_watched_ids_' + currentWeekId;
     const LAST_WATCHED_KEY = 'ig_digest_last_watched_id_' + currentWeekId;
 
-    // Session-based watched tracking: allows re-watching in current session
+    // P6: Storage hygiene: prune stale week keys outside the retention window + legacy key
+    (function pruneOldWeeks() {
+      try {
+        const keep = new Set({{ available_weeks | map(attribute='week_id') | list | tojson }});
+        keep.add(currentWeekId);
+        Object.keys(localStorage).forEach(k => {
+          const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id)_(\d{4}-\d{2}-\d{2})$/);
+          if ((m && !keep.has(m[1])) || k === 'ig_digest_watched_ids') localStorage.removeItem(k);
+        });
+      } catch (e) {}
+    })();
+
+    // Helper to get active, visible, non-dead cards (P1, P2)
+    function visibleCards() {
+      return Array.from(document.querySelectorAll('.reel-card'))
+        .filter(c => c.style.display !== 'none' && !c.dataset.dead);
+    }
+
+    // Session-based watched tracking (P6: scoped strictly to STORAGE_KEY)
     function getWatchedIds() {
       try {
-        let stored = localStorage.getItem(STORAGE_KEY);
-        if (!stored) {
-          const legacy = localStorage.getItem('ig_digest_watched_ids');
-          if (legacy) {
-            localStorage.setItem(STORAGE_KEY, legacy);
-            stored = legacy;
-          }
-        }
+        const stored = localStorage.getItem(STORAGE_KEY);
         return new Set(JSON.parse(stored || '[]'));
       } catch (e) {
         return new Set();
@@ -1021,7 +1062,6 @@
       set.add(reelId);
       const jsonStr = JSON.stringify(Array.from(set));
       localStorage.setItem(STORAGE_KEY, jsonStr);
-      localStorage.setItem('ig_digest_watched_ids', jsonStr);
       localStorage.setItem(LAST_WATCHED_KEY, reelId);
 
       if (typeof updateCategoryProgressRings === 'function') {
@@ -1042,7 +1082,6 @@
       sessionWatchedIds.clear();
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(LAST_WATCHED_KEY);
-      localStorage.removeItem('ig_digest_watched_ids');
       if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         fetch('/api/watched', {
           method: 'POST',
@@ -1071,9 +1110,7 @@
               }
             });
             if (changed) {
-              const jsonStr = JSON.stringify(Array.from(set));
-              localStorage.setItem(STORAGE_KEY, jsonStr);
-              localStorage.setItem('ig_digest_watched_ids', jsonStr);
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(set)));
               filterCategory(currentCategory);
             }
           }
@@ -1138,7 +1175,8 @@
       showToast(targetRate === 2.0 ? 'Boosted to 2x for this reel' : `Speed reset to ${targetRate}x`);
     }
 
-    // In-memory prefetch cache for physical thumbnail file sharing
+    // P3 & P4: Bounded LRU in-memory prefetch cache for physical thumbnail file sharing
+    const THUMB_CACHE_MAX = 6;
     const cachedThumbnailFiles = new Map();
 
     async function preloadReelThumbnail(reelId) {
@@ -1154,13 +1192,17 @@
         if (res.ok) {
           const blob = await res.blob();
           const file = new File([blob], `${reelId}.jpg`, { type: 'image/jpeg' });
+          if (cachedThumbnailFiles.size >= THUMB_CACHE_MAX) {
+            const oldestKey = cachedThumbnailFiles.keys().next().value;
+            cachedThumbnailFiles.delete(oldestKey);
+          }
           cachedThumbnailFiles.set(reelId, file);
         }
       } catch (err) {}
     }
 
-    // Share reel via WhatsApp with physical thumbnail attached and deep link fallback
-    async function shareReelWhatsApp(reelId, creatorHandle, e) {
+    // P4: Share reel via WhatsApp with physical thumbnail attached and deep link fallback (no await before share)
+    function shareReelWhatsApp(reelId, creatorHandle, e) {
       if (e) {
         e.stopPropagation();
         e.preventDefault();
@@ -1175,52 +1217,41 @@
 
       window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(shareText)}`;
 
-      // 1. Try native Web Share with physical image File attached
+      // 1. Try native Web Share synchronously to retain transient activation
       if (navigator.share) {
-        try {
-          let fileToShare = cachedThumbnailFiles.get(reelId);
-          if (!fileToShare) {
-            try {
-              const thumbUrl = `${basePath}/thumbnails/${reelId}.jpg`;
-              const res = await fetch(thumbUrl);
-              if (res.ok) {
-                const blob = await res.blob();
-                fileToShare = new File([blob], `${reelId}.jpg`, { type: 'image/jpeg' });
-                cachedThumbnailFiles.set(reelId, fileToShare);
-              }
-            } catch (fetchErr) {}
-          }
-
-          if (fileToShare && navigator.canShare && navigator.canShare({ files: [fileToShare] })) {
-            await navigator.share({
-              files: [fileToShare],
-              title: `Reel by @${creatorHandle || 'creator'}`,
-              text: shareText
-            });
-            return;
-          }
-
-          // Fallback to URL/text share if file sharing is not supported
-          await navigator.share({
+        const fileToShare = cachedThumbnailFiles.get(reelId);
+        if (fileToShare && navigator.canShare && navigator.canShare({ files: [fileToShare] })) {
+          navigator.share({
+            files: [fileToShare],
             title: `Reel by @${creatorHandle || 'creator'}`,
-            text: shareText,
-            url: shareUrl
+            text: shareText
+          }).catch(err => {
+            if (err && err.name === 'AbortError') return;
+            fallbackShare(shareText);
           });
           return;
-        } catch (err) {
-          if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
-            return;
-          }
-          console.warn('Share error, falling back to direct WhatsApp link:', err);
         }
+
+        // Fallback to URL/text share without await
+        navigator.share({
+          title: `Reel by @${creatorHandle || 'creator'}`,
+          text: shareText,
+          url: shareUrl
+        }).catch(err => {
+          if (err && err.name === 'AbortError') return;
+          fallbackShare(shareText);
+        });
+        return;
       }
 
-      // 2. Direct WhatsApp deep link fallback for mobile without navigator.share
+      fallbackShare(shareText);
+    }
+
+    function fallbackShare(shareText) {
       const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
       if (isMobile) {
-        window.location.href = window.__dispatchedShareUrl;
+        window.location.href = window.__dispatchedShareUrl || `whatsapp://send?text=${encodeURIComponent(shareText)}`;
       } else {
-        // Desktop browser fallback
         window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`, '_blank');
       }
     }
@@ -1240,7 +1271,7 @@
       }
     });
 
-    // Unified Fullscreen Toggle (Feedback #5 fix: uses isImmersive class for 100% reliability on iOS)
+    // Unified Fullscreen Toggle
     function toggleUnifiedFullscreen() {
       const shell = document.getElementById('appShell');
       const isImmersive = shell.classList.contains('immersive-mode');
@@ -1278,6 +1309,36 @@
     document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 
+    // P5: Mute Pill controls
+    function showMutePill(card) {
+      const pill = card ? card.querySelector('.mute-pill') : null;
+      if (pill) pill.classList.add('visible');
+    }
+
+    function hideMutePill(card) {
+      if (card) {
+        const pill = card.querySelector('.mute-pill');
+        if (pill) pill.classList.remove('visible');
+      }
+      document.querySelectorAll('.mute-pill.visible').forEach(p => p.classList.remove('visible'));
+    }
+
+    function unmuteFromPill(pill, e) {
+      if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+      isAudioMuted = false;
+      if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v) {
+          v.muted = false;
+          v.play().catch(() => {});
+        }
+        hideMutePill(currentActiveCard);
+      }
+    }
+
     // Un-mute active video on touch/click if browser temporarily muted it
     function restoreAudioOnInteraction() {
       if (!currentActiveCard) return;
@@ -1285,15 +1346,25 @@
       if (activeVideo && !isAudioMuted && activeVideo.muted) {
         activeVideo.muted = false;
       }
+      hideMutePill(currentActiveCard);
     }
     ['touchstart', 'touchend', 'click'].forEach(evt => {
       window.addEventListener(evt, restoreAudioOnInteraction, { passive: true });
     });
 
-    // First Interaction Bootstrap (Unmutes audio & acquires wake lock)
+    // First Interaction Bootstrap (Unmutes audio inside the gesture & acquires wake lock)
     function handleInitialInteraction() {
       isAudioMuted = false;
-      restoreAudioOnInteraction();
+      if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v) {
+          v.muted = false;
+          v.play().catch(() => {});
+        }
+        hideMutePill(currentActiveCard);
+      } else {
+        restoreAudioOnInteraction();
+      }
       requestWakeLock();
     }
     ['click', 'touchstart', 'keydown', 'scroll'].forEach(evt => {
@@ -1312,7 +1383,6 @@
 
       showSkipRipple(delta > 0 ? 'right' : 'left');
 
-      // If skipped forward past 35%, mark as watched! (Feedback #9 & #10)
       if (video.currentTime / video.duration >= 0.35 && !currentActiveCard.dataset.markedWatched) {
         currentActiveCard.dataset.markedWatched = 'true';
         markAsWatched(currentActiveCard.dataset.id);
@@ -1326,14 +1396,13 @@
       setTimeout(() => el.classList.remove('active'), 400);
     }
 
-    // Double-Tap 3-Zone Mapping (Feedback #5 & #11)
-    // Left 35%: -10s, Right 35%: +10s, Center 30%: Toggle Fullscreen
+    // Double-Tap 3-Zone Mapping (Feedback #5 & #11) with P7 Single-Tap Timer Cancellation
     let lastTapTime = 0;
     let lastTapX = 0;
     const feed = document.getElementById('feedContainer');
 
     feed.addEventListener('click', (e) => {
-      if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button')) return;
+      if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
       const now = Date.now();
       const clickX = e.clientX;
       const width = window.innerWidth;
@@ -1341,6 +1410,11 @@
 
       if (timeDiff < 320 && Math.abs(clickX - lastTapX) < 100) {
         lastTapTime = 0;
+        // P7: Cancel any pending single-tap play/pause toggle
+        if (pendingSingleTapTimer) {
+          clearTimeout(pendingSingleTapTimer);
+          pendingSingleTapTimer = null;
+        }
         if (clickX < width * 0.35) {
           skipSeconds(-10);
         } else if (clickX > width * 0.65) {
@@ -1389,11 +1463,9 @@
         const video = currentActiveCard.querySelector('.reel-video');
         if (!video || !video.duration) return;
 
-        // Proportional seek: 220px across screen = 20 seconds
         const seekOffset = (deltaX / 220) * 20;
         scrubTargetTime = Math.max(0, Math.min(video.duration, scrubInitialTime + seekOffset));
 
-        // Update floating HUD
         const hud = document.getElementById('seekHud');
         const hudTime = document.getElementById('seekHudTime');
         const hudDelta = document.getElementById('seekHudDelta');
@@ -1404,7 +1476,6 @@
           hud.classList.add('visible');
         }
 
-        // Live update hairline progress bar
         const fill = currentActiveCard.querySelector('.reel-progress-fill');
         if (fill) {
           fill.style.width = `${(scrubTargetTime / video.duration) * 100}%`;
@@ -1417,7 +1488,6 @@
         const video = currentActiveCard.querySelector('.reel-video');
         if (video && video.duration) {
           video.currentTime = scrubTargetTime;
-          // Mark as watched if seek crossed 35%!
           if (scrubTargetTime / video.duration >= 0.35 && !currentActiveCard.dataset.markedWatched) {
             currentActiveCard.dataset.markedWatched = 'true';
             markAsWatched(currentActiveCard.dataset.id);
@@ -1445,7 +1515,17 @@
     }
 
     // Update Story Rings: cross-browser dynamic unwinding progress ring
+    // B5: coalesce hot-path calls (every watched mark) into one rAF per frame
+    let ringsQueued = false;
     function updateCategoryProgressRings() {
+      if (ringsQueued) return;
+      ringsQueued = true;
+      requestAnimationFrame(() => {
+        ringsQueued = false;
+        _paintCategoryProgressRings();
+      });
+    }
+    function _paintCategoryProgressRings() {
       const watched = getWatchedIds();
       const allCards = Array.from(document.querySelectorAll('.reel-card'));
       const bubbles = document.querySelectorAll('.story-bubble');
@@ -1480,6 +1560,48 @@
       });
     }
 
+    // P1: Discrete Navigation with Generation Counter + Instant Scroll
+    function goToCard(card) {
+      if (!card) return;
+      const gen = ++navGen;
+      currentActiveCard = card;
+      isScrollingTransition = true;
+      requestAnimationFrame(() => {
+        if (gen !== navGen) { isScrollingTransition = false; return; }  // superseded by a newer intent
+        card.scrollIntoView({ behavior: 'instant', block: 'start' });
+        requestAnimationFrame(() => {
+          if (gen !== navGen) { isScrollingTransition = false; return; }  // user moved on mid-nav
+          playCardVideo(card);
+          isScrollingTransition = false;
+        });
+      });
+    }
+
+    // P2: Stall/Error Recovery: skip unplayable cards permanently (ignoring file:// test fixtures)
+    function skipDeadCard(card, why) {
+      if (!card || card.dataset.dead) return;
+      if (window.location.protocol === 'file:') return;
+      const v = card.querySelector('.reel-video');
+      if (v && v.dataset.src && v.dataset.src.startsWith('data:')) return;
+      card.dataset.dead = '1';
+      console.warn('Skipping dead reel', card.dataset.id, why);
+      showToast('Reel unavailable, skipping');
+      const cards = visibleCards();
+      const i = cards.indexOf(card);
+      card.style.display = 'none';
+      if (v) {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      }
+      const next = cards[i + 1] || cards[i - 1];
+      if (next) {
+        goToCard(next);
+      } else {
+        filterCategory(currentCategory);
+      }
+    }
+
     // Story Category Filtering & Resume from Last Unwatched Reel
     function filterCategory(cat) {
       currentCategory = cat;
@@ -1506,7 +1628,7 @@
         
         const isWatched = watched.has(card.dataset.id);
 
-        if (matchesCat && !isWatched) {
+        if (matchesCat && !isWatched && !card.dataset.dead) {
           card.style.display = 'flex';
           visibleCount++;
         } else {
@@ -1525,39 +1647,47 @@
         currentActiveCard = null;
       } else {
         celebration.classList.remove('active');
-        const firstVisible = cards.find(c => c.style.display !== 'none');
+        const firstVisible = visibleCards()[0];
         if (firstVisible) {
-          firstVisible.scrollIntoView({ behavior: 'instant' });
-          playCardVideo(firstVisible);
+          goToCard(firstVisible);
         }
       }
     }
 
-    // High-Performance Sliding Window Loader (Active + Next 2 Reels)
+    // P3 & P8: High-Performance Sliding Window Loader (Max 5 posters, prefetch & warmup)
     function updateSlidingWindow(activeCard) {
       if (!activeCard) return;
-      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
-        .filter(c => c.style.display !== 'none');
-      const activeIdx = visibleCards.indexOf(activeCard);
+      const vCards = visibleCards();
+      const activeIdx = vCards.indexOf(activeCard);
       if (activeIdx === -1) return;
 
-      const lookAhead = 2; // Preloads next 2 reels
+      const lookAhead = 2;
       const lookBehind = 1;
 
-      visibleCards.forEach((card, idx) => {
+      vCards.forEach((card, idx) => {
         const video = card.querySelector('.reel-video');
         if (!video) return;
         const targetSrc = video.dataset.src;
-        if (!targetSrc) return;
-
+        const targetPoster = video.dataset.poster;
         const distance = idx - activeIdx;
         const isWithinWindow = (distance >= -lookBehind && distance <= lookAhead);
+
+        // P3: Dynamic poster management (max 5 cards: distance -1 to +3)
+        if (distance >= -1 && distance <= 3 && targetPoster) {
+          if (video.getAttribute('poster') !== targetPoster) {
+            video.setAttribute('poster', targetPoster);
+          }
+        } else {
+          if (video.hasAttribute('poster')) {
+            video.removeAttribute('poster');
+          }
+        }
 
         if (isWithinWindow) {
           if (card.dataset.id) {
             preloadReelThumbnail(card.dataset.id);
           }
-          if (!video.getAttribute('src')) {
+          if (!video.getAttribute('src') && targetSrc) {
             video.src = targetSrc;
           }
 
@@ -1565,11 +1695,13 @@
             video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'high';
           } else if (distance === 1) {
-            video.preload = 'auto';
+            // P8: Warm up next video metadata
+            if (!video.dataset.warmed) {
+              video.preload = 'metadata';
+              video.load();
+              video.dataset.warmed = '1';
+            }
             if ('fetchPriority' in video) video.fetchPriority = 'low';
-          } else if (distance === 2) {
-            if ('fetchPriority' in video) video.fetchPriority = 'low';
-            video.preload = 'metadata';
           } else {
             video.preload = 'metadata';
           }
@@ -1577,27 +1709,30 @@
           if (video.getAttribute('src')) {
             video.pause();
             video.removeAttribute('src');
+            delete video.dataset.warmed;
             video.load();
           }
         }
       });
     }
 
-    // Video Playback & Audio Stability
+    // Video Playback, B5 Localized Pausing & P5 Mute-Pill Fallback
     function playCardVideo(card) {
-      if (!card) return;
+      if (!card || card.dataset.dead) return;
+      navGen++;
       currentActiveCard = card;
+      lastProgressAt = performance.now();
+      lastProgressTime = -1;
+
       if (card.dataset.id) {
         preloadReelThumbnail(card.dataset.id);
       }
 
-      // Reset any active 2x boost button styling from previous reel (Feedback #4)
       document.querySelectorAll('.boost-speed-btn').forEach(btn => {
         btn.classList.remove('active');
         btn.textContent = '2x';
       });
 
-      // Update header rank counter
       if (card.dataset.index !== undefined) {
         const rankNum = parseInt(card.dataset.index, 10) + 1;
         const rankEl = document.getElementById('currentRankDisplay');
@@ -1613,15 +1748,19 @@
         video.src = video.dataset.src;
       }
 
-      // Pause all other videos
-      document.querySelectorAll('.reel-video').forEach(v => {
-        if (v !== video) {
-          v.pause();
-          v.currentTime = 0;
+      // B5: Pause only nearby videos within sliding window instead of scanning all DOM cards
+      const vCards = visibleCards();
+      const activeIdx = vCards.indexOf(card);
+      vCards.forEach((c, idx) => {
+        if (c !== card && Math.abs(idx - activeIdx) <= 3) {
+          const v = c.querySelector('.reel-video');
+          if (v && !v.paused) {
+            v.pause();
+            v.currentTime = 0;
+          }
         }
       });
 
-      // Maintain pitch stability at configured speed
       video.playbackRate = currentSpeed;
       video.preservesPitch = true;
       video.webkitPreservesPitch = true;
@@ -1632,15 +1771,18 @@
       const playPromise = video.play();
       if (playPromise !== undefined) {
         playPromise.catch(() => {
-          // If browser restricts unmuted autoplay before interaction, play muted temporarily
+          // P5: If browser restricts unmuted autoplay, mute and show mute pill
           video.muted = true;
-          video.play().catch(() => {});
+          video.play().then(() => {
+            showMutePill(card);
+          }).catch(() => {});
         });
       }
     }
 
-    // Video End & Auto-Advance Handler
+    // Video End & Auto-Advance Handler with P1 navGen race guard
     function handleVideoEnd(card) {
+      const gen = ++navGen;
       markAsWatched(card.dataset.id);
       const toast = card.querySelector('.countdown-toast');
       if (toast) toast.classList.add('visible');
@@ -1649,29 +1791,45 @@
       autoAdvanceTimeout = setTimeout(() => {
         if (toast) toast.classList.remove('visible');
         card.dataset.endedHandled = '';
-        advanceToNextReel(card);
+        if (gen === navGen && currentActiveCard === card) {
+          advanceToNextReel(card);
+        }
       }, 350);
     }
 
-    // Wire Up Video Events (Progress, 35% Watched Threshold & Auto-Advance)
+    // Wire Up Video Events
     document.querySelectorAll('.reel-card').forEach(card => {
       const video = card.querySelector('.reel-video');
       const fill = card.querySelector('.reel-progress-fill');
       const playIcon = card.querySelector('.play-pause-indicator');
 
-      // Update hairline progress & 35% watched threshold (Feedback #9)
+      // P2: media error listener skips unplayable card
+      video.addEventListener('error', () => {
+        if (card === currentActiveCard) {
+          skipDeadCard(card, 'media error');
+        }
+      });
+
+      // P5: clear the tap-to-unmute pill as soon as audio is back
+      video.addEventListener('volumechange', () => {
+        if (!video.muted) hideMutePill(card);
+      });
+
+      // Update hairline progress & 35% watched threshold + watchdog progress timestamp
       video.addEventListener('timeupdate', () => {
+        if (video.currentTime !== lastProgressTime) {
+          lastProgressTime = video.currentTime;
+          lastProgressAt = performance.now();
+        }
         if (video.duration) {
           const pct = (video.currentTime / video.duration) * 100;
           fill.style.width = pct + '%';
 
-          // Mark as watched once user has covered 35% of video
           if (pct >= 35 && !card.dataset.markedWatched) {
             card.dataset.markedWatched = 'true';
             markAsWatched(card.dataset.id);
           }
 
-          // Resilient auto-advance if within 0.25s of video end
           if (video.currentTime >= video.duration - 0.25 && !video.paused && !card.dataset.endedHandled) {
             card.dataset.endedHandled = 'true';
             handleVideoEnd(card);
@@ -1679,23 +1837,25 @@
         }
       });
 
-      // Tap card to toggle play/pause (ignoring clicks on scrim text or buttons)
+      // P7: Tap card to toggle play/pause with 280ms debounce so double-tap cancels single-tap
       card.addEventListener('click', (e) => {
-        if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button')) return;
-        if (video.paused) {
-          video.play().catch(() => {});
-          playIcon.textContent = '▶';
-          playIcon.classList.add('visible');
-          setTimeout(() => playIcon.classList.remove('visible'), 400);
-        } else {
-          video.pause();
-          playIcon.textContent = '❚❚';
-          playIcon.classList.add('visible');
-          setTimeout(() => playIcon.classList.remove('visible'), 400);
-        }
+        if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
+        clearTimeout(pendingSingleTapTimer);
+        pendingSingleTapTimer = setTimeout(() => {
+          if (video.paused) {
+            video.play().catch(() => {});
+            playIcon.textContent = '▶';
+            playIcon.classList.add('visible');
+            setTimeout(() => playIcon.classList.remove('visible'), 400);
+          } else {
+            video.pause();
+            playIcon.textContent = '❚❚';
+            playIcon.classList.add('visible');
+            setTimeout(() => playIcon.classList.remove('visible'), 400);
+          }
+        }, 280);
       });
 
-      // Video Ended Event
       video.addEventListener('ended', () => {
         if (!card.dataset.endedHandled) {
           card.dataset.endedHandled = 'true';
@@ -1704,48 +1864,25 @@
       });
     });
 
-    // Advance to next unread visible card (Feedback #13 WebKit smooth-scroll freeze fix)
+    // P1: Discrete Advance to Next Card
     function advanceToNextReel(currentCard) {
-      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
-        .filter(c => c.style.display !== 'none');
-      const currentIndex = visibleCards.indexOf(currentCard);
+      const vCards = visibleCards();
+      const currentIndex = vCards.indexOf(currentCard);
 
-      if (currentIndex !== -1 && currentIndex + 1 < visibleCards.length) {
-        const nextCard = visibleCards[currentIndex + 1];
-        isScrollingTransition = true;
-
-        // Temporarily disable scroll-snap on iOS to prevent WebKit smooth-scroll freeze!
-        feed.style.scrollSnapType = 'none';
-
-        feed.scrollTo({
-          top: nextCard.offsetTop,
-          behavior: 'smooth'
-        });
-
-        // Synchronize playback with scroll arrival
-        setTimeout(() => {
-          feed.style.scrollSnapType = 'y mandatory';
-          playCardVideo(nextCard);
-          isScrollingTransition = false;
-        }, 280);
+      if (currentIndex !== -1 && currentIndex + 1 < vCards.length) {
+        goToCard(vCards[currentIndex + 1]);
       } else {
-        // Reached end of unread feed
         filterCategory(currentCategory);
       }
     }
 
-    // Advance to previous visible card (for desktop arrow up / k)
+    // P1: Discrete Advance to Previous Card
     function advanceToPreviousReel(currentCard) {
-      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
-        .filter(c => c.style.display !== 'none');
-      const currentIndex = visibleCards.indexOf(currentCard);
+      const vCards = visibleCards();
+      const currentIndex = vCards.indexOf(currentCard);
 
       if (currentIndex > 0) {
-        const prevCard = visibleCards[currentIndex - 1];
-        isScrollingTransition = true;
-        prevCard.scrollIntoView({ behavior: 'smooth' });
-        playCardVideo(prevCard);
-        setTimeout(() => { isScrollingTransition = false; }, 450);
+        goToCard(vCards[currentIndex - 1]);
       }
     }
 
@@ -1797,7 +1934,6 @@
       const watched = getWatchedIds();
       const newlyWatched = [];
 
-      // Mark all reels before targetRank (indices 0 to targetIdx - 1) as watched
       for (let i = 0; i < targetIdx; i++) {
         const c = allCards[i];
         if (c && c.dataset.id) {
@@ -1807,22 +1943,17 @@
         }
       }
 
-      // Ensure the target reel itself is unwatched so it displays and plays
       const targetCard = allCards[targetIdx];
       if (targetCard && targetCard.dataset.id) {
         watched.delete(targetCard.dataset.id);
         delete targetCard.dataset.markedWatched;
       }
 
-      // Save to localStorage
-      const jsonStr = JSON.stringify(Array.from(watched));
-      localStorage.setItem(STORAGE_KEY, jsonStr);
-      localStorage.setItem('ig_digest_watched_ids', jsonStr);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(watched)));
       if (targetCard && targetCard.dataset.id) {
         localStorage.setItem(LAST_WATCHED_KEY, targetCard.dataset.id);
       }
 
-      // Dual-layer sync: bulk save to local server backend
       if (newlyWatched.length > 0 && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
         fetch('/api/watched/bulk', {
           method: 'POST',
@@ -1831,26 +1962,23 @@
         }).catch(() => {});
       }
 
-      // Switch to 'all' so rank corresponds to overall top 100
       currentCategory = 'all';
       document.querySelectorAll('.story-bubble').forEach(b => {
         b.classList.toggle('active', b.dataset.category === 'all');
       });
 
-      // Re-filter feed (hiding newly marked watched reels)
       filterCategory('all');
 
       if (targetCard) {
         const rankEl = document.getElementById('currentRankDisplay');
         if (rankEl) rankEl.textContent = targetRank;
-        targetCard.scrollIntoView({ behavior: 'instant' });
-        playCardVideo(targetCard);
+        goToCard(targetCard);
       }
 
       showToast('Jumped to Reel #' + targetRank);
     }
 
-    // Instant Unselect Creator Channel (Local Only, No Popup, Seamless Advance)
+    // Instant Unselect Creator Channel
     function unselectCreator(handle, e) {
       if (e) {
         e.stopPropagation();
@@ -1859,7 +1987,6 @@
       if (!handle) return;
       const cleanHandle = handle.replace('@', '').trim().toLowerCase();
 
-      // Find all cards by this creator
       const cardsToRemove = Array.from(document.querySelectorAll('.reel-card')).filter(card => {
         const badge = card.querySelector('.creator-badge');
         return badge && badge.textContent.replace('@', '').trim().toLowerCase() === cleanHandle;
@@ -1867,22 +1994,18 @@
 
       if (cardsToRemove.length === 0) return;
 
-      // Identify where to advance if the active card is being removed
-      const allVisible = Array.from(document.querySelectorAll('.reel-card'))
-        .filter(c => c.style.display !== 'none');
+      const allVisible = visibleCards();
       const isActiveRemoved = currentActiveCard && cardsToRemove.includes(currentActiveCard);
 
       let targetCard = null;
       if (isActiveRemoved) {
         const currentIdx = allVisible.indexOf(currentActiveCard);
-        // Look ahead for the next visible card not by this creator
         for (let i = currentIdx + 1; i < allVisible.length; i++) {
           if (!cardsToRemove.includes(allVisible[i])) {
             targetCard = allVisible[i];
             break;
           }
         }
-        // If reached end, look behind
         if (!targetCard) {
           for (let i = currentIdx - 1; i >= 0; i--) {
             if (!cardsToRemove.includes(allVisible[i])) {
@@ -1893,7 +2016,6 @@
         }
       }
 
-      // Remove cards from DOM
       cardsToRemove.forEach(c => {
         const v = c.querySelector('video');
         if (v) v.pause();
@@ -1903,26 +2025,20 @@
         updateCategoryProgressRings();
       }
 
-      // Show immediate feedback
       showToast('@' + cleanHandle + ' unselected & muted');
 
-      // Seamlessly advance or stay in place (NEVER reset to reel #1)
       if (isActiveRemoved) {
         if (targetCard) {
-          targetCard.scrollIntoView({ behavior: 'smooth' });
-          playCardVideo(targetCard);
+          goToCard(targetCard);
         } else {
-          // No more reels in this category
           const celebration = document.getElementById('celebrationScreen');
           if (celebration) celebration.classList.add('active');
           currentActiveCard = null;
         }
       } else if (currentActiveCard) {
-        // Keep playing current card and update rank display
         playCardVideo(currentActiveCard);
       }
 
-      // Send to local server backend (updates blacklist.json and prunes sources.json)
       fetch('/api/blacklist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1932,16 +2048,13 @@
 
     // Desktop Keyboard Controls: F (fullscreen), Space (play/pause), ArrowDown/Up (next/prev), G (jump), B (unselect)
     window.addEventListener('keydown', (e) => {
-      // Escape closes any active modal
       if (e.key === 'Escape') {
         closeModal('jumpModal');
         return;
       }
 
-      // Ignore if user is interacting with form controls
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
 
-      // 'B' or 'b' -> Instant blacklist/unselect creator of current active reel
       if (e.key === 'b' || e.key === 'B') {
         e.preventDefault();
         if (currentActiveCard) {
@@ -1953,20 +2066,17 @@
         return;
       }
 
-      // 'G' or 'g' -> Open Jump to Reel modal
       if (e.key === 'g' || e.key === 'G') {
         e.preventDefault();
         openJumpModal();
         return;
       }
 
-      // 'F' or 'f' -> Toggle Unified Fullscreen Mode
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         toggleUnifiedFullscreen();
       }
 
-      // Spacebar -> Toggle Video Play / Pause
       if (e.code === 'Space' || e.key === ' ') {
         e.preventDefault();
         if (currentActiveCard) {
@@ -1992,20 +2102,18 @@
         }
       }
 
-      // ArrowDown or 'j' -> Next Reel
       if (e.key === 'ArrowDown' || e.key === 'j') {
         e.preventDefault();
         if (currentActiveCard) advanceToNextReel(currentActiveCard);
       }
 
-      // ArrowUp or 'k' -> Previous Reel
       if (e.key === 'ArrowUp' || e.key === 'k') {
         e.preventDefault();
         if (currentActiveCard) advanceToPreviousReel(currentActiveCard);
       }
     });
 
-    // IntersectionObserver to play video when snapped into view
+    // IntersectionObserver to play video when snapped into view (user scroll)
     const observer = new IntersectionObserver((entries) => {
       if (isScrollingTransition) return;
       entries.forEach(entry => {
@@ -2024,13 +2132,12 @@
       if (isScrollingTransition) return;
       const feedRect = feed.getBoundingClientRect();
       const feedCenter = feedRect.top + feedRect.height / 2;
-      const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
-        .filter(c => c.style.display !== 'none');
+      const vCards = visibleCards();
 
       let closestCard = null;
       let closestDist = Infinity;
 
-      visibleCards.forEach(card => {
+      vCards.forEach(card => {
         const r = card.getBoundingClientRect();
         const cardCenter = r.top + r.height / 2;
         const dist = Math.abs(feedCenter - cardCenter);
@@ -2054,6 +2161,19 @@
       feed.addEventListener('scrollend', checkCenteredCard, { passive: true });
     }
 
+    // P2: Global watchdog: if playing card stalls > 8s without progress, skip it
+    setInterval(() => {
+      const card = currentActiveCard;
+      if (!card || document.visibilityState !== 'visible') return;
+      const v = card.querySelector('.reel-video');
+      if (!v || v.paused || v.ended) return;
+      if (v.dataset.src && v.dataset.src.startsWith('data:')) return;
+      if (v.error) return skipDeadCard(card, 'media error');
+      if (performance.now() - lastProgressAt > 8000 && v.readyState < 3) {
+        skipDeadCard(card, 'stall > 8s');
+      }
+    }, 2000);
+
     // Initialize & Resume from First Unwatched Reel (or Deep Link ?reel=ID)
     const urlParams = new URLSearchParams(window.location.search);
     const targetReelId = urlParams.get('reel');
@@ -2065,8 +2185,7 @@
         filterCategory('all');
         targetCard.style.display = 'flex';
         setTimeout(() => {
-          targetCard.scrollIntoView({ behavior: 'instant' });
-          playCardVideo(targetCard);
+          goToCard(targetCard);
         }, 60);
       } else {
         filterCategory('all');
