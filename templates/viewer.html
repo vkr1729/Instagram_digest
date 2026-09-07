@@ -51,6 +51,7 @@
       background: #000;
       overflow: hidden;
       box-shadow: none;
+      overscroll-behavior-y: none;
     }
 
     body {
@@ -62,6 +63,7 @@
       height: 100dvh;
       width: 100vw;
       overflow: hidden;
+      overscroll-behavior-y: none;
     }
 
     /* Floating Top Chrome Overlay (Transparent Scrim Over Video) */
@@ -73,9 +75,10 @@
       width: 100%;
       max-width: calc(100vh * (9 / 16));
       z-index: 30;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.5) 60%, transparent 100%);
+      background: linear-gradient(to bottom, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 60%, transparent 100%);
       pointer-events: none;
       transition: opacity 0.25s ease, transform 0.25s ease;
+      padding-top: env(safe-area-inset-top, 0px);
     }
     .top-chrome * {
       pointer-events: auto;
@@ -93,7 +96,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 14px 16px 4px;
+      padding: max(16px, env(safe-area-inset-top, 16px)) 16px 4px;
       background: transparent;
       border: none;
     }
@@ -473,6 +476,8 @@
       scrollbar-width: none;
       background: #000;
       z-index: 1;
+      overscroll-behavior-y: none;
+      touch-action: pan-y;
     }
     .feed-container::-webkit-scrollbar { display: none; }
 
@@ -489,6 +494,7 @@
       align-items: center;
       justify-content: center;
       overflow: hidden;
+      touch-action: pan-y;
     }
 
     .reel-video {
@@ -499,6 +505,8 @@
       margin: 0 auto;
       background: #000;
       display: block;
+      transform: translateZ(0);
+      will-change: transform;
     }
 
     /* Hairline Top Progress Bar */
@@ -528,8 +536,8 @@
       transform: translateX(-50%);
       width: 100%;
       max-width: calc(100vh * (9 / 16));
-      padding: 50px 16px 20px;
-      background: linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.45) 60%, transparent 100%);
+      padding: 60px 16px max(24px, env(safe-area-inset-bottom, 24px));
+      background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.45) 60%, transparent 100%);
       z-index: 10;
       pointer-events: none;
     }
@@ -538,8 +546,9 @@
     .creator-meta {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
       margin-bottom: 6px;
+      flex-wrap: wrap;
     }
     .creator-badge {
       font-size: 13px;
@@ -560,6 +569,49 @@
       font-size: 11px;
       color: #a1a1aa;
       margin-left: auto;
+    }
+    .boost-speed-btn {
+      background: rgba(255, 255, 255, 0.16);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      transition: all 0.15s ease;
+      line-height: 1;
+    }
+    .boost-speed-btn:hover { background: rgba(255, 255, 255, 0.28); }
+    .boost-speed-btn.active {
+      background: #f09433;
+      border-color: #f09433;
+      color: #000;
+      box-shadow: 0 0 10px rgba(240, 148, 51, 0.6);
+    }
+    .whatsapp-share-btn {
+      background: rgba(37, 211, 102, 0.2);
+      border: 1px solid rgba(37, 211, 102, 0.45);
+      color: #25d366;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+      line-height: 1;
+    }
+    .whatsapp-share-btn:hover {
+      background: rgba(37, 211, 102, 0.38);
+      color: #fff;
     }
     .caption-snippet {
       font-size: 12px;
@@ -647,7 +699,76 @@
       align-items: center;
       gap: 6px;
     }
-    .countdown-toast.visible { opacity: 1; }
+    /* Gesture Seek Floating HUD Indicator */
+    .seek-hud {
+      position: absolute;
+      top: 45%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(14, 15, 20, 0.92);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+      z-index: 25;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.8);
+    }
+    .seek-hud.visible { opacity: 1; }
+    .seek-hud-delta { color: #f09433; font-weight: 700; font-size: 12px; }
+
+    /* Double Tap Skip Ripple Indicators */
+    .skip-ripple {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 35%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 20;
+      transition: opacity 0.2s ease;
+    }
+    .skip-left {
+      left: 0;
+      background: radial-gradient(circle at center, rgba(255,255,255,0.18) 0%, transparent 70%);
+      border-radius: 0 100px 100px 0;
+    }
+    .skip-right {
+      right: 0;
+      background: radial-gradient(circle at center, rgba(255,255,255,0.18) 0%, transparent 70%);
+      border-radius: 100px 0 0 100px;
+    }
+    .skip-ripple.active {
+      opacity: 1;
+      animation: ripplePulse 0.4s ease-out;
+    }
+    @keyframes ripplePulse {
+      0% { transform: scale(0.85); opacity: 0.8; }
+      50% { transform: scale(1.05); opacity: 1; }
+      100% { transform: scale(1); opacity: 0; }
+    }
+    .skip-ripple-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      color: #fff;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    }
+    .skip-icon { font-size: 26px; font-weight: 700; }
+    .skip-text { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
 
     /* Celebratory "All Caught Up" Screen */
     .celebration-screen {
@@ -683,6 +804,27 @@
     <!-- Floating Immersive Mode Toast -->
     <div class="toast-overlay" id="globalToast">Double tap screen for full video</div>
 
+    <!-- Gesture Seek Floating HUD Indicator -->
+    <div class="seek-hud" id="seekHud">
+      <span class="seek-hud-icon">⇄</span>
+      <span class="seek-hud-time" id="seekHudTime">0:00 / 0:00</span>
+      <span class="seek-hud-delta" id="seekHudDelta">(+0s)</span>
+    </div>
+
+    <!-- Double Tap Ripple Indicators -->
+    <div class="skip-ripple skip-left" id="skipRippleLeft">
+      <div class="skip-ripple-content">
+        <span class="skip-icon">↺</span>
+        <span class="skip-text">10s</span>
+      </div>
+    </div>
+    <div class="skip-ripple skip-right" id="skipRippleRight">
+      <div class="skip-ripple-content">
+        <span class="skip-icon">↻</span>
+        <span class="skip-text">10s</span>
+      </div>
+    </div>
+
     <!-- Floating Top Chrome Overlay (Transparent Scrim Over Video) -->
     <div class="top-chrome" id="topChrome">
       <!-- Top Header -->
@@ -693,7 +835,7 @@
             #<span id="currentRankDisplay">1</span>/{{ items|length }}
           </button>
           <button class="speed-btn" id="speedToggleBtn" onclick="cycleSpeed()" title="Adjust Playback Speed">
-            ⚡ <span id="speedDisplay">1.5x</span>
+            ⚡ <span id="speedDisplay">{{ default_speed|default(1.25) }}x</span>
           </button>
           {% if is_local %}
           <a href="/channels" class="speed-btn" style="text-decoration:none;" title="Manage Channels & Subscriptions">
@@ -780,6 +922,10 @@
             <span class="creator-badge">@{{ item.creator_handle }}</span>
             <span class="rank-pill">{{ item.rank_display }}</span>
             <span class="views-label">{{ "{:,}".format(item.view_count) }} views</span>
+            <button class="boost-speed-btn" onclick="toggleReelSpeed(this, event)" title="Toggle 2x Speed for this reel">2x</button>
+            <button class="whatsapp-share-btn" onclick="shareReelWhatsApp('{{ item.id }}', '{{ item.r2_url }}', event)" title="Share via WhatsApp">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.312.045-.694.062-2.146-.539-1.854-.768-3.04-2.656-3.134-2.779-.093-.122-.746-.992-.746-1.892 0-.899.472-1.34.641-1.523.169-.183.37-.229.493-.229.123 0 .247.001.353.006.113.006.264-.043.414.316.155.371.53 1.293.576 1.386.046.093.078.201.016.324-.063.124-.093.2-.185.31-.093.109-.196.243-.28.327-.094.093-.192.195-.082.384.11.189.489.807 1.05 1.306.721.642 1.328.841 1.517.933.189.093.298.077.408-.046.11-.124.471-.548.597-.735.124-.188.25-.157.418-.094.169.063 1.07.505 1.254.597.185.093.308.138.354.216.045.077.045.449-.099.854z"/></svg> Share
+            </button>
             {% if is_local %}
             <button class="unselect-channel-btn" onclick="unselectCreator('{{ item.creator_handle }}', event)" title="Unselect @{{ item.creator_handle }} (Shortcut: B)">🚫</button>
             {% endif %}
@@ -818,7 +964,8 @@
 
   <script>
     // State Variables
-    let currentSpeed = 1.5;
+    const defaultSpeed = {{ default_speed|default(1.25) }};
+    let currentSpeed = defaultSpeed;
     const availableSpeeds = [1.0, 1.25, 1.5, 1.75, 2.0];
     let currentCategory = 'all';
     let isAudioMuted = false;
@@ -831,6 +978,7 @@
     const STORAGE_KEY = 'ig_digest_watched_ids_' + currentWeekId;
     const LAST_WATCHED_KEY = 'ig_digest_last_watched_id_' + currentWeekId;
 
+    // Session-based watched tracking: allows re-watching in current session
     function getWatchedIds() {
       try {
         let stored = localStorage.getItem(STORAGE_KEY);
@@ -847,8 +995,11 @@
       }
     }
 
+    const sessionWatchedIds = new Set();
+
     function markAsWatched(reelId) {
       if (!reelId) return;
+      sessionWatchedIds.add(reelId);
       const set = getWatchedIds();
       set.add(reelId);
       const jsonStr = JSON.stringify(Array.from(set));
@@ -871,6 +1022,7 @@
     }
 
     function resetWatchedHistory() {
+      sessionWatchedIds.clear();
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(LAST_WATCHED_KEY);
       localStorage.removeItem('ig_digest_watched_ids');
@@ -927,11 +1079,12 @@
       window.location.href = targetUrl;
     }
 
-    // Playback Speed Cycling
+    // Playback Speed Cycling (Header button cycles through available speeds)
     function cycleSpeed() {
       const nextIdx = (availableSpeeds.indexOf(currentSpeed) + 1) % availableSpeeds.length;
       currentSpeed = availableSpeeds[nextIdx];
-      document.getElementById('speedDisplay').textContent = currentSpeed + 'x';
+      const spdEl = document.getElementById('speedDisplay');
+      if (spdEl) spdEl.textContent = currentSpeed + 'x';
 
       // Apply to all currently loaded videos
       document.querySelectorAll('.reel-video').forEach(v => {
@@ -940,6 +1093,46 @@
         v.webkitPreservesPitch = true;
         v.mozPreservesPitch = true;
       });
+
+      // Reset any active boost buttons
+      document.querySelectorAll('.boost-speed-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.textContent = '2x';
+      });
+    }
+
+    // Toggle 2x Speed for the specific active reel (Feedback #4)
+    function toggleReelSpeed(btn, e) {
+      if (e) e.stopPropagation();
+      if (!currentActiveCard) return;
+      const video = currentActiveCard.querySelector('.reel-video');
+      if (!video) return;
+
+      const isBoosted = (video.playbackRate === 2.0);
+      const targetRate = isBoosted ? currentSpeed : 2.0;
+      video.playbackRate = targetRate;
+      video.preservesPitch = true;
+      video.webkitPreservesPitch = true;
+
+      if (btn) {
+        btn.classList.toggle('active', !isBoosted);
+        btn.textContent = !isBoosted ? '⚡ 2x' : '2x';
+      }
+      showToast(targetRate === 2.0 ? 'Boosted to 2x for this reel' : `Speed reset to ${targetRate}x`);
+    }
+
+    // Share reel via WhatsApp with Open Graph thumbnail & inline video stream (Feedback #8)
+    function shareReelWhatsApp(reelId, r2Url, e) {
+      if (e) e.stopPropagation();
+      const origin = window.location.origin;
+      const inArchive = window.location.pathname.includes('/archive/');
+      const basePath = inArchive
+        ? origin + window.location.pathname.replace(/\/archive\/.*$/, '')
+        : origin + window.location.pathname.replace(/\/[^\/]*$/, '');
+      const shareUrl = `${basePath}/share/${reelId}.html`;
+      const text = `Watch this reel on Instagram Digest: ${shareUrl}`;
+      const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+      window.open(waUrl, '_blank');
     }
 
     // Screen Wake Lock API (Keeps screen awake without touch input)
@@ -957,39 +1150,39 @@
       }
     });
 
-    // Unified Fullscreen Toggle (Used by both 'F' key and Double-Tap)
+    // Unified Fullscreen Toggle (Feedback #5 fix: uses isImmersive class for 100% reliability on iOS)
     function toggleUnifiedFullscreen() {
       const shell = document.getElementById('appShell');
-      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      const isImmersive = shell.classList.contains('immersive-mode');
 
-      if (!isFullscreen) {
+      if (!isImmersive) {
+        shell.classList.add('immersive-mode');
         const docEl = document.documentElement;
         if (docEl.requestFullscreen) {
           docEl.requestFullscreen().catch(() => {});
         } else if (docEl.webkitRequestFullscreen) {
           try { docEl.webkitRequestFullscreen(); } catch (e) {}
         }
-        shell.classList.add('immersive-mode');
         showToast('Fullscreen Active');
       } else {
-        if (document.exitFullscreen) {
-          document.exitFullscreen().catch(() => {});
-        } else if (document.webkitExitFullscreen) {
-          try { document.webkitExitFullscreen(); } catch (e) {}
-        }
         shell.classList.remove('immersive-mode');
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+          if (document.exitFullscreen) {
+            document.exitFullscreen().catch(() => {});
+          } else if (document.webkitExitFullscreen) {
+            try { document.webkitExitFullscreen(); } catch (e) {}
+          }
+        }
         showToast('Controls Restored');
       }
     }
 
-    // Sync UI with native fullscreen state changes (e.g. if user hits Esc key)
+    // Sync UI with native fullscreen state changes
     function onFullscreenChange() {
       const shell = document.getElementById('appShell');
       const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
       if (isFullscreen) {
         shell.classList.add('immersive-mode');
-      } else {
-        shell.classList.remove('immersive-mode');
       }
     }
     document.addEventListener('fullscreenchange', onFullscreenChange);
@@ -1016,21 +1209,142 @@
     ['click', 'touchstart', 'keydown', 'scroll'].forEach(evt => {
       window.addEventListener(evt, handleInitialInteraction, { once: true, passive: true });
     });
-    // Request wake lock immediately on load
     requestWakeLock();
 
-    // Double-Tap to Toggle Unified Fullscreen Mode (Both mobile & desktop)
+    // Double-Tap 10s Skip & Ripple
+    function skipSeconds(delta) {
+      if (!currentActiveCard) return;
+      const video = currentActiveCard.querySelector('.reel-video');
+      if (!video || !video.duration) return;
+
+      const newTime = Math.max(0, Math.min(video.duration, video.currentTime + delta));
+      video.currentTime = newTime;
+
+      showSkipRipple(delta > 0 ? 'right' : 'left');
+
+      // If skipped forward past 35%, mark as watched! (Feedback #9 & #10)
+      if (video.currentTime / video.duration >= 0.35 && !currentActiveCard.dataset.markedWatched) {
+        currentActiveCard.dataset.markedWatched = 'true';
+        markAsWatched(currentActiveCard.dataset.id);
+      }
+    }
+
+    function showSkipRipple(side) {
+      const el = document.getElementById(side === 'right' ? 'skipRippleRight' : 'skipRippleLeft');
+      if (!el) return;
+      el.classList.add('active');
+      setTimeout(() => el.classList.remove('active'), 400);
+    }
+
+    // Double-Tap 3-Zone Mapping (Feedback #5 & #11)
+    // Left 35%: -10s, Right 35%: +10s, Center 30%: Toggle Fullscreen
     let lastTapTime = 0;
-    document.getElementById('feedContainer').addEventListener('click', (e) => {
+    let lastTapX = 0;
+    const feed = document.getElementById('feedContainer');
+
+    feed.addEventListener('click', (e) => {
       if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button')) return;
       const now = Date.now();
-      if (now - lastTapTime < 300) {
-        toggleUnifiedFullscreen();
+      const clickX = e.clientX;
+      const width = window.innerWidth;
+      const timeDiff = now - lastTapTime;
+
+      if (timeDiff < 320 && Math.abs(clickX - lastTapX) < 100) {
         lastTapTime = 0;
+        if (clickX < width * 0.35) {
+          skipSeconds(-10);
+        } else if (clickX > width * 0.65) {
+          skipSeconds(10);
+        } else {
+          toggleUnifiedFullscreen();
+        }
       } else {
         lastTapTime = now;
+        lastTapX = clickX;
       }
     });
+
+    // Horizontal Touch Gesture Video Seeking (Feedback #10)
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let isHorizontalScrubbing = false;
+    let scrubInitialTime = 0;
+    let scrubTargetTime = 0;
+
+    feed.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      isHorizontalScrubbing = false;
+      if (currentActiveCard) {
+        const video = currentActiveCard.querySelector('.reel-video');
+        if (video) scrubInitialTime = video.currentTime;
+      }
+    }, { passive: true });
+
+    feed.addEventListener('touchmove', (e) => {
+      if (e.touches.length !== 1 || !currentActiveCard) return;
+      const currentX = e.touches[0].clientX;
+      const currentY = e.touches[0].clientY;
+      const deltaX = currentX - touchStartX;
+      const deltaY = currentY - touchStartY;
+
+      if (!isHorizontalScrubbing) {
+        if (Math.abs(deltaX) > 18 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4) {
+          isHorizontalScrubbing = true;
+        }
+      }
+
+      if (isHorizontalScrubbing) {
+        const video = currentActiveCard.querySelector('.reel-video');
+        if (!video || !video.duration) return;
+
+        // Proportional seek: 220px across screen = 20 seconds
+        const seekOffset = (deltaX / 220) * 20;
+        scrubTargetTime = Math.max(0, Math.min(video.duration, scrubInitialTime + seekOffset));
+
+        // Update floating HUD
+        const hud = document.getElementById('seekHud');
+        const hudTime = document.getElementById('seekHudTime');
+        const hudDelta = document.getElementById('seekHudDelta');
+        if (hud && hudTime && hudDelta) {
+          hudTime.textContent = `${formatTime(scrubTargetTime)} / ${formatTime(video.duration)}`;
+          const diff = Math.round(scrubTargetTime - scrubInitialTime);
+          hudDelta.textContent = `(${diff >= 0 ? '+' : ''}${diff}s)`;
+          hud.classList.add('visible');
+        }
+
+        // Live update hairline progress bar
+        const fill = currentActiveCard.querySelector('.reel-progress-fill');
+        if (fill) {
+          fill.style.width = `${(scrubTargetTime / video.duration) * 100}%`;
+        }
+      }
+    }, { passive: true });
+
+    feed.addEventListener('touchend', () => {
+      if (isHorizontalScrubbing && currentActiveCard) {
+        const video = currentActiveCard.querySelector('.reel-video');
+        if (video && video.duration) {
+          video.currentTime = scrubTargetTime;
+          // Mark as watched if seek crossed 35%!
+          if (scrubTargetTime / video.duration >= 0.35 && !currentActiveCard.dataset.markedWatched) {
+            currentActiveCard.dataset.markedWatched = 'true';
+            markAsWatched(currentActiveCard.dataset.id);
+          }
+        }
+      }
+      isHorizontalScrubbing = false;
+      const hud = document.getElementById('seekHud');
+      if (hud) hud.classList.remove('visible');
+    }, { passive: true });
+
+    function formatTime(secs) {
+      if (isNaN(secs) || secs < 0) return '0:00';
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60);
+      return `${m}:${s < 10 ? '0' : ''}${s}`;
+    }
 
     function showToast(msg) {
       const t = document.getElementById('globalToast');
@@ -1040,7 +1354,7 @@
       setTimeout(() => t.classList.remove('visible'), 1600);
     }
 
-    // Update Story Rings: dynamic unwinding progress ring showing percentage of reels left
+    // Update Story Rings: cross-browser dynamic unwinding progress ring
     function updateCategoryProgressRings() {
       const watched = getWatchedIds();
       const allCards = Array.from(document.querySelectorAll('.reel-card'));
@@ -1070,7 +1384,7 @@
 
         const ring = bubble.querySelector('.story-ring');
         if (ring) {
-          ring.style.setProperty('--ring-deg', `${deg}deg`);
+          ring.style.background = `conic-gradient(from -90deg, #f09433 0deg, #dc2743 ${deg * 0.5}deg, #bc1888 ${deg}deg, rgba(255, 255, 255, 0.16) ${deg}deg 360deg)`;
         }
         bubble.setAttribute('title', `${leftCount} of ${total} left (${Math.round(pctLeft * 100)}%)`);
       });
@@ -1099,6 +1413,7 @@
           (cat === 'entertainment' && cardCat === 'culture') ||
           (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
         );
+        
         const isWatched = watched.has(card.dataset.id);
 
         if (matchesCat && !isWatched) {
@@ -1129,7 +1444,6 @@
     }
 
     // High-Performance Sliding Window Loader (Active + Next 2 Reels)
-    // Loads active reel immediately and queues 2 next reels without degrading active load
     function updateSlidingWindow(activeCard) {
       if (!activeCard) return;
       const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
@@ -1155,27 +1469,22 @@
           }
 
           if (distance === 0) {
-            // Active reel: highest fetch priority and immediate auto-buffer
             video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'high';
           } else if (distance === 1) {
-            // Next reel: low fetch priority with auto preloading so readyState is ready before swipe
             video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'low';
           } else if (distance === 2) {
-            // 2nd next reel: low fetch priority; metadata only
             if ('fetchPriority' in video) video.fetchPriority = 'low';
             video.preload = 'metadata';
           } else {
-            // Lookbehind (-1)
             video.preload = 'metadata';
           }
         } else {
-          // Offscreen: unmount src to release network connections and hardware decoders
           if (video.getAttribute('src')) {
             video.pause();
             video.removeAttribute('src');
-            video.load(); // Flush internal video buffer
+            video.load();
           }
         }
       });
@@ -1185,6 +1494,12 @@
     function playCardVideo(card) {
       if (!card) return;
       currentActiveCard = card;
+
+      // Reset any active 2x boost button styling from previous reel (Feedback #4)
+      document.querySelectorAll('.boost-speed-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.textContent = '2x';
+      });
 
       // Update header rank counter
       if (card.dataset.index !== undefined) {
@@ -1196,10 +1511,8 @@
       const video = card.querySelector('.reel-video');
       if (!video) return;
 
-      // Update sliding window around current card
       updateSlidingWindow(card);
 
-      // Ensure active video has src loaded
       if (!video.getAttribute('src') && video.dataset.src) {
         video.src = video.dataset.src;
       }
@@ -1212,7 +1525,7 @@
         }
       });
 
-      // Maintain pitch stability at 1.5x speed
+      // Maintain pitch stability at configured speed
       video.playbackRate = currentSpeed;
       video.preservesPitch = true;
       video.webkitPreservesPitch = true;
@@ -1244,20 +1557,20 @@
       }, 350);
     }
 
-    // Wire Up Video Events (Progress, 70% Watched Threshold & Auto-Advance)
+    // Wire Up Video Events (Progress, 35% Watched Threshold & Auto-Advance)
     document.querySelectorAll('.reel-card').forEach(card => {
       const video = card.querySelector('.reel-video');
       const fill = card.querySelector('.reel-progress-fill');
       const playIcon = card.querySelector('.play-pause-indicator');
 
-      // Update hairline progress & 70% watched threshold
+      // Update hairline progress & 35% watched threshold (Feedback #9)
       video.addEventListener('timeupdate', () => {
         if (video.duration) {
           const pct = (video.currentTime / video.duration) * 100;
           fill.style.width = pct + '%';
 
-          // Mark as watched once user has watched 70% of video
-          if (pct >= 70 && !card.dataset.markedWatched) {
+          // Mark as watched once user has covered 35% of video
+          if (pct >= 35 && !card.dataset.markedWatched) {
             card.dataset.markedWatched = 'true';
             markAsWatched(card.dataset.id);
           }
@@ -1295,7 +1608,7 @@
       });
     });
 
-    // Advance to next unread visible card
+    // Advance to next unread visible card (Feedback #13 WebKit smooth-scroll freeze fix)
     function advanceToNextReel(currentCard) {
       const visibleCards = Array.from(document.querySelectorAll('.reel-card'))
         .filter(c => c.style.display !== 'none');
@@ -1304,9 +1617,21 @@
       if (currentIndex !== -1 && currentIndex + 1 < visibleCards.length) {
         const nextCard = visibleCards[currentIndex + 1];
         isScrollingTransition = true;
-        nextCard.scrollIntoView({ behavior: 'smooth' });
-        playCardVideo(nextCard);
-        setTimeout(() => { isScrollingTransition = false; }, 450);
+
+        // Temporarily disable scroll-snap on iOS to prevent WebKit smooth-scroll freeze!
+        feed.style.scrollSnapType = 'none';
+
+        feed.scrollTo({
+          top: nextCard.offsetTop,
+          behavior: 'smooth'
+        });
+
+        // Synchronize playback with scroll arrival
+        setTimeout(() => {
+          feed.style.scrollSnapType = 'y mandatory';
+          playCardVideo(nextCard);
+          isScrollingTransition = false;
+        }, 280);
       } else {
         // Reached end of unread feed
         filterCategory(currentCategory);
@@ -1420,10 +1745,10 @@
       filterCategory('all');
 
       if (targetCard) {
-        setTimeout(() => {
-          targetCard.scrollIntoView({ behavior: 'instant' });
-          playCardVideo(targetCard);
-        }, 50);
+        const rankEl = document.getElementById('currentRankDisplay');
+        if (rankEl) rankEl.textContent = targetRank;
+        targetCard.scrollIntoView({ behavior: 'instant' });
+        playCardVideo(targetCard);
       }
 
       showToast('Jumped to Reel #' + targetRank);
@@ -1598,7 +1923,6 @@
 
     // Scroll settlement listener to guarantee playback when scrolling stops
     let scrollEndTimer = null;
-    const feed = document.getElementById('feedContainer');
 
     function checkCenteredCard() {
       if (isScrollingTransition) return;
@@ -1634,8 +1958,26 @@
       feed.addEventListener('scrollend', checkCenteredCard, { passive: true });
     }
 
-    // Initialize & Resume from First Unwatched Reel
-    filterCategory('all');
+    // Initialize & Resume from First Unwatched Reel (or Deep Link ?reel=ID)
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetReelId = urlParams.get('reel');
+
+    if (targetReelId) {
+      const allCards = Array.from(document.querySelectorAll('.reel-card'));
+      const targetCard = allCards.find(c => c.dataset.id === targetReelId);
+      if (targetCard) {
+        filterCategory('all');
+        targetCard.style.display = 'flex';
+        setTimeout(() => {
+          targetCard.scrollIntoView({ behavior: 'instant' });
+          playCardVideo(targetCard);
+        }, 60);
+      } else {
+        filterCategory('all');
+      }
+    } else {
+      filterCategory('all');
+    }
   </script>
 </body>
 </html>

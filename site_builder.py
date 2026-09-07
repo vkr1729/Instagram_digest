@@ -84,8 +84,22 @@ def build_site(
             available_week_ids.add(f.stem)
     available_week_ids.add(week_id)
 
-    sorted_weeks = sorted(list(available_week_ids), reverse=True)
+    # Limit available weeks to RETENTION_WEEKS
+    max_weeks = max(1, config.RETENTION_WEEKS)
+    sorted_weeks = sorted(list(available_week_ids), reverse=True)[:max_weeks]
     latest_week = sorted_weeks[0] if sorted_weeks else week_id
+
+    # Add share_url to items
+    share_dir = config.SITE_DIR / "share"
+    share_dir.mkdir(parents=True, exist_ok=True)
+
+    for item in r2_items:
+        reel_id = item.get("id", "")
+        item["share_url"] = f"{config.PAGES_BASE_URL}/share/{reel_id}.html"
+
+    for item in local_items:
+        reel_id = item.get("id", "")
+        item["share_url"] = f"/share/{reel_id}.html"
 
     def build_weeks_metadata(is_local: bool) -> list[dict[str, Any]]:
         meta_list = []
@@ -120,6 +134,8 @@ def build_site(
         week_id=week_id,
         available_weeks=weeks_r2,
         is_local=False,
+        default_speed=config.DEFAULT_PLAYBACK_SPEED,
+        pages_base_url=config.PAGES_BASE_URL,
     )
     r2_index_path = config.SITE_DIR / "index.html"
     r2_index_path.write_text(rendered_r2, encoding="utf-8")
@@ -130,11 +146,77 @@ def build_site(
         week_id=week_id,
         available_weeks=weeks_local,
         is_local=True,
+        default_speed=config.DEFAULT_PLAYBACK_SPEED,
+        pages_base_url="http://localhost:8080",
     )
     local_index_path = config.SITE_DIR / "local_index.html"
     local_index_path.write_text(rendered_local, encoding="utf-8")
 
-    # 3. Also render as archive copies
+    # 3. Generate Standalone WhatsApp & Social Open Graph Share Pages
+    for item in r2_items:
+        reel_id = item.get("id", "")
+        if not reel_id:
+            continue
+        thumb = item.get("thumbnail") or f"{config.PAGES_BASE_URL}/apple-touch-icon.png"
+        caption = (item.get("caption") or "Watch on Instagram Digest").replace('"', '&quot;').replace('<', '&lt;')
+        handle = item.get("creator_handle", "")
+        rank_dsp = item.get("rank_display", "#01")
+        video_url = item.get("r2_url", "")
+        share_page_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reel by @{handle} • {rank_dsp}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- WhatsApp & Social Open Graph Rich Card Metadata -->
+  <meta property="og:site_name" content="Instagram Digest">
+  <meta property="og:type" content="video.other">
+  <meta property="og:title" content="Reel by @{handle} ({rank_dsp})">
+  <meta property="og:description" content="{caption[:220]}">
+  <meta property="og:url" content="{config.PAGES_BASE_URL}/share/{reel_id}.html">
+  <meta property="og:image" content="{thumb}">
+  <meta property="og:image:secure_url" content="{thumb}">
+  <meta property="og:image:type" content="image/jpeg">
+  <meta property="og:image:width" content="720">
+  <meta property="og:image:height" content="1280">
+
+  <!-- Video Stream for WhatsApp Inline Playback -->
+  <meta property="og:video" content="{video_url}">
+  <meta property="og:video:url" content="{video_url}">
+  <meta property="og:video:secure_url" content="{video_url}">
+  <meta property="og:video:type" content="video/mp4">
+  <meta property="og:video:width" content="720">
+  <meta property="og:video:height" content="1280">
+
+  <!-- Twitter / X Player Card -->
+  <meta name="twitter:card" content="player">
+  <meta name="twitter:title" content="Reel by @{handle} ({rank_dsp})">
+  <meta name="twitter:description" content="{caption[:220]}">
+  <meta name="twitter:image" content="{thumb}">
+  <meta name="twitter:player" content="{video_url}">
+  <meta name="twitter:player:width" content="720">
+  <meta name="twitter:player:height" content="1280">
+
+  <!-- Instant Browser Redirect to Full App -->
+  <meta http-equiv="refresh" content="0; url=../index.html?reel={reel_id}">
+  <script>
+    if (!navigator.userAgent.includes('WhatsApp')) {{
+      window.location.replace('../index.html?reel={reel_id}');
+    }}
+  </script>
+</head>
+<body style="background:#000;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;">
+  <div style="text-align:center;padding:20px;">
+    <h3 style="margin-bottom:12px;">@{handle} • {rank_dsp}</h3>
+    <video src="{video_url}" poster="{thumb}" controls autoplay playsinline style="max-width:100%;max-height:75vh;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.8);"></video>
+    <p style="margin-top:14px;"><a href="../index.html?reel={reel_id}" style="color:#f09433;text-decoration:none;font-weight:600;">Open in Instagram Digest App &rarr;</a></p>
+  </div>
+</body>
+</html>"""
+        (share_dir / f"{reel_id}.html").write_text(share_page_content, encoding="utf-8")
+
+    # 4. Also render as archive copies
     (archive_dir / f"{week_id}.html").write_text(rendered_r2, encoding="utf-8")
     (archive_dir / f"local_{week_id}.html").write_text(rendered_local, encoding="utf-8")
 

@@ -63,7 +63,7 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
     # Verify Variant 1A features in both
     for html in (r2_html, local_html):
         assert "Instagram" in html
-        assert "1.5x" in html
+        assert f"{config.DEFAULT_PLAYBACK_SPEED}x" in html
         assert "data-category=\"ai_tech\"" in html
         assert "data-category=\"health\"" in html
         assert "Top 200" in html

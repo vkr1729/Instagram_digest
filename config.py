@@ -44,15 +44,17 @@ R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCO
 
 # GitHub Deployment
 GH_PAGES_REPO = os.getenv("GH_PAGES_REPO", "https://github.com/vkr1729/Instagram_digest.git").strip()
+PAGES_BASE_URL = os.getenv("PAGES_BASE_URL", "https://vkr1729.github.io/Instagram_digest").strip().rstrip("/")
 
-# Pipeline & Retention Limits
-RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "14"))
+# Pipeline & Retention Limits (Default: 1 week rolling archive)
+RETENTION_WEEKS = int(os.getenv("RETENTION_WEEKS", "1"))
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", str(RETENTION_WEEKS * 7)))
 TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "200"))
 MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
 R2_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024  # Strict 5 GB safety guard (out of 10 GB free)
 
 # Playback & UI Defaults
-DEFAULT_PLAYBACK_SPEED = 1.5
+DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.25"))
 AUTO_ADVANCE_DELAY_SECONDS = 0.5
 AVAILABLE_SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0]
 

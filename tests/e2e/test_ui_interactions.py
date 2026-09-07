@@ -129,7 +129,7 @@ def test_uat_6_2_story_category_filtering(setup_test_site):
 
 
 def test_uat_6_3_playback_speed_cycling(setup_test_site):
-    """UAT-6.3: Initial speed 1.5x; clicking speed button cycles correctly."""
+    """UAT-6.3: Initial speed default (1.25x); clicking speed button cycles correctly."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -138,11 +138,15 @@ def test_uat_6_3_playback_speed_cycling(setup_test_site):
         page.goto(file_url)
 
         speed_display = page.locator("#speedDisplay")
-        assert speed_display.inner_text() == "1.5x"
+        assert speed_display.inner_text() == f"{config.DEFAULT_PLAYBACK_SPEED}x"
 
-        # Check video.playbackRate is 1.5
+        # Check video.playbackRate is default (1.25)
         first_video = page.locator(".reel-video").first
-        assert page.evaluate("() => currentSpeed") == 1.5
+        assert page.evaluate("() => currentSpeed") == config.DEFAULT_PLAYBACK_SPEED
+
+        # Click to cycle: 1.25x -> 1.5x
+        page.click("#speedToggleBtn")
+        assert speed_display.inner_text() == "1.5x"
 
         # Click to cycle: 1.5x -> 1.75x
         page.click("#speedToggleBtn")
@@ -159,10 +163,6 @@ def test_uat_6_3_playback_speed_cycling(setup_test_site):
         # Click to cycle: 1x -> 1.25x
         page.click("#speedToggleBtn")
         assert speed_display.inner_text() == "1.25x"
-
-        # Click to cycle: 1.25x -> 1.5x
-        page.click("#speedToggleBtn")
-        assert speed_display.inner_text() == "1.5x"
 
         browser.close()
 

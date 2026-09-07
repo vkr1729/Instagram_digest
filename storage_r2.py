@@ -88,7 +88,7 @@ def check_preflight_quota(estimated_new_bytes: int = 1000 * 1024 * 1024) -> bool
 
 
 def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[str]:
-    """Purge objects on Cloudflare R2 older than max_age_days (strictly 14 days)."""
+    """Purge objects on Cloudflare R2 older than max_age_days (default config.RETENTION_DAYS)."""
     s3 = get_s3_client()
     if not s3:
         logger.info("R2 credentials not active; skipping remote R2 purge.")
@@ -96,7 +96,7 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
 
     purged = []
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-    logger.info("Purging Cloudflare R2 objects older than %s (14-day rolling window)...", cutoff_dt.date())
+    logger.info("Purging Cloudflare R2 objects older than %s (%d-day rolling window)...", cutoff_dt.date(), max_age_days)
 
     paginator = s3.get_paginator("list_objects_v2")
     try:
