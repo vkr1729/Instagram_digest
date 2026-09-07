@@ -30,6 +30,16 @@ MAX_EMPTY_CREATOR_RATIO = 0.6  # fraction of creators that returned 0 reels
 MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)
 
 
+def _digest_item_count() -> int:
+    """Return the item count of the persisted digest batch (0 when missing/unreadable)."""
+    try:
+        payload = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+        items = payload.get("items", [])
+        return len(items) if isinstance(items, list) else 0
+    except Exception:
+        return 0
+
+
 def run_full_sync(
     dry_run: bool = False,
     deploy: bool = False,
@@ -160,16 +170,18 @@ def run_full_sync(
                 continue
             enriched.append(meta)
 
-        # Pass 2: Final ranking on enriched candidates
+        # Pass 2: Final ranking on enriched candidates only (no fallback:
+        # ranking the un-enriched shortlist would reintroduce stale/undated reels)
         ranked_reels = ranker.rank_top_reels(
-            candidates=enriched if enriched else shortlist,
+            candidates=enriched,
             sources=active_sources,
             top_n=config.TOP_DIGEST_COUNT,
             max_per_creator=config.MAX_PER_CREATOR,
         )
 
     if not ranked_reels:
-        logger.warning("No reels qualified for Top Digest.")
+        logger.error("No reels qualified for Top Digest. Aborting run without touching digest/site.")
+        return 2
 
     # 5. Media Download and R2 Upload (Multi-threaded B1, C4 closed browser session)
     uploaded_url_map: dict[str, str] = {}
@@ -293,11 +305,23 @@ def main() -> int:
     if args.build_only:
         site_builder.build_site()
         if args.deploy:
+            if _digest_item_count() < MIN_DEPLOY_ITEMS:
+                logger.error(
+                    "Digest has fewer than %d items; refusing to deploy over the previous digest.",
+                    MIN_DEPLOY_ITEMS,
+                )
+                return 2
             site_builder.deploy_to_gh_pages()
         return 0
 
     # Deploy only mode
     if args.deploy and not args.sync:
+        if _digest_item_count() < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Digest has fewer than %d items; refusing to deploy over the previous digest.",
+                MIN_DEPLOY_ITEMS,
+            )
+            return 2
         site_builder.deploy_to_gh_pages()
         return 0
 

@@ -133,6 +133,75 @@ def test_c2_site_builder_prunes_unplayable_reels(tmp_path, monkeypatch):
     assert "failed_upload_2" not in rendered_text
 
 
+def test_c2_data_json_excludes_unplayable_reels(tmp_path, monkeypatch):
+    """Verify data.json payload drops reels missing from r2_uploaded_urls (C2)."""
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    (tmp_path / "videos").mkdir()
+
+    raw_items = [
+        {"id": "playable_1", "creator_handle": "alice", "rank": 1, "view_count": 50000},
+        {"id": "dead_2", "creator_handle": "bob", "rank": 2, "view_count": 40000},
+    ]
+    site_builder.build_site(
+        digest_data={"run_date": "2026-09-06", "items": [dict(r) for r in raw_items]},
+        r2_uploaded_urls={"playable_1": "https://pub.dev/videos/p1.mp4"},
+    )
+    payload = json.loads((tmp_path / "data.json").read_text())
+    assert [i["id"] for i in payload["items"]] == ["playable_1"]
+    assert payload["count"] == 1
+    assert not (tmp_path / "share" / "dead_2.html").exists()
+
+
+def test_c1_blocked_session_aborts_without_touching_digest(tmp_path, monkeypatch):
+    """Verify InstagramBlocked mid-extraction exits 2, deletes cache, digest untouched."""
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
+    sentinel = tmp_path / "top100_digest.json"
+    sentinel.write_text('{"sentinel": true}')
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", sentinel)
+    monkeypatch.setattr(extractor, "load_sources", lambda: [
+        {"handle": "alice", "category": "entertainment", "enabled": True},
+        {"handle": "bob", "category": "finance", "enabled": True},
+    ])
+    monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+
+    def _blocked(**kw):
+        raise InstagramBlocked("@alice: redirected to https://www.instagram.com/accounts/login/")
+
+    monkeypatch.setattr(extractor, "extract_creator_reels", _blocked)
+
+    rc = main.run_full_sync(dry_run=True, deploy=False)
+    assert rc == 2
+    assert not (tmp_path / "candidates_cache.json").exists()
+    assert json.loads(sentinel.read_text()) == {"sentinel": True}
+
+
+def test_c4_download_never_reopens_playwright_without_session(tmp_path, monkeypatch):
+    """Verify download_reel_video falls through to yt-dlp instead of reopening Playwright."""
+    meta_calls: list = []
+    monkeypatch.setattr(
+        extractor, "extract_single_reel_metadata",
+        lambda *a, **k: (meta_calls.append(1), {"video_cdn_url": ""})[1],
+    )
+    import subprocess as _sp
+
+    class _Failed:
+        returncode = 1
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _Failed())
+    out = tmp_path / "probe.mp4"
+    ok = extractor.download_reel_video(
+        "https://www.instagram.com/reel/XYZ/", out, video_cdn_url=None, session=None
+    )
+    assert ok is False
+    assert meta_calls == []
+    assert not out.exists()
+
+
 # ============================================================================
 # C3: Fast-Mode Metadata Honesty & Two-Pass Viral Ranking
 # ============================================================================
@@ -171,6 +240,65 @@ def test_c3_fast_mode_honest_metrics_and_zero_synthetic_engagement():
 # ============================================================================
 # C4: Playwright Browser Context Recycling
 # ============================================================================
+
+def test_c3_two_pass_cutoff_drops_old_and_unknown_dates(tmp_path, monkeypatch):
+    """Verify enrichment drops reels older than days_back or with unknown timestamps."""
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "top100_digest.json")
+    monkeypatch.setattr(extractor, "load_sources", lambda: [
+        {"handle": "alice", "category": "entertainment", "enabled": True, "name": "Alice"},
+    ])
+    monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+    monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [
+        {"id": f"r{i}", "url": f"https://www.instagram.com/reel/r{i}/",
+         "creator_handle": "alice", "caption": "", "view_count": 10000,
+         "like_count": 0, "comment_count": 0, "duration": 0, "timestamp": 0,
+         "thumbnail": "", "video_cdn_url": "", "metrics_estimated": True}
+        for i in range(3)
+    ])
+    now = datetime.now(timezone.utc).timestamp()
+
+    def _fake_meta(reel, session=None):
+        m = dict(reel)
+        if reel["id"] == "r0":
+            m.update(timestamp=int(now - 3600), metrics_estimated=False,
+                     like_count=500, caption="real caption")
+        elif reel["id"] == "r1":
+            m.update(timestamp=int(now - 30 * 86400))
+        else:
+            m.update(timestamp=0)
+        return m
+
+    monkeypatch.setattr(extractor, "extract_single_reel_metadata", _fake_meta)
+
+    rc = main.run_full_sync(dry_run=True, deploy=False, days_back=7, limit_per_creator=15)
+    assert rc == 0
+    payload = json.loads((tmp_path / "top100_digest.json").read_text())
+    assert [i["id"] for i in payload["items"]] == ["r0"]
+    assert payload["items"][0]["caption"] == "real caption"
+
+
+def test_p5_p6_viewer_static_markers(tmp_path, monkeypatch):
+    """Verify P5 volumechange pill-clear and P6 retention-window keep-set render."""
+    viewer_src = (pathlib.Path(__file__).resolve().parent.parent / "templates" / "viewer.html").read_text()
+    assert "volumechange" in viewer_src
+    assert "map(attribute='week_id')" in viewer_src
+    assert "ig_digest_watched_ids'" in viewer_src  # legacy key removal present
+
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    (tmp_path / "videos").mkdir()
+    _, local_index = site_builder.build_site(
+        digest_data={"run_date": "2026-09-06", "items": []}
+    )
+    rendered = local_index.read_text()
+    assert 'const keep = new Set(["2026-09-06"])' in rendered
+    assert "volumechange" in rendered
+
 
 def test_c4_playwright_context_recycling():
     """Verify InstagramSession recycles its context every RECYCLE_EVERY navigation calls."""
@@ -413,3 +541,128 @@ def test_p_series_viewer_engine(tmp_path, monkeypatch):
     t.join()
     if err:
         raise err[0]
+
+
+# ============================================================================
+# Follow-up audit fixes: honest single-reel metadata, no stale fallback,
+# empty-digest abort, deploy gates on all paths, env example sync
+# ============================================================================
+
+def test_c3_single_metadata_never_fabricates_metrics():
+    """Playwright branch with no parseable OG data must not invent likes/caption/duration."""
+    import types
+
+    class _StubKeyboard:
+        def press(self, *a, **k):
+            return None
+
+    class _StubPage:
+        url = "https://www.instagram.com/reel/ABC123/"
+        keyboard = _StubKeyboard()
+
+        def goto(self, *a, **k):
+            return None
+
+        def content(self):
+            return "<html><head></head><body>no video here</body></html>"
+
+        def query_selector(self, *a, **k):
+            return None
+
+        def query_selector_all(self, *a, **k):
+            return []
+
+    fake_session = types.SimpleNamespace(get_page=lambda: _StubPage())
+    reel_info = {
+        "id": "ABC123",
+        "url": "https://www.instagram.com/reel/ABC123/",
+        "creator_handle": "someone",
+        "view_count": 10000,
+        "thumbnail": "",
+    }
+    meta = extractor.extract_single_reel_metadata(reel_info, session=fake_session)
+    assert meta["metrics_estimated"] is True
+    assert meta["like_count"] == 0
+    assert meta["comment_count"] == 0
+    assert meta["duration"] == 0
+    assert meta["timestamp"] == 0
+    assert meta["caption"] == ""
+
+
+def test_c3_all_stale_enrichment_aborts_without_touching_digest(tmp_path, monkeypatch):
+    """Enrichment dropping the whole shortlist must exit 2, never rank the stale shortlist."""
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
+    sentinel = tmp_path / "top100_digest.json"
+    sentinel.write_text('{"sentinel": true}')
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", sentinel)
+    monkeypatch.setattr(extractor, "load_sources", lambda: [
+        {"handle": "alice", "category": "entertainment", "enabled": True, "name": "Alice"},
+    ])
+    monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+    monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [
+        {"id": f"old{i}", "url": f"https://www.instagram.com/reel/old{i}/",
+         "creator_handle": "alice", "caption": "", "view_count": 999999,
+         "like_count": 0, "comment_count": 0, "duration": 0, "timestamp": 0,
+         "thumbnail": "", "video_cdn_url": "", "metrics_estimated": True}
+        for i in range(3)
+    ])
+
+    def _all_stale(reel, session=None):
+        m = dict(reel)
+        m.update(timestamp=0, metrics_estimated=True)
+        return m
+
+    monkeypatch.setattr(extractor, "extract_single_reel_metadata", _all_stale)
+
+    rc = main.run_full_sync(dry_run=True, deploy=False, days_back=7, limit_per_creator=15)
+    assert rc == 2
+    assert json.loads(sentinel.read_text()) == {"sentinel": True}
+
+
+def test_c1_deploy_only_refuses_thin_digest(tmp_path, monkeypatch):
+    """`main --deploy` with fewer than MIN_DEPLOY_ITEMS must exit 2 without deploying."""
+    import sys
+
+    thin = tmp_path / "top100_digest.json"
+    thin.write_text(json.dumps({"run_date": "2026-09-06", "count": 3, "items": [
+        {"id": f"r{i}", "creator_handle": "alice"} for i in range(3)
+    ]}))
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", thin)
+    calls = []
+    monkeypatch.setattr(site_builder, "deploy_to_gh_pages", lambda *a, **k: calls.append(1) or True)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--deploy"])
+    rc = main.main()
+    assert rc == 2
+    assert calls == []
+
+
+def test_c1_build_only_deploy_refuses_thin_digest(tmp_path, monkeypatch):
+    """`main --build-only --deploy` with a thin digest must exit 2 without deploying."""
+    import sys
+
+    import site_builder as _sb
+
+    thin = tmp_path / "top100_digest.json"
+    thin.write_text(json.dumps({"run_date": "2026-09-06", "count": 1, "items": [
+        {"id": "r0", "creator_handle": "alice"}
+    ]}))
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", thin)
+    calls = []
+    monkeypatch.setattr(_sb, "build_site", lambda *a, **k: (tmp_path / "a", tmp_path / "b"))
+    monkeypatch.setattr(_sb, "deploy_to_gh_pages", lambda *a, **k: calls.append(1) or True)
+    monkeypatch.setattr(site_builder, "build_site", lambda *a, **k: (tmp_path / "a", tmp_path / "b"))
+    monkeypatch.setattr(site_builder, "deploy_to_gh_pages", lambda *a, **k: calls.append(1) or True)
+    monkeypatch.setattr(sys, "argv", ["main.py", "--build-only", "--deploy"])
+    rc = main.main()
+    assert rc == 2
+    assert calls == []
+
+
+def test_c8_env_example_matches_retention_default():
+    """`.env.example` must document RETENTION_DAYS=8 (= 1 week + 1 day boundary)."""
+    example = (pathlib.Path(__file__).resolve().parent.parent / ".env.example").read_text()
+    m = __import__("re").search(r"^RETENTION_DAYS=(\d+)\s*$", example, __import__("re").M)
+    assert m is not None
+    assert int(m.group(1)) == config.RETENTION_WEEKS * 7 + 1 == config.RETENTION_DAYS

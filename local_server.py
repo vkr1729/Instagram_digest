@@ -13,6 +13,7 @@ import threading
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 import config
