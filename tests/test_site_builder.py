@@ -117,10 +117,11 @@ def test_build_site_share_pages(tmp_path, monkeypatch):
 
     html = share_file.read_text(encoding="utf-8")
 
-    # Verify 1200x630 OG image specifications
+    # Verify 1200x630 OG image specifications and website type
+    assert '<meta property="og:type" content="website">' in html
     assert '<meta property="og:image:width" content="1200">' in html
     assert '<meta property="og:image:height" content="630">' in html
-    assert 'content="https://pub-r2.dev/thumbnails/reel_test_share.jpg"' in html
+    assert 'content="https://pub-r2.dev/thumbnails/reel_test_share.jpg?v=3"' in html
 
     # Verify single-video player
     assert '<video src="https://pub-r2.dev/videos/reel_test_share.mp4"' in html
@@ -128,7 +129,8 @@ def test_build_site_share_pages(tmp_path, monkeypatch):
     # Verify 'Open in Instagram Digest App' button is REMOVED
     assert "Open in Instagram Digest App" not in html
 
-    # Verify redundant 'Reel by @' is NOT displayed in body or description
-    assert '<p style="margin:14px 0 4px' not in html
-    assert 'content="Watch @testcreator on Instagram Digest"' in html
+    # Verify caption block is displayed
+    assert '<p style="margin:14px 0 4px' in html
+    assert 'Reel by @testcreator' in html
+
 

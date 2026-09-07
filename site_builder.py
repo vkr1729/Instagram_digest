@@ -190,11 +190,9 @@ def build_site(
         rank_dsp = item.get("rank_display", "#01")
         video_url = item.get("r2_url", "")
 
-        caption_block = ""
-        if raw_caption and not raw_caption.startswith("Reel by @") and raw_caption != "Watch on Instagram Digest":
-            caption_block = f'<p style="margin:14px 0 4px;font-size:13px;color:#d1d5db;line-height:1.4;text-align:left;width:100%;">{raw_caption[:180]}</p>'
-
-        og_desc = raw_caption[:220] if (raw_caption and not raw_caption.startswith("Reel by @")) else f"Watch @{handle} on Instagram Digest"
+        display_caption = raw_caption or f"Reel by @{handle}"
+        caption_block = f'<p style="margin:14px 0 4px;font-size:13px;color:#d1d5db;line-height:1.4;text-align:left;width:100%;">{display_caption[:180]}</p>'
+        og_desc = display_caption[:220]
 
         share_page_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -205,29 +203,22 @@ def build_site(
 
   <!-- WhatsApp & Social Open Graph Rich Card Metadata -->
   <meta property="og:site_name" content="Instagram Digest">
-  <meta property="og:type" content="video.other">
+  <meta property="og:type" content="website">
   <meta property="og:title" content="Reel by @{handle} ({rank_dsp})">
   <meta property="og:description" content="{og_desc}">
-  <meta property="og:url" content="{config.PAGES_BASE_URL}/share/{reel_id}.html">
-  <meta property="og:image" content="{thumb}">
-  <meta property="og:image:secure_url" content="{thumb}">
+  <meta property="og:url" content="{config.PAGES_BASE_URL}/share/{reel_id}.html?v=3">
+  <meta property="og:image" content="{thumb}?v=3">
+  <meta property="og:image:secure_url" content="{thumb}?v=3">
   <meta property="og:image:type" content="image/jpeg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-
-  <!-- Video Stream for Browser Players -->
-  <meta property="og:video" content="{video_url}">
-  <meta property="og:video:url" content="{video_url}">
-  <meta property="og:video:secure_url" content="{video_url}">
-  <meta property="og:video:type" content="video/mp4">
-  <meta property="og:video:width" content="720">
-  <meta property="og:video:height" content="1280">
+  <meta property="og:image:alt" content="Reel by @{handle}">
 
   <!-- Twitter / X Summary Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Reel by @{handle} ({rank_dsp})">
   <meta name="twitter:description" content="{og_desc}">
-  <meta name="twitter:image" content="{thumb}">
+  <meta name="twitter:image" content="{thumb}?v=3">
 </head>
 <body style="background:#000;color:#fff;margin:0;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif;">
   <div style="width:100%;max-width:440px;margin:auto;display:flex;flex-direction:column;align-items:center;padding:16px;box-sizing:border-box;">

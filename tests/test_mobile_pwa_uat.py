@@ -289,6 +289,58 @@ def test_whatsapp_share_url_generation(mobile_page: Page):
     assert f"/share/{card_id}.html" in decoded_url
 
 
+def test_caption_and_controls_elevation(mobile_page: Page):
+    """Verify 'Reel by @channel' caption snippet is displayed, providing comfortable thumb elevation for 2x & share."""
+    first_card = mobile_page.locator(".reel-card").first
+    caption_snippet = first_card.locator(".caption-snippet")
+    assert caption_snippet.is_visible()
+    caption_text = caption_snippet.text_content().strip()
+    assert len(caption_text) > 0
+
+    # Verify 2x and share buttons sit comfortably elevated above the bottom of the viewport
+    boost_btn = first_card.locator(".boost-speed-btn")
+    boost_box = boost_btn.bounding_box()
+    viewport_height = mobile_page.viewport_size["height"]
+    distance_from_bottom = viewport_height - (boost_box["y"] + boost_box["height"])
+
+    # Elevation must be comfortably above home indicator (> 24px)
+    assert distance_from_bottom >= 24
+
+
+def test_navigator_share_with_physical_file(mobile_page: Page):
+    """Verify native Web Share API passes the physical thumbnail file when supported."""
+    first_card = mobile_page.locator(".reel-card").first
+    card_id = first_card.evaluate("c => c.dataset.id")
+
+    # Mock navigator.share and pre-seed thumbnail file (file:// protocol blocks local fetch)
+    mobile_page.evaluate(f"""() => {{
+        window.__sharedPayload = null;
+        cachedThumbnailFiles.set('{card_id}', new File(['dummy_img_content'], '{card_id}.jpg', {{ type: 'image/jpeg' }}));
+        navigator.canShare = (data) => Boolean(data && data.files && data.files.length > 0);
+        navigator.share = async (data) => {{
+            window.__sharedPayload = {{
+                hasFiles: Boolean(data.files && data.files.length > 0),
+                fileName: data.files && data.files[0] ? data.files[0].name : null,
+                fileType: data.files && data.files[0] ? data.files[0].type : null,
+                title: data.title,
+                text: data.text
+            }};
+            return Promise.resolve();
+        }};
+    }}""")
+
+    share_btn = first_card.locator(".whatsapp-share-btn")
+    share_btn.click()
+    mobile_page.wait_for_timeout(200)
+
+    payload = mobile_page.evaluate("() => window.__sharedPayload")
+    assert payload is not None
+    assert payload["hasFiles"] is True
+    assert payload["fileName"] == f"{card_id}.jpg"
+    assert payload["fileType"] == "image/jpeg"
+    assert f"/share/{card_id}.html" in payload["text"]
+
+
 def test_in_session_rewatching_remains_visible(mobile_page: Page):
     """Verify watched reels during the current session stay visible for swiping back up."""
     first_card = mobile_page.locator(".reel-card").nth(0)

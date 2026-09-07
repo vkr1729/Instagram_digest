@@ -536,8 +536,8 @@
       transform: translateX(-50%);
       width: 100%;
       max-width: calc(100vh * (9 / 16));
-      padding: 36px 16px 12px;
-      background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, rgba(0,0,0,0.2) 65%, transparent 100%);
+      padding: 32px 16px max(14px, env(safe-area-inset-bottom, 14px));
+      background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.25) 60%, transparent 100%);
       z-index: 10;
       pointer-events: none;
     }
@@ -547,7 +547,7 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      margin-bottom: 2px;
+      margin-bottom: 6px;
       flex-wrap: nowrap;
       white-space: nowrap;
       width: 100%;
@@ -939,7 +939,7 @@
             <span class="views-label">{{ "{:,}".format(item.view_count) }} views</span>
             <div class="reel-actions">
               <button class="boost-speed-btn" onclick="toggleReelSpeed(this, event)" title="Toggle 2x Speed for this reel">2x</button>
-              <button class="whatsapp-share-btn" onclick="shareReelWhatsApp('{{ item.id }}', '{{ item.r2_url }}', event)" title="Share via WhatsApp">
+              <button class="whatsapp-share-btn" onclick="shareReelWhatsApp('{{ item.id }}', '{{ item.creator_handle }}', event)" title="Share via WhatsApp">
                 <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.582 2.128 2.182-.573c.978.58 1.911.928 3.145.929 3.178 0 5.767-2.587 5.768-5.766.001-3.187-2.575-5.77-5.764-5.771zm3.392 8.244c-.144.405-.837.774-1.17.824-.312.045-.694.062-2.146-.539-1.854-.768-3.04-2.656-3.134-2.779-.093-.122-.746-.992-.746-1.892 0-.899.472-1.34.641-1.523.169-.183.37-.229.493-.229.123 0 .247.001.353.006.113.006.264-.043.414.316.155.371.53 1.293.576 1.386.046.093.078.201.016.324-.063.124-.093.2-.185.31-.093.109-.196.243-.28.327-.094.093-.192.195-.082.384.11.189.489.807 1.05 1.306.721.642 1.328.841 1.517.933.189.093.298.077.408-.046.11-.124.471-.548.597-.735.124-.188.25-.157.418-.094.169.063 1.07.505 1.254.597.185.093.308.138.354.216.045.077.045.449-.099.854z"/></svg> Share
               </button>
               {% if is_local %}
@@ -947,11 +947,9 @@
               {% endif %}
             </div>
           </div>
-          {% if item.caption and not item.caption.startswith('Reel by @') and item.caption != 'Watch full reel on Instagram' %}
           <div class="caption-snippet" onclick="this.classList.toggle('expanded')">
-            {{ item.caption }}
+            {{ item.caption|default('Reel by @' ~ item.creator_handle, true) }}
           </div>
-          {% endif %}
         </div>
       </article>
       {% endfor %}
@@ -1140,34 +1138,90 @@
       showToast(targetRate === 2.0 ? 'Boosted to 2x for this reel' : `Speed reset to ${targetRate}x`);
     }
 
-    // Share reel via WhatsApp with Open Graph thumbnail
-    function shareReelWhatsApp(reelId, r2Url, e) {
-      if (e) e.stopPropagation();
+    // In-memory prefetch cache for physical thumbnail file sharing
+    const cachedThumbnailFiles = new Map();
+
+    async function preloadReelThumbnail(reelId) {
+      if (!reelId || cachedThumbnailFiles.has(reelId)) return;
+      try {
+        const origin = window.location.origin;
+        const inArchive = window.location.pathname.includes('/archive/');
+        const basePath = inArchive
+          ? origin + window.location.pathname.replace(/\/archive\/.*$/, '')
+          : origin + window.location.pathname.replace(/\/[^\/]*$/, '');
+        const thumbUrl = `${basePath}/thumbnails/${reelId}.jpg`;
+        const res = await fetch(thumbUrl);
+        if (res.ok) {
+          const blob = await res.blob();
+          const file = new File([blob], `${reelId}.jpg`, { type: 'image/jpeg' });
+          cachedThumbnailFiles.set(reelId, file);
+        }
+      } catch (err) {}
+    }
+
+    // Share reel via WhatsApp with physical thumbnail attached and deep link fallback
+    async function shareReelWhatsApp(reelId, creatorHandle, e) {
+      if (e) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
       const origin = window.location.origin;
       const inArchive = window.location.pathname.includes('/archive/');
       const basePath = inArchive
         ? origin + window.location.pathname.replace(/\/archive\/.*$/, '')
         : origin + window.location.pathname.replace(/\/[^\/]*$/, '');
-      const shareUrl = `${basePath}/share/${reelId}.html?v=2`;
+      const shareUrl = `${basePath}/share/${reelId}.html?v=3`;
+      const shareText = `Watch @${creatorHandle || 'reel'} on Instagram Digest: ${shareUrl}`;
 
-      window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(shareUrl)}`;
+      window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(shareText)}`;
 
+      // 1. Try native Web Share with physical image File attached
       if (navigator.share) {
-        navigator.share({
-          url: shareUrl
-        }).catch(() => {
-          window.location.href = window.__dispatchedShareUrl;
-        });
-        return;
+        try {
+          let fileToShare = cachedThumbnailFiles.get(reelId);
+          if (!fileToShare) {
+            try {
+              const thumbUrl = `${basePath}/thumbnails/${reelId}.jpg`;
+              const res = await fetch(thumbUrl);
+              if (res.ok) {
+                const blob = await res.blob();
+                fileToShare = new File([blob], `${reelId}.jpg`, { type: 'image/jpeg' });
+                cachedThumbnailFiles.set(reelId, fileToShare);
+              }
+            } catch (fetchErr) {}
+          }
+
+          if (fileToShare && navigator.canShare && navigator.canShare({ files: [fileToShare] })) {
+            await navigator.share({
+              files: [fileToShare],
+              title: `Reel by @${creatorHandle || 'creator'}`,
+              text: shareText
+            });
+            return;
+          }
+
+          // Fallback to URL/text share if file sharing is not supported
+          await navigator.share({
+            title: `Reel by @${creatorHandle || 'creator'}`,
+            text: shareText,
+            url: shareUrl
+          });
+          return;
+        } catch (err) {
+          if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+            return;
+          }
+          console.warn('Share error, falling back to direct WhatsApp link:', err);
+        }
       }
 
+      // 2. Direct WhatsApp deep link fallback for mobile without navigator.share
       const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
       if (isMobile) {
-        // Direct WhatsApp deep link on mobile without prefix text allows WhatsApp to unfurl preview
         window.location.href = window.__dispatchedShareUrl;
       } else {
         // Desktop browser fallback
-        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(shareUrl)}`, '_blank');
+        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(shareText)}`, '_blank');
       }
     }
 
@@ -1500,6 +1554,9 @@
         const isWithinWindow = (distance >= -lookBehind && distance <= lookAhead);
 
         if (isWithinWindow) {
+          if (card.dataset.id) {
+            preloadReelThumbnail(card.dataset.id);
+          }
           if (!video.getAttribute('src')) {
             video.src = targetSrc;
           }
@@ -1530,6 +1587,9 @@
     function playCardVideo(card) {
       if (!card) return;
       currentActiveCard = card;
+      if (card.dataset.id) {
+        preloadReelThumbnail(card.dataset.id);
+      }
 
       // Reset any active 2x boost button styling from previous reel (Feedback #4)
       document.querySelectorAll('.boost-speed-btn').forEach(btn => {
