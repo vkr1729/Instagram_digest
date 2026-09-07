@@ -89,17 +89,40 @@ def build_site(
     sorted_weeks = sorted(list(available_week_ids), reverse=True)[:max_weeks]
     latest_week = sorted_weeks[0] if sorted_weeks else week_id
 
-    # Add share_url to items
+    # Add share_url and thumbnail to items
     share_dir = config.SITE_DIR / "share"
     share_dir.mkdir(parents=True, exist_ok=True)
+    thumb_dir = config.SITE_DIR / "thumbnails"
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    week_video_dir = config.VIDEOS_DIR / week_id
 
     for item in r2_items:
         reel_id = item.get("id", "")
         item["share_url"] = f"{config.PAGES_BASE_URL}/share/{reel_id}.html"
+        thumb_file = thumb_dir / f"{reel_id}.jpg"
+        if not thumb_file.exists() and week_video_dir.exists() and shutil.which("ffmpeg"):
+            matches = list(week_video_dir.glob(f"*_{reel_id}.mp4"))
+            if matches:
+                try:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]), "-vframes", "1", "-q:v", "2", str(thumb_file)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
+                    )
+                except Exception:
+                    pass
+        if thumb_file.exists():
+            item["thumbnail"] = f"{config.PAGES_BASE_URL}/thumbnails/{reel_id}.jpg"
+        elif not item.get("thumbnail"):
+            item["thumbnail"] = f"{config.PAGES_BASE_URL}/apple-touch-icon.png"
 
     for item in local_items:
         reel_id = item.get("id", "")
         item["share_url"] = f"/share/{reel_id}.html"
+        thumb_file = thumb_dir / f"{reel_id}.jpg"
+        if thumb_file.exists():
+            item["thumbnail"] = f"/thumbnails/{reel_id}.jpg"
+        elif not item.get("thumbnail"):
+            item["thumbnail"] = "/apple-touch-icon.png"
 
     def build_weeks_metadata(is_local: bool) -> list[dict[str, Any]]:
         meta_list = []
@@ -167,7 +190,7 @@ def build_site(
 <head>
   <meta charset="UTF-8">
   <title>Reel by @{handle} • {rank_dsp}</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
   <!-- WhatsApp & Social Open Graph Rich Card Metadata -->
   <meta property="og:site_name" content="Instagram Digest">
@@ -181,7 +204,7 @@ def build_site(
   <meta property="og:image:width" content="720">
   <meta property="og:image:height" content="1280">
 
-  <!-- Video Stream for WhatsApp Inline Playback -->
+  <!-- Video Stream for Browser Players -->
   <meta property="og:video" content="{video_url}">
   <meta property="og:video:url" content="{video_url}">
   <meta property="og:video:secure_url" content="{video_url}">
@@ -189,28 +212,23 @@ def build_site(
   <meta property="og:video:width" content="720">
   <meta property="og:video:height" content="1280">
 
-  <!-- Twitter / X Player Card -->
-  <meta name="twitter:card" content="player">
+  <!-- Twitter / X Summary Card -->
+  <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Reel by @{handle} ({rank_dsp})">
   <meta name="twitter:description" content="{caption[:220]}">
   <meta name="twitter:image" content="{thumb}">
-  <meta name="twitter:player" content="{video_url}">
-  <meta name="twitter:player:width" content="720">
-  <meta name="twitter:player:height" content="1280">
-
-  <!-- Instant Browser Redirect to Full App -->
-  <meta http-equiv="refresh" content="0; url=../index.html?reel={reel_id}">
-  <script>
-    if (!navigator.userAgent.includes('WhatsApp')) {{
-      window.location.replace('../index.html?reel={reel_id}');
-    }}
-  </script>
 </head>
-<body style="background:#000;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-family:sans-serif;">
-  <div style="text-align:center;padding:20px;">
-    <h3 style="margin-bottom:12px;">@{handle} • {rank_dsp}</h3>
-    <video src="{video_url}" poster="{thumb}" controls autoplay playsinline style="max-width:100%;max-height:75vh;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.8);"></video>
-    <p style="margin-top:14px;"><a href="../index.html?reel={reel_id}" style="color:#f09433;text-decoration:none;font-weight:600;">Open in Instagram Digest App &rarr;</a></p>
+<body style="background:#000;color:#fff;margin:0;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif;">
+  <div style="width:100%;max-width:440px;margin:auto;display:flex;flex-direction:column;align-items:center;padding:16px;box-sizing:border-box;">
+    <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-bottom:12px;">
+      <span style="font-weight:700;font-size:16px;">@{handle}</span>
+      <span style="background:rgba(255,255,255,0.15);padding:3px 8px;border-radius:12px;font-size:12px;font-weight:600;">{rank_dsp}</span>
+    </div>
+    <div style="position:relative;width:100%;aspect-ratio:9/16;background:#111;border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.8);">
+      <video src="{video_url}" poster="{thumb}" controls playsinline autoplay loop style="width:100%;height:100%;object-fit:cover;display:block;"></video>
+    </div>
+    <p style="margin:14px 0 8px;font-size:13px;color:#d1d5db;line-height:1.4;text-align:left;width:100%;">{caption[:180]}</p>
+    <a href="../index.html?reel={reel_id}" style="margin-top:10px;width:100%;background:#f09433;color:#000;font-weight:700;font-size:14px;padding:12px 0;border-radius:24px;text-align:center;text-decoration:none;display:block;box-shadow:0 4px 15px rgba(240,148,51,0.4);">Open in Instagram Digest App &rarr;</a>
   </div>
 </body>
 </html>"""

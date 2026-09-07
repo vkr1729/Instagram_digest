@@ -75,10 +75,10 @@
       width: 100%;
       max-width: calc(100vh * (9 / 16));
       z-index: 30;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 60%, transparent 100%);
+      background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.3) 70%, transparent 100%);
       pointer-events: none;
       transition: opacity 0.25s ease, transform 0.25s ease;
-      padding-top: env(safe-area-inset-top, 0px);
+      padding-top: 0;
     }
     .top-chrome * {
       pointer-events: auto;
@@ -96,7 +96,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: max(16px, env(safe-area-inset-top, 16px)) 16px 4px;
+      padding: max(6px, env(safe-area-inset-top, 6px)) 16px 2px;
       background: transparent;
       border: none;
     }
@@ -536,8 +536,8 @@
       transform: translateX(-50%);
       width: 100%;
       max-width: calc(100vh * (9 / 16));
-      padding: 60px 16px max(24px, env(safe-area-inset-bottom, 24px));
-      background: linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.45) 60%, transparent 100%);
+      padding: 36px 16px 12px;
+      background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, rgba(0,0,0,0.2) 65%, transparent 100%);
       z-index: 10;
       pointer-events: none;
     }
@@ -1121,7 +1121,7 @@
       showToast(targetRate === 2.0 ? 'Boosted to 2x for this reel' : `Speed reset to ${targetRate}x`);
     }
 
-    // Share reel via WhatsApp with Open Graph thumbnail & inline video stream (Feedback #8)
+    // Share reel via WhatsApp with Open Graph thumbnail
     function shareReelWhatsApp(reelId, r2Url, e) {
       if (e) e.stopPropagation();
       const origin = window.location.origin;
@@ -1131,8 +1131,16 @@
         : origin + window.location.pathname.replace(/\/[^\/]*$/, '');
       const shareUrl = `${basePath}/share/${reelId}.html`;
       const text = `Watch this reel on Instagram Digest: ${shareUrl}`;
-      const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
-      window.open(waUrl, '_blank');
+
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile) {
+        // Direct WhatsApp deep link on mobile prevents opening orphaned blank SFSafariViewController
+        window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(text)}`;
+        window.location.href = window.__dispatchedShareUrl;
+      } else {
+        // Desktop browser fallback
+        window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
+      }
     }
 
     // Screen Wake Lock API (Keeps screen awake without touch input)

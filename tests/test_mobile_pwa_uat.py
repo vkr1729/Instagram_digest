@@ -68,9 +68,9 @@ def test_safe_area_padding_and_symmetry(mobile_page: Page):
     top_padding_top = top_header.evaluate("el => window.getComputedStyle(el).paddingTop")
     bottom_padding_bottom = bottom_scrim.evaluate("el => window.getComputedStyle(el).paddingBottom")
 
-    # Safe area fallback: at least 16px top and 24px bottom
-    assert int(top_padding_top.replace("px", "")) >= 16
-    assert int(bottom_padding_bottom.replace("px", "")) >= 24
+    # Compact safe area padding: snug top under camera bump and natural 12px bottom
+    assert int(top_padding_top.replace("px", "")) >= 6
+    assert int(bottom_padding_bottom.replace("px", "")) >= 12
 
     # Feed container should have overscroll-behavior-y none and touch-action pan-y
     feed_touch_action = mobile_page.locator("#feedContainer").evaluate("el => window.getComputedStyle(el).touchAction")
@@ -249,23 +249,17 @@ def test_horizontal_touch_swipe_seeking(mobile_page: Page):
 
 
 def test_whatsapp_share_url_generation(mobile_page: Page):
-    """Verify WhatsApp button formats direct link to Open Graph share page."""
+    """Verify WhatsApp button formats direct link to Open Graph share page without opening blank window."""
     first_card = mobile_page.locator(".reel-card").first
     card_id = first_card.evaluate("c => c.dataset.id")
     share_btn = first_card.locator(".whatsapp-share-btn")
     assert share_btn.is_visible()
 
-    # Intercept window.open
-    mobile_page.evaluate("""() => {
-        window.__openedUrls = [];
-        window.open = (url) => { window.__openedUrls.push(url); };
-    }""")
-
     share_btn.click()
-    opened = mobile_page.evaluate("() => window.__openedUrls")
-    assert len(opened) == 1
-    assert "https://api.whatsapp.com/send?text=" in opened[0]
-    decoded_url = urllib.parse.unquote(opened[0])
+    dispatched = mobile_page.evaluate("() => window.__dispatchedShareUrl")
+    assert dispatched is not None
+    assert "whatsapp://send?text=" in dispatched
+    decoded_url = urllib.parse.unquote(dispatched)
     assert f"/share/{card_id}.html" in decoded_url
 
 
