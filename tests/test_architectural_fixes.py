@@ -666,3 +666,137 @@ def test_c8_env_example_matches_retention_default():
     m = __import__("re").search(r"^RETENTION_DAYS=(\d+)\s*$", example, __import__("re").M)
     assert m is not None
     assert int(m.group(1)) == config.RETENTION_WEEKS * 7 + 1 == config.RETENTION_DAYS
+
+
+# ============================================================================
+# Vertical share images: reels are 9:16, so the share-sheet attachment and
+# share-page poster must be vertical; OG link previews stay landscape.
+# ============================================================================
+
+def _make_vertical_test_video(path):
+    import shutil
+    import subprocess
+
+    assert shutil.which("ffmpeg"), "ffmpeg required for thumbnail tests"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    res = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=720x1280:rate=5:duration=2",
+         "-pix_fmt", "yuv420p", str(path)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+    )
+    assert res.returncode == 0 and path.exists()
+
+
+def _probe_dimensions(path):
+    import json as _json
+    import subprocess
+
+    res = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    stream = _json.loads(res.stdout)["streams"][0]
+    return int(stream["width"]), int(stream["height"])
+
+
+def test_share_images_landscape_and_portrait(tmp_path, monkeypatch):
+    """One ffmpeg pass must yield a 1200x630 OG thumb and a 720x1280 vertical share image."""
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+
+    week = "2026-09-06"
+    _make_vertical_test_video(tmp_path / "videos" / week / "01_alice_vid1.mp4")
+
+    site_builder.build_site(
+        digest_data={"run_date": week, "items": [
+            {"id": "vid1", "creator_handle": "alice", "rank": 1, "rank_display": "#01",
+             "category": "entertainment", "view_count": 1000,
+             "video_url": "https://pub.dev/videos/vid1.mp4",
+             "thumbnail": "https://example.com/orig.jpg"},
+        ]},
+    )
+
+    og_thumb = tmp_path / "thumbnails" / "vid1.jpg"
+    portrait = tmp_path / "thumbnails" / "vid1_portrait.jpg"
+    assert og_thumb.exists() and portrait.exists()
+    assert _probe_dimensions(og_thumb) == (1200, 630)
+    assert _probe_dimensions(portrait) == (720, 1280)
+
+
+def test_share_page_uses_portrait_poster_and_landscape_og(tmp_path, monkeypatch):
+    """Share page poster fills the 9:16 player; og:image stays landscape for chat previews."""
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    (tmp_path / "videos").mkdir()
+
+    (tmp_path / "thumbnails").mkdir()
+    (tmp_path / "thumbnails" / "vid1_portrait.jpg").write_bytes(b"vert")
+
+    site_builder.build_site(
+        digest_data={"run_date": "2026-09-06", "items": [
+            {"id": "vid1", "creator_handle": "alice", "rank": 1, "rank_display": "#01",
+             "category": "entertainment", "view_count": 1000,
+             "video_url": "https://pub.dev/videos/vid1.mp4",
+             "thumbnail": "https://example.com/orig.jpg"},
+        ]},
+    )
+
+    share_html = (tmp_path / "share" / "vid1.html").read_text()
+    assert 'poster="https://vkr1729.github.io/Instagram_digest/thumbnails/vid1_portrait.jpg"' in share_html
+    assert 'property="og:image" content="https://example.com/orig.jpg?v=3"' in share_html
+
+
+def test_share_page_poster_falls_back_without_portrait(tmp_path, monkeypatch):
+    """Without a portrait file the share poster falls back to the landscape thumb."""
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    (tmp_path / "videos").mkdir()
+
+    (tmp_path / "thumbnails").mkdir()
+    (tmp_path / "thumbnails" / "vid1.jpg").write_bytes(b"og")
+
+    site_builder.build_site(
+        digest_data={"run_date": "2026-09-06", "items": [
+            {"id": "vid1", "creator_handle": "alice", "rank": 1, "rank_display": "#01",
+             "category": "entertainment", "view_count": 1000,
+             "video_url": "https://pub.dev/videos/vid1.mp4",
+             "thumbnail": "https://example.com/orig.jpg"},
+        ]},
+    )
+
+    share_html = (tmp_path / "share" / "vid1.html").read_text()
+    assert 'poster="https://vkr1729.github.io/Instagram_digest/thumbnails/vid1.jpg"' in share_html
+    assert "_portrait" not in share_html.split("<video")[1].split("</video>")[0]
+
+
+def test_prune_covers_portrait_files(tmp_path, monkeypatch):
+    """Orphaned _portrait files are pruned; current ones are kept."""
+    monkeypatch.setattr(config, "SITE_DIR", tmp_path)
+
+    share_dir = tmp_path / "share"
+    thumb_dir = tmp_path / "thumbnails"
+    archive_dir = tmp_path / "archive"
+    for d in [share_dir, thumb_dir, archive_dir]:
+        d.mkdir(parents=True)
+
+    (thumb_dir / "active1.jpg").write_text("og")
+    (thumb_dir / "active1_portrait.jpg").write_text("vert")
+    (thumb_dir / "orphaned_old.jpg").write_text("stale")
+    (thumb_dir / "orphaned_old_portrait.jpg").write_text("stale")
+
+    site_builder._prune_site_assets(
+        current_ids={"active1"},
+        keep_week_ids=set(),
+    )
+
+    assert (thumb_dir / "active1.jpg").exists()
+    assert (thumb_dir / "active1_portrait.jpg").exists()
+    assert not (thumb_dir / "orphaned_old.jpg").exists()
+    assert not (thumb_dir / "orphaned_old_portrait.jpg").exists()
+
+
+def test_viewer_prefetches_portrait_for_share(tmp_path, monkeypatch):
+    """The share-sheet attachment URL must point at the vertical image."""
+    viewer_src = (pathlib.Path(__file__).resolve().parent.parent / "templates" / "viewer.html").read_text()
+    assert "/thumbnails/${reelId}_portrait.jpg" in viewer_src

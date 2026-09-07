@@ -1187,7 +1187,7 @@
         const basePath = inArchive
           ? origin + window.location.pathname.replace(/\/archive\/.*$/, '')
           : origin + window.location.pathname.replace(/\/[^\/]*$/, '');
-        const thumbUrl = `${basePath}/thumbnails/${reelId}.jpg`;
+        const thumbUrl = `${basePath}/thumbnails/${reelId}_portrait.jpg`;
         const res = await fetch(thumbUrl);
         if (res.ok) {
           const blob = await res.blob();

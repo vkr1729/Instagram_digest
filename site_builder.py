@@ -34,7 +34,10 @@ def _prune_site_assets(current_ids: set[str], keep_week_ids: set[str]) -> None:
     thumb_dir = config.SITE_DIR / "thumbnails"
     if thumb_dir.exists():
         for f in thumb_dir.glob("*.jpg"):
-            if f.stem not in current_ids:
+            stem = f.stem
+            if stem.endswith("_portrait"):
+                stem = stem[: -len("_portrait")]
+            if stem not in current_ids:
                 f.unlink(missing_ok=True)
 
     archive_dir = config.SITE_DIR / "archive"
@@ -138,20 +141,33 @@ def build_site(
     current_ids = {i["id"] for i in r2_items if i.get("id")}
     _prune_site_assets(current_ids=current_ids, keep_week_ids=set(sorted_weeks))
 
-    # Multi-threaded thumbnail generation with -q:v 5 (B4, P3)
+    # Multi-threaded thumbnail generation with -q:v 5 (B4, P3).
+    # Each reel gets two images in one ffmpeg pass: a 1200x630 landscape
+    # frame for WhatsApp/Twitter link previews (landscape required), and a
+    # 720x1280 vertical frame that matches the reel itself for the system
+    # share sheet attachment and the share-page poster.
     def _make_thumb(reel_id: str) -> None:
         thumb_file = thumb_dir / f"{reel_id}.jpg"
-        if not thumb_file.exists() and week_video_dir.exists() and shutil.which("ffmpeg"):
+        portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
+        if ((not thumb_file.exists() or not portrait_file.exists())
+                and week_video_dir.exists() and shutil.which("ffmpeg")):
             matches = list(week_video_dir.glob(f"*_{reel_id}.mp4"))
             if matches:
                 try:
                     subprocess.run(
                         [
                             "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]),
-                            "-vf", "split[a][b];[a]scale=1200:630:force_original_aspect_ratio=increase,crop=1200:630,boxblur=25:5[bg];[b]scale=-1:630[fg];[bg][fg]overlay=(W-w)/2:0",
-                            "-vframes", "1", "-q:v", "5", str(thumb_file)
+                            "-filter_complex",
+                            "[0:v]split=2[for_og][for_v];"
+                            "[for_og]scale=1200:630:force_original_aspect_ratio=increase,"
+                            "crop=1200:630,boxblur=25:5[bg];"
+                            "[0:v]scale=-1:630[fg];[bg][fg]overlay=(W-w)/2:0[og];"
+                            "[for_v]scale=720:1280:force_original_aspect_ratio=increase,"
+                            "crop=720:1280[vert]",
+                            "-map", "[og]", "-vframes", "1", "-q:v", "5", str(thumb_file),
+                            "-map", "[vert]", "-vframes", "1", "-q:v", "5", str(portrait_file),
                         ],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
                     )
                 except Exception:
                     pass
@@ -234,6 +250,14 @@ def build_site(
         if not reel_id:
             continue
         thumb = item.get("thumbnail") or f"{config.PAGES_BASE_URL}/apple-touch-icon.png"
+        # The 9:16 player fills exactly with the vertical frame; the
+        # landscape frame stays on the OG tags, which require landscape.
+        portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
+        poster = (
+            f"{config.PAGES_BASE_URL}/thumbnails/{reel_id}_portrait.jpg"
+            if portrait_file.exists()
+            else thumb
+        )
         raw_caption = (item.get("caption") or "").replace('"', '&quot;').replace('<', '&lt;').strip()
         handle = item.get("creator_handle", "")
         rank_dsp = item.get("rank_display", "#01")
@@ -276,7 +300,7 @@ def build_site(
       <span style="background:rgba(255,255,255,0.15);padding:3px 8px;border-radius:12px;font-size:12px;font-weight:600;">{rank_dsp}</span>
     </div>
     <div style="position:relative;width:100%;aspect-ratio:9/16;background:#111;border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.8);">
-      <video src="{video_url}" poster="{thumb}" controls playsinline autoplay loop onerror="this.outerHTML='<p style=\\'padding:40px;color:#999;text-align:center\\'>This reel has expired from the weekly digest.</p>'" style="width:100%;height:100%;object-fit:cover;display:block;"></video>
+      <video src="{video_url}" poster="{poster}" controls playsinline autoplay loop onerror="this.outerHTML='<p style=\\'padding:40px;color:#999;text-align:center\\'>This reel has expired from the weekly digest.</p>'" style="width:100%;height:100%;object-fit:cover;display:block;"></video>
     </div>
     {caption_block}
   </div>
