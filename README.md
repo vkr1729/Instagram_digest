@@ -9,9 +9,9 @@ Replaces endless algorithmic doom-scrolling with a finite, curated media briefin
 ## Key Features
 
 ### 1. Intentional Curation
-* **Finite Weekly Batch:** Curates the top 300 reels per week (expandable by +100 on desktop for high-consumption periods).
+* **Configurable Finite Batch:** Curates a finite weekly batch of top reels (configured via `TOP_DIGEST_COUNT`, with an optional on-demand desktop expansion button for high-consumption periods).
 * **Anti-Doomscroll Watched State:** Automatically tracks completed reels in local storage, remembers your progress, and celebrates when you reach the end with a celebratory *"You're all caught up! 🎉"* screen.
-* **Daily Mindful Check-in:** Soft nudge after watching 50 reels in a single day to encourage conscious media consumption without hard blockers.
+* **Daily Mindful Check-in:** Soft nudge upon reaching your daily target to encourage conscious media consumption without hard blockers.
 
 ### 2. Native Floating HUD Experience
 * **Native Aspect Ratio Preservation:** Strict `object-fit: contain` video scaling ensures portrait, square, and landscape videos are never cropped or distorted.
@@ -38,7 +38,7 @@ Replaces endless algorithmic doom-scrolling with a finite, curated media briefin
 ### 4. Zero-Egress Cloudflare R2 Media Delivery
 * **Zero Egress Fees:** All video streaming is offloaded to Cloudflare R2 object storage ($0 egress bandwidth), keeping GitHub Pages ultra-lean (~2 MB static footprint).
 * **Content-Addressed Asset Invariance:** Media files are indexed by immutable entity IDs (`{reel_id}.mp4`), eliminating redundant re-downloads when ranks shift or batches expand.
-* **Rolling Retention & Purge:** Automatically prunes media and weekly site archives older than 14 days to remain comfortably within storage quotas.
+* **Rolling Retention & Purge:** Automatically prunes media and weekly site archives older than configured retention days to remain comfortably within storage quotas.
 
 ### 5. Offline PWA & Flight Mode
 * **Permanent Offline Cache Access:** The `#offlineDownloadBtn` in the header allows inspection of local video storage and one-tap downloading of the entire digest.
@@ -60,11 +60,11 @@ The pipeline consists of a modular Python backend and an atomic, single-bundle s
         │
         ├──> extractor.py (Playwright + yt-dlp)
         │       ├── Profile Reels from Tracked Creators
-        │       └── External Discovery (≥ 25k likes, humanized jitter & cooldowns)
+        │       └── External Discovery (High signal likes filter, humanized jitter & cooldowns)
         │
         ├──> ranker.py (Creator-Normalized Viral Scoring & Dynamic Quotas)
         │
-        ├──> storage_r2.py (Cloudflare R2 Sync, Quota Guard & 14-Day Purge)
+        ├──> storage_r2.py (Cloudflare R2 Sync, Quota Guard & Rolling Purge)
         │
         └──> site_builder.py (Jinja2 Template Compilation & GitHub Pages Push)
                 ├── templates/partials/styles.css
@@ -95,7 +95,7 @@ The pipeline consists of a modular Python backend and an atomic, single-bundle s
 ### Installation
 ```bash
 # Clone the repository
-git clone https://github.com/vkr1729/Instagram_digest.git
+git clone https://github.com/<your-username>/Instagram_digest.git
 cd Instagram_digest
 
 # Create and activate virtual environment
@@ -111,18 +111,18 @@ playwright install chromium
 Create a `.env` file in the root directory:
 ```env
 # Cloudflare R2 Configuration
-R2_ACCOUNT_ID=your_account_id
-R2_ACCESS_KEY_ID=your_access_key
-R2_SECRET_ACCESS_KEY=your_secret_key
-R2_BUCKET_NAME=instagram-digest
-R2_PUBLIC_DOMAIN=https://your-custom-domain.workers.dev
+R2_ACCOUNT_ID=<your-account-id>
+R2_ACCESS_KEY_ID=<your-access-key-id>
+R2_SECRET_ACCESS_KEY=<your-secret-access-key>
+R2_BUCKET_NAME=<your-bucket-name>
+R2_PUBLIC_DOMAIN=https://<your-r2-subdomain>.workers.dev
 
 # GitHub Deployment
-GH_PAGES_REPO=https://github.com/yourusername/Instagram_digest.git
-PAGES_BASE_URL=https://yourusername.github.io/Instagram_digest
+GH_PAGES_REPO=https://github.com/<your-username>/<your-repo>.git
+PAGES_BASE_URL=https://<your-username>.github.io/<your-repo>
 
 # Digest Settings
-TOP_DIGEST_COUNT=300
+TOP_DIGEST_COUNT=250 # Configurable target size (e.g. 200, 250, 300)
 RETENTION_WEEKS=1
 ```
 
@@ -136,9 +136,9 @@ RETENTION_WEEKS=1
   ```bash
   python main.py --ad-hoc --deploy
   ```
-* **Expand Active Digest by +100 Reels:**
+* **Expand Active Digest by N Additional Reels:**
   ```bash
-  python main.py --expand 100 --deploy
+  python main.py --expand <count> --deploy
   ```
 * **Launch Local Desktop Server:**
   ```bash
