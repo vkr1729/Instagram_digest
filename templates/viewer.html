@@ -115,9 +115,22 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: max(6px, env(safe-area-inset-top, 6px)) 16px 2px;
+      padding: max(6px, calc(env(safe-area-inset-top, 54px) - 8px)) 16px 2px;
       background: transparent;
       border: none;
+    }
+    .desktop-only-btn {
+      display: none !important;
+    }
+    @media (min-width: 768px) {
+      .desktop-only-btn {
+        display: inline-flex !important;
+      }
+      .app-shell.playback-active .top-chrome {
+        opacity: 1;
+        transform: translateX(-50%);
+        pointer-events: auto;
+      }
     }
     .brand-logo {
       font-family: 'Grand Hotel', cursive;
@@ -259,11 +272,13 @@
       align-items: center;
       justify-content: center;
       opacity: 0;
+      visibility: hidden;
       pointer-events: none;
-      transition: opacity 0.2s ease;
+      transition: opacity 0.2s ease, visibility 0.2s ease;
     }
     .modal-overlay.active {
       opacity: 1;
+      visibility: visible;
       pointer-events: auto;
     }
     .modal-dialog {
@@ -371,7 +386,7 @@
     .story-bar {
       display: flex;
       gap: 4px;
-      padding: 4px 6px 12px;
+      padding: 2px 12px 6px;
       overflow-x: auto;
       scrollbar-width: none;
       background: transparent;
@@ -557,7 +572,7 @@
       transform: translateX(-50%);
       width: 100%;
       max-width: calc(var(--app-height, 100vh) * (9 / 16));
-      padding: 48px 16px max(24px, env(safe-area-inset-bottom, 24px));
+      padding: 48px 16px calc(env(safe-area-inset-bottom, 34px) + 20px);
       background: linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.45) 60%, transparent 100%);
       z-index: 10;
       pointer-events: none;
@@ -672,14 +687,15 @@
     .caption-snippet {
       font-size: 13px;
       color: rgba(255, 255, 255, 0.94);
-      line-height: 1.45;
+      line-height: 1.38;
+      max-height: 38px;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
       cursor: pointer;
       text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
-      margin-top: 4px;
+      margin-top: 3px;
     }
     .caption-snippet.expanded {
       -webkit-line-clamp: unset;
@@ -916,11 +932,15 @@
       <header class="top-header" id="topHeader">
         <div class="brand-logo">Instagram</div>
         <div class="header-controls">
+          <span id="dailyCounterBadge" class="week-pill" style="font-size: 11px; font-weight: 600; color: #a1a1aa; border-color: rgba(255,255,255,0.15);" title="Daily Mindful Check-in (50/day target)">🎯 0/50</span>
           <button class="jump-btn" id="jumpBtn" onclick="openJumpModal()" title="Jump to Reel # (or press G)">
             #<span id="currentRankDisplay">1</span>/{{ items|length }}
           </button>
           <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">
             📥
+          </button>
+          <button class="speed-btn desktop-only-btn" id="expand100Btn" onclick="triggerExpand100()" title="Expand digest by +100 reels from Reels feed">
+            +100
           </button>
           {% if is_local %}
           <button class="speed-btn" id="adhocSyncViewerBtn" onclick="triggerAdhocSyncViewer()" title="Ad-hoc Refresh: Fetch reels since last run">
@@ -1070,6 +1090,21 @@
         </div>
       </div>
     </div>
+
+    <!-- Mindful Daily Limit Check-in Modal -->
+    <div class="modal-overlay" id="dailyLimitModal" onclick="handleModalBackdrop(event, 'dailyLimitModal')">
+      <div class="modal-dialog">
+        <div class="modal-icon-badge">🌿</div>
+        <h3 class="modal-title">Mindful Check-in</h3>
+        <p class="modal-desc" style="margin-bottom: 20px;">
+          You've reached your daily <strong>50-reel target</strong>! Take a breather, or feel free to continue whenever you'd like.
+        </p>
+        <div class="modal-actions" style="flex-direction: column; gap: 8px;">
+          <button class="modal-btn-cancel" style="padding: 12px; font-size: 14px;" onclick="pauseAndTakeBreak()">🌿 Take a Break</button>
+          <button class="jump-submit-btn" style="padding: 12px; border-radius: 12px; font-size: 14px;" onclick="continueMindfulWatching()">Continue Watching</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1117,6 +1152,72 @@
     const currentWeekId = "{{ week_id|default('current') }}";
     const STORAGE_KEY = 'ig_digest_watched_ids_' + currentWeekId;
     const LAST_WATCHED_KEY = 'ig_digest_last_watched_id_' + currentWeekId;
+    const LAST_ACTIVE_KEY = 'ig_digest_last_active_id_' + currentWeekId;
+
+    // Daily Mindful Limit Tracking (50 reels/day goal)
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const DAILY_SET_KEY = 'ig_digest_daily_viewed_' + todayStr;
+    const DAILY_SNOOZE_KEY = 'ig_digest_daily_snooze_' + todayStr;
+    let dailyViewedSet = new Set();
+    try {
+      dailyViewedSet = new Set(JSON.parse(localStorage.getItem(DAILY_SET_KEY) || '[]'));
+    } catch (e) {}
+
+    function updateDailyCounterBadge() {
+      const badge = document.getElementById('dailyCounterBadge');
+      if (!badge) return;
+      const cnt = dailyViewedSet.size;
+      badge.textContent = `🎯 ${cnt}/50`;
+      if (cnt >= 50) {
+        badge.style.color = '#f09433';
+        badge.style.borderColor = 'rgba(240, 148, 51, 0.4)';
+      } else {
+        badge.style.color = '#a1a1aa';
+        badge.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+      }
+    }
+
+    function recordDailyView(reelId) {
+      if (!reelId) return;
+      if (!dailyViewedSet.has(reelId)) {
+        dailyViewedSet.add(reelId);
+        try {
+          localStorage.setItem(DAILY_SET_KEY, JSON.stringify(Array.from(dailyViewedSet)));
+        } catch (e) {}
+        updateDailyCounterBadge();
+        checkDailyLimitTrigger();
+      }
+    }
+
+    function checkDailyLimitTrigger() {
+      if (dailyViewedSet.size >= 50) {
+        const snoozed = localStorage.getItem(DAILY_SNOOZE_KEY) === 'true';
+        if (!snoozed) {
+          openModal('dailyLimitModal');
+        }
+      }
+    }
+
+    function pauseAndTakeBreak() {
+      closeModal('dailyLimitModal');
+      if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v) v.pause();
+      }
+      document.getElementById('appShell').classList.remove('playback-active');
+      showToast('Taking a break 🌿 Continue whenever you like.');
+    }
+
+    function continueMindfulWatching() {
+      try {
+        localStorage.setItem(DAILY_SNOOZE_KEY, 'true');
+      } catch (e) {}
+      closeModal('dailyLimitModal');
+      if (currentActiveCard) {
+        playCardVideo(currentActiveCard);
+      }
+    }
+    updateDailyCounterBadge();
 
     // P6: Storage hygiene: prune stale week keys outside the retention window + legacy key
     (function pruneOldWeeks() {
@@ -1124,24 +1225,78 @@
         const keep = new Set({{ available_weeks | map(attribute='week_id') | list | tojson }});
         keep.add(currentWeekId);
         Object.keys(localStorage).forEach(k => {
-          const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id|download_completed)_(\d{4}-\d{2}-\d{2})$/);
+          const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id|last_active_id|download_completed|downloaded_count)_(\d{4}-\d{2}-\d{2})$/);
           if ((m && !keep.has(m[1])) || k === 'ig_digest_watched_ids') localStorage.removeItem(k);
         });
       } catch (e) {}
     })();
 
-    // Requirement: Download All button disappears once complete and reappears next week
+    // Differential Download State: queries SW cache to know exact cached status
+    let cachedVideoUrlsSet = new Set();
+
+    function queryServiceWorkerCache() {
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({ action: 'GET_CACHED_URLS' });
+      }
+    }
+
     function syncDownloadButtonState() {
       const headerDlBtn = document.getElementById('offlineDownloadBtn');
       if (!headerDlBtn) return;
-      try {
-        const isCompleted = localStorage.getItem('ig_digest_download_completed_' + currentWeekId) === 'true';
-        if (isCompleted) {
-          headerDlBtn.style.display = 'none';
+      const allUrls = visibleCards()
+        .map(c => c.querySelector('.reel-video'))
+        .filter(v => v && v.dataset.src)
+        .map(v => v.dataset.src.split('?')[0]);
+      const totalCount = allUrls.length;
+
+      let cachedCount = 0;
+      for (const u of allUrls) {
+        if (cachedVideoUrlsSet.has(u)) cachedCount++;
+      }
+
+      const storedCompleted = localStorage.getItem('ig_digest_download_completed_' + currentWeekId) === 'true';
+      const lastDownloadedCount = parseInt(localStorage.getItem('ig_digest_downloaded_count_' + currentWeekId) || '0', 10);
+
+      let isFullyDownloaded = false;
+      if (storedCompleted) {
+        if (lastDownloadedCount > 0 && totalCount > lastDownloadedCount) {
+          localStorage.removeItem('ig_digest_download_completed_' + currentWeekId);
+          isFullyDownloaded = false;
         } else {
-          headerDlBtn.style.display = '';
+          isFullyDownloaded = true;
         }
-      } catch (e) {}
+      } else if (totalCount > 0 && cachedCount >= totalCount) {
+        isFullyDownloaded = true;
+      }
+
+      const effectiveCached = isFullyDownloaded ? totalCount : cachedCount;
+      const diffCount = Math.max(0, totalCount - effectiveCached);
+      const dlBtn = document.getElementById('startOfflineDownloadBtn');
+      const descEl = document.getElementById('offlineDesc');
+
+      if (descEl) {
+        descEl.innerHTML = `You have <strong>${effectiveCached} of ${totalCount}</strong> reels stored locally for offline & airplane mode.<br>${diffCount > 0 ? `<strong>${diffCount} new reels</strong> available to download.` : 'All reels are stored offline! 🎉'}`;
+      }
+
+      if (dlBtn) {
+        if (diffCount === 0 && totalCount > 0) {
+          dlBtn.textContent = 'All Downloaded ✓';
+          dlBtn.disabled = true;
+        } else if (effectiveCached > 0) {
+          dlBtn.textContent = `📥 Download ${diffCount} New`;
+          dlBtn.disabled = false;
+        } else {
+          dlBtn.textContent = `📥 Download All (${totalCount})`;
+          dlBtn.disabled = false;
+        }
+      }
+
+      if (isFullyDownloaded) {
+        headerDlBtn.style.display = 'none';
+      } else {
+        headerDlBtn.style.display = '';
+        headerDlBtn.title = diffCount > 0 ? `Offline Download (${diffCount} new)` : 'Offline Cache & Download All';
+      }
     }
     syncDownloadButtonState();
 
@@ -1510,9 +1665,11 @@
     // Double-Tap 3-Zone Mapping (Feedback #5 & #11) with P7 Single-Tap Timer Cancellation
     let lastTapTime = 0;
     let lastTapX = 0;
+    let isTouchSwiping = false;
     const feed = document.getElementById('feedContainer');
 
     feed.addEventListener('click', (e) => {
+      if (isTouchSwiping) return;
       if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
       const now = Date.now();
       const clickX = e.clientX;
@@ -1539,7 +1696,29 @@
       }
     });
 
-    // Horizontal Touch Gesture Video Seeking (Feedback #10)
+    // Unified pointer tracking: any drag > 10px flags isTouchSwiping so subsequent click is suppressed
+    let pointerStartX = 0;
+    let pointerStartY = 0;
+    window.addEventListener('pointerdown', (e) => {
+      pointerStartX = e.clientX;
+      pointerStartY = e.clientY;
+    }, { passive: true });
+    window.addEventListener('pointermove', (e) => {
+      if (Math.hypot(e.clientX - pointerStartX, e.clientY - pointerStartY) > 10) {
+        isTouchSwiping = true;
+        if (pendingSingleTapTimer) {
+          clearTimeout(pendingSingleTapTimer);
+          pendingSingleTapTimer = null;
+        }
+      }
+    }, { passive: true });
+    window.addEventListener('pointerup', () => {
+      if (isTouchSwiping) {
+        setTimeout(() => { isTouchSwiping = false; }, 350);
+      }
+    }, { passive: true });
+
+    // Horizontal Touch Gesture Video Seeking & Vertical Swipe Isolation
     let touchStartX = 0;
     let touchStartY = 0;
     let isHorizontalScrubbing = false;
@@ -1550,6 +1729,7 @@
       if (e.touches.length !== 1) return;
       touchStartX = e.touches[0].clientX;
       touchStartY = e.touches[0].clientY;
+      isTouchSwiping = false;
       isHorizontalScrubbing = false;
       if (currentActiveCard) {
         const video = currentActiveCard.querySelector('.reel-video');
@@ -1563,6 +1743,15 @@
       const currentY = e.touches[0].clientY;
       const deltaX = currentX - touchStartX;
       const deltaY = currentY - touchStartY;
+      const dist = Math.hypot(deltaX, deltaY);
+
+      if (dist > 10) {
+        isTouchSwiping = true;
+        if (pendingSingleTapTimer) {
+          clearTimeout(pendingSingleTapTimer);
+          pendingSingleTapTimer = null;
+        }
+      }
 
       if (!isHorizontalScrubbing) {
         if (Math.abs(deltaX) > 18 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4) {
@@ -1608,6 +1797,10 @@
       isHorizontalScrubbing = false;
       const hud = document.getElementById('seekHud');
       if (hud) hud.classList.remove('visible');
+
+      if (isTouchSwiping) {
+        setTimeout(() => { isTouchSwiping = false; }, 350);
+      }
     }, { passive: true });
 
     function formatTime(secs) {
@@ -1718,6 +1911,11 @@
         if (rankEl) rankEl.textContent = rankNum;
       }
 
+      if (card.dataset.id) {
+        localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id);
+        recordDailyView(card.dataset.id);
+      }
+
       updateSlidingWindow(card);
       syncCacheWindow(card);
 
@@ -1815,8 +2013,14 @@
         return;
       }
 
-      // Locate first unwatched card in matching category
-      let targetCard = matchingCards.find(c => !watched.has(c.dataset.id));
+      // Locate target card: initialTargetId -> first unwatched -> final reel if all watched
+      let targetCard = null;
+      if (options.initialTargetId) {
+        targetCard = matchingCards.find(c => c.dataset.id === options.initialTargetId);
+      }
+      if (!targetCard) {
+        targetCard = matchingCards.find(c => !watched.has(c.dataset.id));
+      }
       let isAllCaughtUp = allWatched;
 
       if (!targetCard) {
@@ -1826,7 +2030,17 @@
 
       const shouldPlay = (options.play !== undefined) ? options.play : (!isInitialLaunch);
       if (targetCard) {
-        goToCard(targetCard, { play: allWatched ? false : shouldPlay });
+        if (isInitialLaunch) {
+          // WebKit snap-scroll lock fix on initial load: unlock snap, set scrollTop, prepare paused, restore snap
+          feed.style.setProperty('scroll-snap-type', 'none');
+          feed.scrollTop = targetCard.offsetTop;
+          prepareCardVideoPaused(targetCard);
+          setTimeout(() => {
+            feed.style.setProperty('scroll-snap-type', 'y mandatory');
+          }, 120);
+        } else {
+          goToCard(targetCard, { play: allWatched ? false : shouldPlay });
+        }
         if (isAllCaughtUp) {
           showToast("You're all caught up! Scroll up to rewatch.");
         }
@@ -1901,6 +2115,8 @@
 
       if (card.dataset.id) {
         preloadReelThumbnail(card.dataset.id);
+        localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id);
+        recordDailyView(card.dataset.id);
       }
 
       document.querySelectorAll('.boost-speed-btn').forEach(btn => {
@@ -1916,6 +2132,9 @@
 
       const video = card.querySelector('.reel-video');
       if (!video) return;
+
+      const playIcon = card.querySelector('.play-pause-indicator');
+      if (playIcon) playIcon.classList.remove('visible');
 
       updateSlidingWindow(card);
       syncCacheWindow(card);
@@ -2018,6 +2237,7 @@
       video.addEventListener('play', () => {
         if (card === currentActiveCard) {
           document.getElementById('appShell').classList.add('playback-active');
+          if (playIcon) playIcon.classList.remove('visible');
         }
       });
 
@@ -2037,6 +2257,12 @@
           const pct = (video.currentTime / video.duration) * 100;
           fill.style.width = pct + '%';
 
+          // 80% duration milestone watched recording
+          if (video.currentTime / video.duration >= 0.80 && !card.dataset.markedWatched && card.dataset.id) {
+            card.dataset.markedWatched = 'true';
+            markAsWatched(card.dataset.id);
+          }
+
           if (video.currentTime >= video.duration - 0.25 && !video.paused && !card.dataset.endedHandled) {
             card.dataset.endedHandled = 'true';
             handleVideoEnd(card);
@@ -2046,9 +2272,15 @@
 
       // P7: Tap card to toggle play/pause with 280ms debounce so double-tap cancels single-tap
       card.addEventListener('click', (e) => {
+        if (isTouchSwiping) return;
         if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
-        clearTimeout(pendingSingleTapTimer);
+        if (pendingSingleTapTimer) {
+          clearTimeout(pendingSingleTapTimer);
+          pendingSingleTapTimer = null;
+        }
         pendingSingleTapTimer = setTimeout(() => {
+          pendingSingleTapTimer = null;
+          if (card !== currentActiveCard) return;
           if (video.paused) {
             playCardVideo(card);
             playIcon.textContent = '▶';
@@ -2367,6 +2599,11 @@
     }
 
     feed.addEventListener('scroll', () => {
+      isTouchSwiping = true;
+      if (pendingSingleTapTimer) {
+        clearTimeout(pendingSingleTapTimer);
+        pendingSingleTapTimer = null;
+      }
       clearTimeout(scrollEndTimer);
       scrollEndTimer = setTimeout(checkCenteredCard, 80);
     }, { passive: true });
@@ -2432,9 +2669,11 @@
         urls: prefetchUrls
       });
 
+      const isDownloaded = localStorage.getItem('ig_digest_download_completed_' + currentWeekId) === 'true';
       navigator.serviceWorker.controller.postMessage({
         action: 'PRUNE_CACHE',
-        keepUrls: keepUrls
+        keepUrls: keepUrls,
+        preventPrune: isDownloaded
       });
     }
 
@@ -2467,37 +2706,87 @@
     }
 
     if (navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then(() => {
+        queryServiceWorkerCache();
+      });
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        queryServiceWorkerCache();
+      });
+
       navigator.serviceWorker.addEventListener('message', (event) => {
         const data = event.data;
         if (!data) return;
-        if (data.action === 'DOWNLOAD_PROGRESS') {
+        if (data.action === 'CACHED_URLS_LIST' && Array.isArray(data.urls)) {
+          cachedVideoUrlsSet = new Set(data.urls);
+          syncDownloadButtonState();
+        } else if (data.action === 'DOWNLOAD_PROGRESS') {
           const bar = document.getElementById('offlineProgressBar');
           const txt = document.getElementById('offlineProgressText');
           if (bar && txt) {
-            const pct = Math.round((data.completed / data.total) * 100);
+            const pct = data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0;
             bar.style.width = pct + '%';
             txt.textContent = `Downloading ${data.completed} / ${data.total} (${pct}%)`;
+          }
+          if (data.url) {
+            cachedVideoUrlsSet.add(data.url);
           }
         } else if (data.action === 'DOWNLOAD_COMPLETE') {
           const txt = document.getElementById('offlineProgressText');
           if (txt) txt.textContent = `All ${data.total} reels stored offline! 🎉`;
           const btn = document.getElementById('startOfflineDownloadBtn');
           if (btn) {
-            btn.disabled = false;
-            btn.textContent = 'Completed';
+            btn.disabled = true;
+            btn.textContent = 'All Downloaded ✓';
           }
-          // Requirement 1: Hide the download all button once downloads are complete for this week
           try {
             localStorage.setItem('ig_digest_download_completed_' + currentWeekId, 'true');
+            localStorage.setItem('ig_digest_downloaded_count_' + currentWeekId, String(data.total));
           } catch (e) {}
-          const headerDlBtn = document.getElementById('offlineDownloadBtn');
-          if (headerDlBtn) {
-            headerDlBtn.style.display = 'none';
-          }
+          syncDownloadButtonState();
           setTimeout(() => closeModal('offlineModal'), 1200);
           showToast('Offline download complete');
         }
       });
+    }
+
+    async function triggerExpand100() {
+      const btn = document.getElementById('expand100Btn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Adding +100...';
+      }
+      showToast('Fetching 100 extra reels from feed...');
+      try {
+        const res = await fetch('/api/expand?count=100', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Expansion running in background');
+
+        const poll = setInterval(async () => {
+          try {
+            const stRes = await fetch('/api/expand/status');
+            const stData = await stRes.json();
+            if (stData.state && !stData.state.is_running) {
+              clearInterval(poll);
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = '+100';
+              }
+              if (stData.state.status === 'completed') {
+                showToast('+100 Expansion complete! Reloading...');
+                setTimeout(() => window.location.reload(), 1500);
+              } else {
+                showToast(stData.state.last_error || 'Expansion completed with warnings');
+              }
+            }
+          } catch (e) {
+            clearInterval(poll);
+            if (btn) { btn.disabled = false; btn.textContent = '+100'; }
+          }
+        }, 3000);
+      } catch (e) {
+        showToast('Failed starting expansion');
+        if (btn) { btn.disabled = false; btn.textContent = '+100'; }
+      }
     }
 
     {% if is_local %}
@@ -2542,25 +2831,13 @@
     }
     {% endif %}
 
-    // Initialize & Resume from First Unwatched Reel (or Deep Link ?reel=ID)
+    // Initialize & Resume from Last Active Reel / First Unwatched Reel (or Deep Link ?reel=ID)
     const urlParams = new URLSearchParams(window.location.search);
     const targetReelId = urlParams.get('reel');
+    const lastActiveId = localStorage.getItem(LAST_ACTIVE_KEY);
+    const initialTargetId = targetReelId || lastActiveId;
 
-    if (targetReelId) {
-      const allCards = Array.from(document.querySelectorAll('.reel-card'));
-      const targetCard = allCards.find(c => c.dataset.id === targetReelId);
-      if (targetCard) {
-        filterCategory('all', { play: false });
-        targetCard.style.display = 'flex';
-        setTimeout(() => {
-          goToCard(targetCard, { play: false });
-        }, 60);
-      } else {
-        filterCategory('all', { play: false });
-      }
-    } else {
-      filterCategory('all', { play: false });
-    }
+    filterCategory('all', { play: false, initialTargetId: initialTargetId });
   </script>
 </body>
 </html>

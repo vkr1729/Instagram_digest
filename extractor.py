@@ -12,6 +12,7 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +24,8 @@ import config
 
 logger = logging.getLogger("InstagramDigest.Extractor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+_YTDLP_SEMAPHORE = threading.Semaphore(2)
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -744,8 +747,8 @@ def download_reel_video(
         if meta and meta.get("video_cdn_url"):
             cdn_target = meta["video_cdn_url"]
 
-    # 2. Direct streaming download from Instagram CDN
-    if cdn_target:
+    # 2. Direct streaming download from Instagram CDN (skip invalid blob: URIs)
+    if cdn_target and not cdn_target.startswith("blob:"):
         for attempt in range(1, max_retries + 1):
             try:
                 logger.info("Downloading reel stream (attempt %d/%d): %s...", attempt, max_retries, reel_url)
@@ -771,8 +774,8 @@ def download_reel_video(
 
             time.sleep(1.0 * attempt)
 
-    # 3. Fallback to yt-dlp
-    logger.info("Direct stream failed; falling back to yt-dlp for %s", reel_url)
+    # 3. Fallback to yt-dlp (with concurrency throttle & automatic retry)
+    logger.info("Direct stream unavailable or failed; falling back to yt-dlp for %s", reel_url)
     cookie_args = get_cookie_args() if use_cookies else []
     cmd = [
         "yt-dlp",
@@ -785,13 +788,22 @@ def download_reel_video(
         reel_url,
     ]
 
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-        if res.returncode == 0 and temp_path.exists() and temp_path.stat().st_size > 50000:
-            temp_path.replace(output_path)
-            return True
-    except Exception as exc:
-        logger.error("yt-dlp fallback failed: %s", exc)
+    for attempt in range(1, 3):
+        try:
+            with _YTDLP_SEMAPHORE:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0 and temp_path.exists() and temp_path.stat().st_size > 50000:
+                temp_path.replace(output_path)
+                logger.info("Successfully downloaded %.2f MB via yt-dlp to %s",
+                            output_path.stat().st_size / (1024 * 1024), output_path.name)
+                return True
+            else:
+                err_snippet = (res.stderr or "").strip()[-250:]
+                logger.warning("yt-dlp attempt %d failed (code %d): %s", attempt, res.returncode, err_snippet)
+        except Exception as exc:
+            logger.warning("yt-dlp attempt %d exception: %s", attempt, exc)
+        if attempt < 2:
+            time.sleep(2.5 + random.random())
 
     if temp_path.exists():
         temp_path.unlink(missing_ok=True)

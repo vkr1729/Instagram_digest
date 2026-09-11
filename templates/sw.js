@@ -1,5 +1,5 @@
 // sw.js — Instagram Digest Service Worker
-// Provides persistent video caching with full HTTP 206 Partial Content range slicing for iOS WebKit
+// Provides persistent video caching with zero-copy HTTP 206 Partial Content range slicing for iOS WebKit
 
 const CACHE_NAME = 'ig-digest-media-v1';
 
@@ -21,9 +21,9 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Helper to construct a synthetic 206 Partial Content response from a cached ArrayBuffer
-function createPartialResponse(arrayBuffer, rangeHeader, contentType) {
-  const total = arrayBuffer.byteLength;
+// Helper to construct a synthetic 206 Partial Content response using zero-copy Blob.slice
+function createPartialBlobResponse(blob, rangeHeader, contentType) {
+  const total = blob.size;
   const matches = rangeHeader ? rangeHeader.match(/bytes=(\d+)-(\d+)?/) : null;
 
   let start = 0;
@@ -39,7 +39,7 @@ function createPartialResponse(arrayBuffer, rangeHeader, contentType) {
   // Bound check
   start = Math.max(0, Math.min(start, total - 1));
   end = Math.max(start, Math.min(end, total - 1));
-  const chunk = arrayBuffer.slice(start, end + 1);
+  const chunk = blob.slice(start, end + 1);
 
   return new Response(chunk, {
     status: 206,
@@ -48,7 +48,7 @@ function createPartialResponse(arrayBuffer, rangeHeader, contentType) {
       'Content-Type': contentType || 'video/mp4',
       'Content-Range': `bytes ${start}-${end}/${total}`,
       'Accept-Ranges': 'bytes',
-      'Content-Length': String(chunk.byteLength),
+      'Content-Length': String(chunk.size),
       'Access-Control-Allow-Origin': '*',
     },
   });
@@ -72,8 +72,8 @@ self.addEventListener('fetch', (event) => {
 
       if (cached) {
         if (rangeHeader) {
-          const buf = await cached.clone().arrayBuffer();
-          return createPartialResponse(buf, rangeHeader, cached.headers.get('Content-Type') || 'video/mp4');
+          const blob = await cached.blob();
+          return createPartialBlobResponse(blob, rangeHeader, cached.headers.get('Content-Type') || 'video/mp4');
         }
         return cached;
       }
@@ -100,7 +100,7 @@ self.addEventListener('message', (event) => {
   if (data.action === 'PRECACHE_VIDEOS' && Array.isArray(data.urls)) {
     event.waitUntil(precacheUrls(data.urls));
   } else if (data.action === 'PRUNE_CACHE' && Array.isArray(data.keepUrls)) {
-    event.waitUntil(pruneCache(data.keepUrls));
+    event.waitUntil(pruneCache(data.keepUrls, data.preventPrune));
   } else if (data.action === 'DOWNLOAD_ALL' && Array.isArray(data.urls)) {
     cancelDownloadAll = false;
     event.waitUntil(downloadAllVideos(data.urls, event.source));
@@ -146,7 +146,8 @@ async function precacheUrls(urls) {
   }
 }
 
-async function pruneCache(keepUrls) {
+async function pruneCache(keepUrls, preventPrune) {
+  if (preventPrune) return;
   const cache = await caches.open(CACHE_NAME);
   const keepSet = new Set(keepUrls.map((u) => u.split('?')[0]));
   const requests = await cache.keys();
@@ -162,42 +163,95 @@ async function pruneCache(keepUrls) {
 async function downloadAllVideos(urls, client) {
   if (isDownloadingAll) return;
   isDownloadingAll = true;
+  cancelDownloadAll = false;
   const cache = await caches.open(CACHE_NAME);
   const total = urls.length;
 
-  for (let i = 0; i < total; i++) {
-    if (cancelDownloadAll) break;
-    const rawUrl = urls[i];
+  // 1. Identify missing URLs (differential check)
+  const missingUrls = [];
+  let cachedCount = 0;
+
+  for (const rawUrl of urls) {
     const cleanUrl = rawUrl.split('?')[0];
     const existing = await cache.match(cleanUrl);
-
-    if (!existing) {
-      try {
-        const res = await fetch(rawUrl, { mode: 'cors' });
-        if (res.ok) {
-          const blob = await res.blob();
-          const cachedRes = new Response(blob, {
-            status: 200,
-            headers: {
-              'Content-Type': res.headers.get('Content-Type') || 'video/mp4',
-              'Content-Length': String(blob.size),
-              'Accept-Ranges': 'bytes',
-            },
-          });
-          await cache.put(cleanUrl, cachedRes);
-        }
-      } catch (e) {}
-    }
-
-    if (client) {
-      client.postMessage({
-        action: 'DOWNLOAD_PROGRESS',
-        completed: i + 1,
-        total: total,
-        url: cleanUrl,
-      });
+    if (existing) {
+      cachedCount++;
+    } else {
+      missingUrls.push(rawUrl);
     }
   }
+
+  // Initial progress notification
+  if (client) {
+    client.postMessage({
+      action: 'DOWNLOAD_PROGRESS',
+      completed: cachedCount,
+      total: total,
+      url: '',
+    });
+  }
+
+  if (missingUrls.length === 0) {
+    isDownloadingAll = false;
+    if (client) {
+      client.postMessage({
+        action: 'DOWNLOAD_COMPLETE',
+        total: total,
+      });
+    }
+    return;
+  }
+
+  // 2. Concurrency pool with 3 parallel workers and 1 network retry
+  let currentIndex = 0;
+  let newlyDownloaded = 0;
+
+  async function downloadWorker() {
+    while (currentIndex < missingUrls.length && !cancelDownloadAll) {
+      const idx = currentIndex++;
+      const rawUrl = missingUrls[idx];
+      const cleanUrl = rawUrl.split('?')[0];
+
+      let success = false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (cancelDownloadAll) break;
+        try {
+          const res = await fetch(rawUrl, { mode: 'cors' });
+          if (res.ok) {
+            const blob = await res.blob();
+            const cachedRes = new Response(blob, {
+              status: 200,
+              headers: {
+                'Content-Type': res.headers.get('Content-Type') || 'video/mp4',
+                'Content-Length': String(blob.size),
+                'Accept-Ranges': 'bytes',
+              },
+            });
+            await cache.put(cleanUrl, cachedRes);
+            success = true;
+            break;
+          }
+        } catch (e) {
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        }
+      }
+
+      newlyDownloaded++;
+      if (client) {
+        client.postMessage({
+          action: 'DOWNLOAD_PROGRESS',
+          completed: cachedCount + newlyDownloaded,
+          total: total,
+          url: cleanUrl,
+        });
+      }
+    }
+  }
+
+  const workers = [downloadWorker(), downloadWorker(), downloadWorker()];
+  await Promise.all(workers);
 
   isDownloadingAll = false;
   if (client) {

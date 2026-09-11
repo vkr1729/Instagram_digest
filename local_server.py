@@ -105,6 +105,68 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
     }
 
 
+_EXPAND_LOCK = threading.Lock()
+_EXPAND_STATE: dict[str, Any] = {
+    "is_running": False,
+    "status": "idle",
+    "started_at": None,
+    "last_result": None,
+    "last_error": None,
+}
+
+
+def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]:
+    """Launch a background thread expanding the active digest by N external reels."""
+    import main as main_module
+
+    with _EXPAND_LOCK:
+        if _EXPAND_STATE["is_running"]:
+            return {
+                "success": True,
+                "status": "already_running",
+                "message": "Digest expansion is already running in background.",
+                "state": dict(_EXPAND_STATE),
+            }
+
+        _EXPAND_STATE["is_running"] = True
+        _EXPAND_STATE["status"] = "running"
+        _EXPAND_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        _EXPAND_STATE["last_error"] = None
+
+    def _worker():
+        try:
+            logger.info("Background expand thread started for +%d reels...", count)
+            cookie_exp = config.ROOT_DIR / "cookie_exporter.py"
+            if cookie_exp.exists():
+                try:
+                    import subprocess
+                    subprocess.run(["/usr/bin/python3", str(cookie_exp)], capture_output=True, text=True, timeout=25)
+                except Exception as c_err:
+                    logger.warning("Failed refreshing cookies before expand: %s", c_err)
+
+            ret = main_module.run_expand(target_count=count, deploy=deploy)
+            with _EXPAND_LOCK:
+                _EXPAND_STATE["is_running"] = False
+                _EXPAND_STATE["status"] = "completed" if ret == 0 else "failed"
+                _EXPAND_STATE["last_result"] = ret
+        except Exception as exc:
+            logger.exception("Expand worker error: %s", exc)
+            with _EXPAND_LOCK:
+                _EXPAND_STATE["is_running"] = False
+                _EXPAND_STATE["status"] = "failed"
+                _EXPAND_STATE["last_error"] = str(exc)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    return {
+        "success": True,
+        "status": "started",
+        "message": f"+{count} Expansion started in background.",
+        "state": dict(_EXPAND_STATE),
+    }
+
+
 def _atomic_write_json(path: Path, data: Any) -> None:
     """Safely write JSON to disk via atomic replace under process/thread uniqueness."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,6 +436,20 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API Expand status route -> /api/expand/status
+        if clean_path in ("/api/expand/status", "/api/expand/status/"):
+            with _EXPAND_LOCK:
+                state_copy = dict(_EXPAND_STATE)
+            resp = {"success": True, "state": state_copy}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # Web Route: /channels
         if clean_path in ("/channels", "/channels/"):
             channels_template = config.TEMPLATES_DIR / "channels.html"
@@ -443,6 +519,20 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if parsed.path in ("/api/sync-adhoc", "/api/sync-adhoc/"):
             logger.info("Ad-hoc midweek sync triggered via API.")
             resp = trigger_adhoc_sync_task()
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/expand", "/api/expand/"):
+            query = parse_qs(parsed.query)
+            count = int(query.get("count", ["100"])[0])
+            logger.info("Digest expansion (+%d) triggered via API.", count)
+            resp = trigger_expand_task(count=count, deploy=True)
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

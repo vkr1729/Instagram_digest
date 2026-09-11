@@ -291,7 +291,9 @@ def test_p5_p6_viewer_static_markers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "SITE_DIR", tmp_path)
     monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
     (tmp_path / "videos").mkdir()
+    (tmp_path / "digests").mkdir()
     _, local_index = site_builder.build_site(
         digest_data={"run_date": "2026-09-06", "items": []}
     )

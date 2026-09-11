@@ -376,10 +376,150 @@ def run_full_sync(
     return 0
 
 
+def run_expand(target_count: int = 100, deploy: bool = False) -> int:
+    """
+    Expand active digest by discovering N extra reels from the Reels feed.
+    Preserves all existing active reels in data/top100_digest.json and R2.
+    Downloads and uploads ONLY the new reels, re-ranks, rebuilds site, and deploys if requested.
+    """
+    week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    logger.info("Starting +%d reel expansion for week %s (deploy=%s)...", target_count, week_id, deploy)
+
+    if not config.DIGEST_BATCH_FILE.exists():
+        logger.error("No active digest found (%s). Run full sync first.", config.DIGEST_BATCH_FILE)
+        return 1
+
+    try:
+        digest_data = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.error("Failed loading active digest: %s", exc)
+        return 1
+
+    existing_items: list[dict[str, Any]] = digest_data.get("items", [])
+    if not existing_items:
+        logger.error("Active digest has 0 items. Run full sync first.")
+        return 1
+
+    existing_ids = {item["id"] for item in existing_items if "id" in item}
+    logger.info("Preserving %d existing reels from active digest without deletion.", len(existing_items))
+
+    # 1. Extract external reels from Reels feed
+    with extractor.InstagramSession() as session:
+        sources = extractor.load_sources()
+        active_sources = [s for s in sources if s.get("enabled", True)]
+        try:
+            external_reels = extractor.extract_external_reels_from_feed(
+                session=session,
+                target_count=target_count,
+                existing_ids=existing_ids,
+                active_sources=active_sources,
+            )
+        except extractor.CookieExpiredException as exc:
+            logger.warning("Cookie expired during external discovery: %s", exc)
+            try:
+                import notifier
+                notifier.send_cookie_alert_email()
+            except Exception as alert_err:
+                logger.warning("Failed to send cookie alert email: %s", alert_err)
+            return 2
+        except Exception as exc:
+            logger.error("Failed discovering external reels: %s", exc)
+            return 2
+
+    if not external_reels:
+        logger.warning("No new external reels could be extracted from feed.")
+        return 2
+
+    logger.info("Discovered %d new external reels from feed.", len(external_reels))
+
+    # 2. Download and upload ONLY the newly discovered reels
+    week_videos_dir = config.VIDEOS_DIR / week_id
+    week_videos_dir.mkdir(parents=True, exist_ok=True)
+    existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+
+    uploaded_url_map: dict[str, str] = {}
+    for item in existing_items:
+        rid = item.get("id")
+        if rid:
+            r2_url = item.get("r2_url") or item.get("video_url") or f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_{item.get('creator_handle')}_{rid}.mp4"
+            uploaded_url_map[rid] = r2_url
+
+    start_rank = len(existing_items) + 1
+    new_ranked: list[dict[str, Any]] = []
+
+    def process_new_reel(entry: tuple[int, dict[str, Any]]) -> tuple[str, str, dict[str, Any]]:
+        rank_num, reel = entry
+        reel_id = reel["id"]
+        handle = reel["creator_handle"]
+        filename = f"{rank_num:02d}_{handle}_{reel_id}.mp4"
+        local_video_path = week_videos_dir / filename
+
+        reel["rank"] = rank_num
+        reel["rank_display"] = f"#{rank_num:02d}"
+
+        if not local_video_path.exists():
+            success = extractor.download_reel_video(
+                reel["url"],
+                local_video_path,
+                video_cdn_url=reel.get("video_cdn_url"),
+            )
+            if not success:
+                logger.warning("Skipping failed download for expanded reel %s", reel_id)
+                return (reel_id, "", reel)
+
+        public_url = storage_r2.upload_reel_to_r2(
+            local_video_path,
+            week_id=week_id,
+            key_name=filename,
+            existing_keys=existing_r2_keys,
+        )
+        return (reel_id, public_url, reel)
+
+    entries = [(start_rank + idx, r) for idx, r in enumerate(external_reels)]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(process_new_reel, e) for e in entries]
+        for f in as_completed(futures):
+            try:
+                rid, pub_url, reel_obj = f.result()
+                if pub_url:
+                    uploaded_url_map[rid] = pub_url
+                    reel_obj["r2_url"] = pub_url
+                    reel_obj["video_url"] = pub_url
+                    new_ranked.append(reel_obj)
+            except Exception as exc:
+                logger.warning("Error processing expanded reel: %s", exc)
+
+    new_ranked.sort(key=lambda r: r.get("rank", 9999))
+    combined_items = existing_items + new_ranked
+
+    for idx, item in enumerate(combined_items, 1):
+        item["rank"] = idx
+        item["rank_display"] = f"#{idx:02d}"
+
+    logger.info("Expansion successfully integrated: %d existing + %d new = %d total reels.",
+                len(existing_items), len(new_ranked), len(combined_items))
+
+    # 3. Save combined digest payload
+    ranker.save_digest_batch(combined_items, run_date=week_id)
+
+    # 4. Rebuild static site
+    site_builder.build_site(
+        digest_data={"run_date": week_id, "items": combined_items},
+        r2_uploaded_urls=uploaded_url_map,
+    )
+
+    # 5. Deploy to GitHub Pages if requested
+    if deploy:
+        site_builder.deploy_to_gh_pages()
+
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Instagram Digest v1.0 — Weekly High-Signal Reel Curator")
     parser.add_argument("--sync", action="store_true", help="Run full weekly extraction, ranking, and sync")
     parser.add_argument("--ad-hoc", action="store_true", help="Run ad-hoc midweek sync picking reels between now and the last run timestamp")
+    parser.add_argument("--expand", type=int, default=0, help="Expand active digest with N new external reels from Reels feed")
     parser.add_argument("--serve", action="store_true", help="Run local dashboard HTTP server on port 8080")
     parser.add_argument("--port", type=int, default=8080, help="Port for local server (default: 8080)")
     parser.add_argument("--sync-following", action="store_true", help="Force sync followed creators from Chrome session")
@@ -389,6 +529,10 @@ def main() -> int:
     parser.add_argument("--limit-per-creator", type=int, default=15, help="Max candidate reels per creator (default: 15)")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     args = parser.parse_args()
+
+    # Expand mode
+    if args.expand > 0:
+        return run_expand(target_count=args.expand, deploy=args.deploy)
 
     # Serve mode
     if args.serve:
