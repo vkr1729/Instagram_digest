@@ -41,4 +41,5 @@ data/*
 downloads/
 videos/
 site/
+logs/
 .instagram_digest/

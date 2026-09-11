@@ -46,6 +46,13 @@ R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCO
 GH_PAGES_REPO = os.getenv("GH_PAGES_REPO", "https://github.com/vkr1729/Instagram_digest.git").strip()
 PAGES_BASE_URL = os.getenv("PAGES_BASE_URL", "https://vkr1729.github.io/Instagram_digest").strip().rstrip("/")
 
+# Notification / Email Configuration
+SMTP_HOST = os.getenv("SMTP_HOST", os.getenv("SMTP_SERVER", "smtp.gmail.com")).strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", os.getenv("SMTP_USERNAME", "")).strip()
+SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("SMTP_PASSWORD", "")).strip().strip('"')
+NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("RECIPIENT_EMAIL", "")).strip()
+
 # Pipeline & Retention Limits (Default: 1 week rolling archive)
 RETENTION_WEEKS = int(os.getenv("RETENTION_WEEKS", "1"))
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", str(RETENTION_WEEKS * 7 + 1)))

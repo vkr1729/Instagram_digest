@@ -314,6 +314,17 @@ def run_full_sync(
 
     if not dry_run:
         save_last_run_info(week_id)
+        # 10. Send notification email confirming weekly refresh
+        try:
+            import notifier
+            notifier.send_digest_email(
+                week_id=week_id,
+                count=len(ranked_reels),
+                top_reels=ranked_reels[:5],
+                site_url=config.PAGES_BASE_URL if deploy else None,
+            )
+        except Exception as exc:
+            logger.warning("Failed to send refresh confirmation email: %s", exc)
 
     logger.info("Sync completed successfully! Local viewer ready at %s", local_index)
     return 0
