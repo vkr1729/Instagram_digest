@@ -815,7 +815,7 @@ def extract_external_reels_from_feed(
     target_count: int,
     existing_ids: set[str] | None = None,
     active_sources: list[dict[str, Any]] | None = None,
-    max_evaluations: int = 120,
+    max_evaluations: int | None = None,
 ) -> list[dict[str, Any]]:
     """Crawl Instagram Reels discovery feed (instagram.com/reels/) with Playwright to discover
     high-signal reels from external creators to fill the remaining weekly quota.
@@ -829,6 +829,9 @@ def extract_external_reels_from_feed(
     """
     if target_count <= 0:
         return []
+
+    if max_evaluations is None:
+        max_evaluations = max(120, target_count * 8)
 
     existing = set(existing_ids or set())
     followed_handles = set(
