@@ -1,0 +1,74 @@
+    <div class="top-chrome" id="topChrome">
+      <!-- Top Header -->
+      <header class="top-header" id="topHeader">
+        <div class="brand-logo">Instagram</div>
+        <div class="header-controls">
+          <span id="dailyCounterBadge" class="week-pill" style="font-size: 11px; font-weight: 600; color: #a1a1aa; border-color: rgba(255,255,255,0.15);" title="Daily Mindful Check-in (50/day target)">🎯 0/50</span>
+          <button class="jump-btn" id="jumpBtn" onclick="openJumpModal()" title="Jump to Reel # (or press G)">
+            #<span id="currentRankDisplay">1</span>/{{ items|length }}
+          </button>
+          <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">
+            📥
+          </button>
+          <button class="speed-btn desktop-only-btn" id="expand100Btn" onclick="triggerExpand100()" title="Expand digest by +100 reels from Reels feed">
+            +100
+          </button>
+          {% if is_local %}
+          <button class="speed-btn" id="adhocSyncViewerBtn" onclick="triggerAdhocSyncViewer()" title="Ad-hoc Refresh: Fetch reels since last run">
+            ⚡ Refresh
+          </button>
+          <a href="/channels" class="speed-btn" style="text-decoration:none;" title="Manage Channels & Subscriptions">
+            👥 Channels
+          </a>
+          {% endif %}
+          {% if available_weeks and available_weeks|length > 1 %}
+          <select class="week-selector" id="weekSelector" onchange="switchWeek(this.value)" title="Switch Weekly Digest">
+            {% for w in available_weeks %}
+            <option value="{{ w.url }}" {% if w.week_id == week_id %}selected{% endif %}>
+              {{ w.label }}
+            </option>
+            {% endfor %}
+          </select>
+          {% endif %}
+        </div>
+      </header>
+
+      <!-- Story Category Circles -->
+      <nav class="story-bar" id="storyBar">
+        <div class="story-bubble active" data-category="all" onclick="filterCategory('all')">
+          <div class="story-ring"><div class="story-avatar">🔥</div></div>
+          <span class="story-title">Top {{ items|length if items else 250 }}</span>
+          <div class="active-dot"></div>
+        </div>
+        <div class="story-bubble" data-category="entertainment" onclick="filterCategory('entertainment')">
+          <div class="story-ring"><div class="story-avatar">🎬</div></div>
+          <span class="story-title">Entertain</span>
+          <div class="active-dot"></div>
+        </div>
+        <div class="story-bubble" data-category="finance" onclick="filterCategory('finance')">
+          <div class="story-ring"><div class="story-avatar">💰</div></div>
+          <span class="story-title">Finance</span>
+          <div class="active-dot"></div>
+        </div>
+        <div class="story-bubble" data-category="ai_tech" onclick="filterCategory('ai_tech')">
+          <div class="story-ring"><div class="story-avatar">💻</div></div>
+          <span class="story-title">AI & Tech</span>
+          <div class="active-dot"></div>
+        </div>
+        <div class="story-bubble" data-category="niche" onclick="filterCategory('niche')">
+          <div class="story-ring"><div class="story-avatar">🧠</div></div>
+          <span class="story-title">Niche</span>
+          <div class="active-dot"></div>
+        </div>
+        <div class="story-bubble" data-category="health" onclick="filterCategory('health')">
+          <div class="story-ring"><div class="story-avatar">🏋️</div></div>
+          <span class="story-title">Health</span>
+          <div class="active-dot"></div>
+        </div>
+        <div class="story-bubble" data-category="food" onclick="filterCategory('food')">
+          <div class="story-ring"><div class="story-avatar">🥗</div></div>
+          <span class="story-title">Food</span>
+          <div class="active-dot"></div>
+        </div>
+      </nav>
+    </div>

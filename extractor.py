@@ -822,7 +822,7 @@ def extract_external_reels_from_feed(
 
     Filters:
       - Excludes followed channels, blacklist, and existing IDs.
-      - Requires visible likes >= 50,000 OR (if hidden) comments >= 250.
+      - Requires visible likes >= 25,000 OR (if hidden) comments >= 150.
       - Classifies topic into the 6 digest categories (ai_tech, finance, health, entertainment, niche, food).
       - Maximum 2 reels per external creator.
       - Raises CookieExpiredException if redirected to login.
@@ -992,12 +992,12 @@ def extract_external_reels_from_feed(
                 and h not in blacklist
                 and creator_counts.get(h, 0) < 2
             ):
-                # High-signal threshold: visible likes >= 50,000 OR (if hidden) comments >= 250
-                is_high_signal = (likes >= 50000) or (likes == 0 and comments >= 250)
+                # High-signal threshold: visible likes >= 25,000 OR (if hidden) comments >= 150
+                is_high_signal = (likes >= 25000) or (likes == 0 and comments >= 150)
                 if is_high_signal:
                     cat = categorize_creator(h, caption)
                     if cat:
-                        estimated_views = max(likes * 6, comments * 60, 150000)
+                        estimated_views = max(likes * 6, comments * 60, 75000)
                         external_candidates.append({
                             "id": rid,
                             "url": f"https://www.instagram.com/reel/{rid}/",
@@ -1022,12 +1022,17 @@ def extract_external_reels_from_feed(
                             rid, h, cat, likes, comments, len(external_candidates), target_count
                         )
 
+        # Periodic resting pause to break robotic velocity and satisfy TOS pacing
+        if eval_count % 25 == 0:
+            logger.info("Anti-detection cooldown: resting 12s after %d reel evaluations...", eval_count)
+            time.sleep(12.0)
+
         # Scroll to next reel with humanized jitter
         try:
             page.keyboard.press("PageDown")
         except Exception:
             pass
-        time.sleep(random.uniform(1.8, 3.2))
+        time.sleep(random.uniform(2.8, 4.8))
 
     logger.info("External Reels discovery finished: harvested %d high-signal external reels (evaluated %d).",
                 len(external_candidates), eval_count)

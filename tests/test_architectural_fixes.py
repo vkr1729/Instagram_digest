@@ -21,6 +21,18 @@ import site_builder
 import storage_r2
 from extractor import InstagramBlocked, _assert_not_blocked, InstagramSession
 from local_server import _STATE_LOCK, _atomic_write_json, LocalDigestHandler
+from jinja2 import Environment, FileSystemLoader
+
+
+def _get_viewer_template_source() -> str:
+    parts = []
+    viewer_file = config.TEMPLATES_DIR / "viewer.html"
+    parts.append(viewer_file.read_text(encoding="utf-8"))
+    partials_dir = config.TEMPLATES_DIR / "partials"
+    if partials_dir.exists():
+        for p in partials_dir.glob("*"):
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 # ============================================================================
@@ -284,7 +296,7 @@ def test_c3_two_pass_cutoff_drops_old_and_unknown_dates(tmp_path, monkeypatch):
 
 def test_p5_p6_viewer_static_markers(tmp_path, monkeypatch):
     """Verify P5 volumechange pill-clear and P6 retention-window keep-set render."""
-    viewer_src = (pathlib.Path(__file__).resolve().parent.parent / "templates" / "viewer.html").read_text()
+    viewer_src = _get_viewer_template_source()
     assert "volumechange" in viewer_src
     assert "map(attribute='week_id')" in viewer_src
     assert "ig_digest_watched_ids'" in viewer_src  # legacy key removal present
@@ -407,7 +419,7 @@ def test_c7_atomic_write_and_thread_safety(tmp_path):
 
 def test_p1_goto_card_generation_guard_and_b5_ring_throttle():
     """Verify P1 navGen guard in goToCard and B5 rAF coalescing of ring updates."""
-    viewer_src = (pathlib.Path(__file__).resolve().parent.parent / "templates" / "viewer.html").read_text()
+    viewer_src = _get_viewer_template_source()
 
     # P1: goToCard takes a generation and both RAF stages bail when superseded
     assert "const gen = ++navGen;" in viewer_src
@@ -800,5 +812,5 @@ def test_prune_covers_portrait_files(tmp_path, monkeypatch):
 
 def test_viewer_prefetches_portrait_for_share(tmp_path, monkeypatch):
     """The share-sheet attachment URL must point at the vertical image."""
-    viewer_src = (pathlib.Path(__file__).resolve().parent.parent / "templates" / "viewer.html").read_text()
+    viewer_src = _get_viewer_template_source()
     assert "/thumbnails/${reelId}_portrait.jpg" in viewer_src

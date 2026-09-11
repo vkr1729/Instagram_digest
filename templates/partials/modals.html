@@ -1,0 +1,49 @@
+    <!-- Modals -->
+    <!-- Jump to Reel Modal -->
+    <div class="modal-overlay" id="jumpModal" onclick="handleModalBackdrop(event, 'jumpModal')">
+      <div class="modal-dialog">
+        <div class="modal-icon-badge">🎯</div>
+        <h3 class="modal-title">Jump to Reel</h3>
+        <p class="modal-desc">Enter reel number (1–{{ items|length }}). All reels before this will be marked as watched.</p>
+        <div class="jump-input-group">
+          <input type="number" id="jumpInput" min="1" max="{{ items|length }}" placeholder="e.g. 52" inputmode="numeric" pattern="[0-9]*" onkeydown="if(event.key==='Enter')handleJumpSubmit()">
+          <button class="jump-submit-btn" onclick="handleJumpSubmit()">Go</button>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal('jumpModal')">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Offline Cache Modal -->
+    <div class="modal-overlay" id="offlineModal" onclick="handleModalBackdrop(event, 'offlineModal')">
+      <div class="modal-dialog">
+        <div class="modal-icon-badge">📥</div>
+        <h3 class="modal-title">Offline Cache</h3>
+        <p class="modal-desc" id="offlineDesc">The rolling 25-video window (prev 5 + next 20) is always kept offline automatically. You can also pre-download all {{ items|length }} reels for airplane or travel mode.</p>
+        <div id="offlineProgressContainer" style="display:none; margin: 14px 0;">
+          <div style="background: rgba(255,255,255,0.15); height: 8px; border-radius: 4px; overflow: hidden;">
+            <div id="offlineProgressBar" style="width: 0%; height: 100%; background: var(--ig-gradient); transition: width 0.2s linear;"></div>
+          </div>
+          <div id="offlineProgressText" style="font-size: 11px; color: #a1a1aa; margin-top: 6px;">0 / {{ items|length }}</div>
+        </div>
+        <div class="modal-actions" style="margin-top: 14px;">
+          <button class="modal-btn-cancel" onclick="closeModal('offlineModal')">Close</button>
+          <button class="jump-submit-btn" id="startOfflineDownloadBtn" onclick="startFullDownload()">Download All</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mindful Daily Limit Check-in Modal -->
+    <div class="modal-overlay" id="dailyLimitModal" onclick="handleModalBackdrop(event, 'dailyLimitModal')">
+      <div class="modal-dialog">
+        <div class="modal-icon-badge">🌿</div>
+        <h3 class="modal-title">Mindful Check-in</h3>
+        <p class="modal-desc" style="margin-bottom: 20px;">
+          You've reached your daily <strong>50-reel target</strong>! Take a breather, or feel free to continue whenever you'd like.
+        </p>
+        <div class="modal-actions" style="flex-direction: column; gap: 8px;">
+          <button class="modal-btn-cancel" style="padding: 12px; font-size: 14px;" onclick="pauseAndTakeBreak()">🌿 Take a Break</button>
+          <button class="jump-submit-btn" style="padding: 12px; border-radius: 12px; font-size: 14px;" onclick="continueMindfulWatching()">Continue Watching</button>
+        </div>
+      </div>
+    </div>
+  </div>

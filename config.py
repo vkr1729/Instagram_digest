@@ -65,16 +65,16 @@ DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.0"))
 AUTO_ADVANCE_DELAY_SECONDS = 0.5
 AVAILABLE_SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0]
 
-# Category Buckets & Target Quotas (200 Total)
+# Category Buckets & Target Quotas (Scaled dynamically with TOP_DIGEST_COUNT)
 # 40% Entertainment, 15% Finance, 15% AI & Tech, 10% Niche, 10% Health, 10% Food
 CATEGORIES = [
-    {"id": "all", "label": "All Top 200", "emoji": "🔥"},
-    {"id": "entertainment", "label": "Entertainment", "emoji": "🎬", "target_pct": 0.40, "target_count": 80},
-    {"id": "finance", "label": "Finance", "emoji": "💰", "target_pct": 0.15, "target_count": 30},
-    {"id": "ai_tech", "label": "AI & Tech", "emoji": "💻", "target_pct": 0.15, "target_count": 30},
-    {"id": "niche", "label": "Niche", "emoji": "🧠", "target_pct": 0.10, "target_count": 20},
-    {"id": "health", "label": "Health", "emoji": "🏋️", "target_pct": 0.10, "target_count": 20},
-    {"id": "food", "label": "Food & Recipes", "emoji": "🥗", "target_pct": 0.10, "target_count": 20},
+    {"id": "all", "label": f"All Top {TOP_DIGEST_COUNT}", "emoji": "🔥"},
+    {"id": "entertainment", "label": "Entertainment", "emoji": "🎬", "target_pct": 0.40, "target_count": round(TOP_DIGEST_COUNT * 0.40)},
+    {"id": "finance", "label": "Finance", "emoji": "💰", "target_pct": 0.15, "target_count": round(TOP_DIGEST_COUNT * 0.15)},
+    {"id": "ai_tech", "label": "AI & Tech", "emoji": "💻", "target_pct": 0.15, "target_count": round(TOP_DIGEST_COUNT * 0.15)},
+    {"id": "niche", "label": "Niche", "emoji": "🧠", "target_pct": 0.10, "target_count": round(TOP_DIGEST_COUNT * 0.10)},
+    {"id": "health", "label": "Health", "emoji": "🏋️", "target_pct": 0.10, "target_count": round(TOP_DIGEST_COUNT * 0.10)},
+    {"id": "food", "label": "Food & Recipes", "emoji": "🥗", "target_pct": 0.10, "target_count": round(TOP_DIGEST_COUNT * 0.10)},
 ]
 
 # File Locations

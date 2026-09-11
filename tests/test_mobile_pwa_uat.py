@@ -382,7 +382,7 @@ def test_deep_link_specific_reel(built_site):
 
 
 def test_download_all_button_lifecycle(mobile_page: Page):
-    """Verify download all button disappears once download completes and persists across reloads."""
+    """Verify download all button remains permanently visible in header and updates status."""
     dl_btn = mobile_page.locator("#offlineDownloadBtn")
     assert dl_btn.is_visible()
 
@@ -391,14 +391,17 @@ def test_download_all_button_lifecycle(mobile_page: Page):
         localStorage.setItem('ig_digest_download_completed_' + currentWeekId, 'true');
         syncDownloadButtonState();
     }""")
-    assert not dl_btn.is_visible()
+    # Button remains visible in header with offline ready status
+    assert dl_btn.is_visible()
+    title = dl_btn.get_attribute("title") or ""
+    assert "Offline" in title or "downloaded" in title
 
-    # Reload page - button remains hidden for that week
+    # Reload page - button remains visible for offline inspection & re-sync
     mobile_page.reload()
     mobile_page.wait_for_timeout(200)
-    assert not mobile_page.locator("#offlineDownloadBtn").is_visible()
+    assert mobile_page.locator("#offlineDownloadBtn").is_visible()
 
-    # If next week arrives (simulated by clearing or changing week ID)
+    # If new week arrives or cache cleared
     mobile_page.evaluate("""() => {
         localStorage.removeItem('ig_digest_download_completed_' + currentWeekId);
         syncDownloadButtonState();
