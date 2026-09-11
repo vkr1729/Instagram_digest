@@ -30,10 +30,10 @@ Replaces endless algorithmic doom-scrolling with a finite, curated media briefin
   - 🥗 **Food & Recipes**
 * **Instant Resume:** Selecting any category automatically navigates to your first unwatched reel in that topic.
 * **Playback Speed & Gestures:**
-  - Double-tap left/right edges to skip ±10s with visual ripple feedback.
-  - Double-tap center or press `F` for fullscreen immersive mode.
-  - Per-reel `2x` speed booster toggle.
-  - Full keyboard shortcuts (`J`/`K` navigation, `Space` play/pause, `M` mute/unmute, `G` jump to reel).
+  - Videos auto-enter immersive fullscreen on play (top chrome and info scrim hide); pausing restores them for share and caption.
+  - Press-and-hold the right edge for latched `2x` speed; tap the right edge to exit (resets on reel change).
+  - Double-tap center or press `F` for native fullscreen; horizontal drag scrubs the video.
+  - Full keyboard shortcuts (`J`/`K` navigation, `Space` play/pause, `G` jump to reel).
 
 ### 4. Zero-Egress Cloudflare R2 Media Delivery
 * **Zero Egress Fees:** All video streaming is offloaded to Cloudflare R2 object storage ($0 egress bandwidth), keeping GitHub Pages ultra-lean (~2 MB static footprint).

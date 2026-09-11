@@ -23,7 +23,32 @@ DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Native .env loader (zero external dependency required)
 ENV_FILE = ROOT_DIR / ".env"
+
+
+def check_env_file_permissions(path: Path | None = None) -> bool:
+    """True when the env file is absent or not group/other-readable.
+
+    R2/SMTP secrets live here; mode 0644 leaks them to every local user.
+    """
+    p = path or ENV_FILE
+    try:
+        if not p.exists():
+            return True
+        mode = p.stat().st_mode
+    except OSError:
+        return True
+    return not (mode & 0o077)
+
+
 if ENV_FILE.exists():
+    if not check_env_file_permissions():
+        import warnings
+        warnings.warn(
+            f"Insecure permissions on {ENV_FILE}; run `chmod 600 {ENV_FILE}` "
+            "so R2/SMTP secrets are not readable by other local users.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:

@@ -151,15 +151,11 @@ def test_playwright_discovery_badge_and_header_controls(setup_hybrid_test_site):
         ext_card_2 = reel_cards.nth(3)
         assert ext_card_2.locator(".discovery-pill").count() == 1
         
-        # 5. Verify 2x speed toggle button in reel card actions
+        # 5. Verify the per-reel 2x button is gone (hold gesture owns the boost)
         boost_btn = fol_card_1.locator(".boost-speed-btn")
-        assert boost_btn.count() == 1
-        assert boost_btn.inner_text() == "2x"
+        assert boost_btn.count() == 0
         
-        # Click 2x button and verify class active
-        boost_btn.click()
-        assert "active" in (boost_btn.get_attribute("class") or "")
-        
+
         # Scroll to external reel (index 1) to capture the Discovery badge
         page.evaluate("() => document.querySelectorAll('.reel-card')[1].scrollIntoView()")
         page.wait_for_timeout(500)

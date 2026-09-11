@@ -69,6 +69,18 @@ def _digest_item_count() -> int:
         return 0
 
 
+def _alert_sync_abort(reason: str, detail: str) -> None:
+    """Email the owner when a sync aborts without producing a digest (exit 2).
+
+    Alert delivery itself must never break the abort path, hence the guard.
+    """
+    try:
+        import notifier
+        notifier.send_failure_alert_email(context=f"Sync aborted: {reason} — {detail}", exit_code=2)
+    except Exception as alert_err:
+        logger.warning("Failed to send abort alert email: %s", alert_err)
+
+
 def run_full_sync(
     dry_run: bool = False,
     deploy: bool = False,
@@ -166,6 +178,7 @@ def run_full_sync(
             except extractor.InstagramBlocked as exc:
                 logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
                 candidates_cache_file.unlink(missing_ok=True)
+                _alert_sync_abort("Instagram session blocked", str(exc))
                 return 2
 
             if (len(candidates) < MIN_CANDIDATE_RATIO * expected
@@ -175,6 +188,10 @@ def run_full_sync(
                     len(candidates), int(MIN_CANDIDATE_RATIO * expected), empty_creators, len(ordered_sources)
                 )
                 candidates_cache_file.unlink(missing_ok=True)
+                _alert_sync_abort(
+                    "viability gate failed",
+                    f"{len(candidates)} candidates, {empty_creators}/{len(ordered_sources)} creators empty",
+                )
                 return 2
 
             logger.info("Extracted total %d candidate reels across creators.", len(candidates))
@@ -282,6 +299,7 @@ def run_full_sync(
 
     if not ranked_reels:
         logger.error("No reels qualified for Top Digest. Aborting run without touching digest/site.")
+        _alert_sync_abort("no qualifying reels", "Top Digest selection came back empty")
         return 2
 
     # 5. Media Download and R2 Upload (Multi-threaded B1, C4 closed browser session)
@@ -353,6 +371,10 @@ def run_full_sync(
             logger.error(
                 "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
                 len(ranked_reels), MIN_DEPLOY_ITEMS
+            )
+            _alert_sync_abort(
+                "deploy refused",
+                f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS})",
             )
             return 2
 

@@ -37,6 +37,9 @@ elif [ $EXIT_CODE -eq 2 ]; then
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sync aborted by viability gate or block detection; preserved previous working digest." >> "$LOG_FILE"
 else
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sync failed with exit code $EXIT_CODE!" >> "$LOG_FILE"
+    # Exit 2 (blocked / viability-gate aborts) already emailed from main.py;
+    # any other failure gets its alert here. Exit code is preserved.
+    .venv/bin/python notifier.py --failure-alert --context "Weekly Friday sync (main.py --sync --deploy)" --exit-code $EXIT_CODE >> "$LOG_FILE" 2>&1 || true
     exit $EXIT_CODE
 fi
 echo "=================================================================" >> "$LOG_FILE"

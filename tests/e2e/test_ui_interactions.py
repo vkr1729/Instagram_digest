@@ -245,8 +245,8 @@ def test_uat_6_7_default_audio_pitch_preservation_and_wake_lock(setup_test_site)
         browser.close()
 
 
-def test_uat_6_8_automatic_fullscreen_and_immersive_mode(setup_test_site):
-    """UAT-6.8: Automatic edge-to-edge full layout (no manual button) and double-tap immersive mode."""
+def test_uat_6_8_automatic_immersive_and_manual_fullscreen(setup_test_site):
+    """UAT-6.8: Single auto-immersive state (play hides, pause reveals) + manual native fullscreen."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -262,11 +262,37 @@ def test_uat_6_8_automatic_fullscreen_and_immersive_mode(setup_test_site):
         shell = page.locator("#appShell")
         assert shell.is_visible()
 
-        # Double-click feed container -> toggles immersive mode
+        # Paused initially: no immersive chrome-hiding
+        assert shell.evaluate("el => el.classList.contains('immersive-mode')") is False
+
+        # Headless media never plays: shadow `paused` and fire the events.
+        page.evaluate("""() => {
+            const v = document.querySelector('.reel-card .reel-video');
+            Object.defineProperty(v, 'paused', { value: false, configurable: true });
+            v.dispatchEvent(new Event('play'));
+        }""")
+        assert shell.evaluate("el => el.classList.contains('immersive-mode')") is True
+
+        page.evaluate("""() => {
+            const v = document.querySelector('.reel-card .reel-video');
+            Object.defineProperty(v, 'paused', { value: true, configurable: true });
+            v.dispatchEvent(new Event('pause'));
+        }""")
+        assert shell.evaluate("el => el.classList.contains('immersive-mode')") is False
+
+        # Center double-tap routes to the native fullscreen toggle (spied:
+        # headless may not honor the Fullscreen API itself).
+        page.evaluate("""() => {
+            window.__toggleCalls = 0;
+            const orig = window.toggleUnifiedFullscreen;
+            window.toggleUnifiedFullscreen = (...args) => {
+                window.__toggleCalls += 1;
+                return orig(...args);
+            };
+        }""")
         feed = page.locator("#feedContainer")
         feed.dblclick()
-        is_immersive = shell.evaluate("el => el.classList.contains('immersive-mode')")
-        assert is_immersive is True
+        assert page.evaluate("() => window.__toggleCalls") == 1
 
         browser.close()
 

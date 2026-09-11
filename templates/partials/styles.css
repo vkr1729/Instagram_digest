@@ -72,11 +72,18 @@
       pointer-events: auto;
     }
 
-    /* Immersive / Fullscreen Playback Mode (Auto-Hides Chrome During Video Playback) */
-    .app-shell.immersive-mode .top-chrome,
-    .app-shell.playback-active .top-chrome {
+    /* Single Auto-Immersive Mode: playing hides top chrome AND bottom scrim */
+    .app-shell.immersive-mode .top-chrome {
       opacity: 0;
       transform: translate(-50%, -100%);
+      pointer-events: none;
+    }
+    .app-shell.immersive-mode .bottom-scrim {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .app-shell.immersive-mode .bottom-scrim * {
       pointer-events: none;
     }
 
@@ -95,11 +102,6 @@
     @media (min-width: 768px) {
       .desktop-only-btn {
         display: inline-flex !important;
-      }
-      .app-shell.playback-active .top-chrome {
-        opacity: 1;
-        transform: translateX(-50%);
-        pointer-events: auto;
       }
     }
     .brand-logo {
@@ -517,6 +519,8 @@
       margin: 0 auto;
       background: #000;
       display: block;
+      /* Reliable press-and-hold 2x: no OS long-press callout stealing the gesture */
+      -webkit-touch-callout: none;
     }
 
     /* GPU compositing layer only for the actively playing card (was: every card). */
@@ -556,6 +560,7 @@
       background: linear-gradient(to top, rgba(0,0,0,0.38) 0%, rgba(0,0,0,0.1) 40%, transparent 100%);
       z-index: 10;
       pointer-events: none;
+      transition: opacity 0.3s ease, visibility 0.3s ease;
     }
     .bottom-scrim * { pointer-events: auto; }
 
@@ -620,30 +625,6 @@
       align-items: center;
       gap: 6px;
       flex-shrink: 0;
-    }
-    .boost-speed-btn {
-      background: rgba(255, 255, 255, 0.16);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      color: #fff;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 8px;
-      border-radius: 10px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 2px;
-      transition: all 0.15s ease;
-      line-height: 1;
-    }
-    .boost-speed-btn:hover { background: rgba(255, 255, 255, 0.28); }
-    .boost-speed-btn.active {
-      background: #f09433;
-      border-color: #f09433;
-      color: #000;
-      box-shadow: 0 0 10px rgba(240, 148, 51, 0.6);
     }
     .whatsapp-share-btn {
       background: rgba(37, 211, 102, 0.22);
@@ -804,50 +785,6 @@
       pointer-events: auto;
     }
     .mute-pill.visible { display: flex; }
-
-    /* Double Tap Skip Ripple Indicators */
-    .skip-ripple {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      width: 35%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      opacity: 0;
-      pointer-events: none;
-      z-index: 20;
-      transition: opacity 0.2s ease;
-    }
-    .skip-left {
-      left: 0;
-      background: radial-gradient(circle at center, rgba(255,255,255,0.18) 0%, transparent 70%);
-      border-radius: 0 100px 100px 0;
-    }
-    .skip-right {
-      right: 0;
-      background: radial-gradient(circle at center, rgba(255,255,255,0.18) 0%, transparent 70%);
-      border-radius: 100px 0 0 100px;
-    }
-    .skip-ripple.active {
-      opacity: 1;
-      animation: ripplePulse 0.4s ease-out;
-    }
-    @keyframes ripplePulse {
-      0% { transform: scale(0.85); opacity: 0.8; }
-      50% { transform: scale(1.05); opacity: 1; }
-      100% { transform: scale(1); opacity: 0; }
-    }
-    .skip-ripple-content {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2px;
-      color: #fff;
-      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
-    }
-    .skip-icon { font-size: 26px; font-weight: 700; }
-    .skip-text { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
 
     /* Celebratory "All Caught Up" Screen */
     .celebration-screen {

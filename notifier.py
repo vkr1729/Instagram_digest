@@ -357,17 +357,109 @@ def send_cookie_alert_email(retrigger_url: str = "http://localhost:8080/retrigge
         return False
 
 
+def build_failure_alert_message(context: str, exit_code: int = 1) -> MIMEMultipart:
+    """Build a pipeline-failure alert email (sync aborts, non-zero exits)."""
+    subject = f"❌ Instagram Digest Failed — {context} (exit {exit_code})"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"Instagram Digest <{config.SMTP_USER}>"
+    msg["To"] = config.NOTIFICATION_EMAIL
+
+    text_content = f"""INSTAGRAM DIGEST PIPELINE FAILURE
+==================================
+
+Context: {html.escape(context)}
+Exit code: {exit_code}
+
+The run produced nothing new; the previous working digest was preserved.
+Inspect the run log for details:
+
+  ~/Instagram_digest/logs/weekly_sync.log
+
+Terminal Shortcut:
+  cd ~/Instagram_digest && bash run_weekly.sh
+"""
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #09090b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f4f4f5;">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #09090b; padding: 32px 14px;">
+        <tr>
+            <td align="center">
+                <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 540px; background-color: #121217; border-radius: 20px; border: 1px solid rgba(255, 69, 58, 0.3); overflow: hidden;">
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #b91c1c, #dc2626); padding: 28px 24px; text-align: center;">
+                            <div style="font-size: 36px; line-height: 1;">❌</div>
+                            <h1 style="color: #ffffff; font-size: 22px; font-weight: 800; margin: 8px 0 0 0;">Pipeline Failure</h1>
+                            <p style="color: rgba(255, 255, 255, 0.95); font-size: 13px; margin: 4px 0 0 0;">{html.escape(context)} (exit {exit_code})</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 28px 24px;">
+                            <p style="color: #e4e4e7; font-size: 14px; line-height: 1.6; margin: 0;">
+                                The run produced nothing new; the previous working digest was preserved.
+                                Inspect <code style="background: #000; padding: 3px 8px; border-radius: 6px; color: #a1a1aa;">~/Instagram_digest/logs/weekly_sync.log</code> for details.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>"""
+
+    msg.attach(MIMEText(text_content, "plain", "utf-8"))
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
+    return msg
+
+
+def send_failure_alert_email(context: str, exit_code: int = 1) -> bool:
+    """Send an alert email when the digest pipeline fails or aborts a run."""
+    if not is_email_configured():
+        logger.info("SMTP email notifications are not configured. Skipping failure alert email.")
+        return False
+
+    logger.warning("Sending pipeline failure alert email to %s...", config.NOTIFICATION_EMAIL)
+    try:
+        msg = build_failure_alert_message(context=context, exit_code=exit_code)
+
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=25) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(config.SMTP_USER, config.SMTP_PASS)
+            server.send_message(msg)
+
+        logger.info("Successfully sent failure alert email to %s!", config.NOTIFICATION_EMAIL)
+        return True
+    except Exception as exc:
+        logger.error("Failed to deliver failure alert email: %s", exc)
+        return False
+
+
 def main() -> int:
     """CLI runner for testing email delivery."""
     parser = argparse.ArgumentParser(description="Instagram Digest Email Notifier")
     parser.add_argument("--test", action="store_true", help="Send a test notification email")
     parser.add_argument("--cookie-alert", action="store_true", help="Send a test cookie alert email")
+    parser.add_argument("--failure-alert", action="store_true", help="Send a pipeline failure alert email")
+    parser.add_argument("--context", type=str, default="Manual test", help="Failure context for --failure-alert")
+    parser.add_argument("--exit-code", type=int, default=1, help="Exit code for --failure-alert")
     parser.add_argument("--week-id", type=str, default="2026-09-11", help="Week ID for test")
     parser.add_argument("--count", type=int, default=250, help="Reel count for test")
     args = parser.parse_args()
 
     if args.cookie_alert:
         success = send_cookie_alert_email()
+        return 0 if success else 1
+
+    if args.failure_alert:
+        success = send_failure_alert_email(context=args.context, exit_code=args.exit_code)
         return 0 if success else 1
 
     sample_reels = [

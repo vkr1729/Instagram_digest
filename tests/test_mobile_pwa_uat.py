@@ -3,8 +3,9 @@ test_mobile_pwa_uat.py — Comprehensive Playwright UAT test suite for Instagram
 Validates:
 1. iPhone 15 Pro mobile viewport, safe area padding, and layout symmetry.
 2. Configurable default speed (1.25x).
-3. Bottom 2x booster button (per-reel booster with auto-reset on next reel).
-4. Double-tap 3-zone gestures (Left -10s, Right +10s, Center Fullscreen toggle & return).
+3. Press-and-hold 2x (latched per reel, right-zone tap exits, auto-reset on next reel).
+4. Single auto-immersive state (play hides chrome+scrim, pause reveals) and
+   center double-tap routing to the native fullscreen toggle (no ±10s seek).
 5. Horizontal touch swipe video seeking with floating HUD.
 6. 35% watched threshold triggering read state.
 7. WhatsApp share link pointing to Open Graph share page with inline R2 video.
@@ -89,125 +90,134 @@ def test_default_playback_speed_1_25x(mobile_page: Page):
     assert rate == 1.25
 
 
-def test_bottom_2x_booster_and_auto_reset(mobile_page: Page):
-    """Verify bottom 2x booster button toggles 2x on active reel and resets on next reel."""
+def test_hold_to_boost_latch_tap_exit_and_reset(mobile_page: Page):
+    """Verify rightmost-35% 500ms hold latches 2x, right-tap exits, reel change resets."""
+    # No per-reel 2x button anymore; the gesture owns the boost.
+    assert mobile_page.locator(".boost-speed-btn").count() == 0
+
     first_card = mobile_page.locator(".reel-card").first
-    boost_btn = first_card.locator(".boost-speed-btn")
-    assert boost_btn.is_visible()
-
-    # Initial rate 1.25x
     assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 1.25
 
-    # Click 2x booster
-    boost_btn.click()
-    assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 2.0
-    assert "active" in boost_btn.evaluate("el => el.className")
+    # Headless media never really plays: shadow `paused` so the hold may engage.
+    mobile_page.evaluate("""() => {
+        const v = document.querySelector('.reel-card .reel-video');
+        Object.defineProperty(v, 'paused', { value: false, configurable: true });
+        const feed = document.getElementById('feedContainer');
+        feed.dispatchEvent(new PointerEvent('pointerdown', {
+            clientX: 350, clientY: 400, bubbles: true
+        }));
+    }""")
+    mobile_page.wait_for_timeout(700)
+    mobile_page.evaluate("() => window.dispatchEvent(new PointerEvent('pointerup'))")
 
-    # Click 2x booster again -> reverts to default 1.25x
-    boost_btn.click()
+    assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 2.0
+    assert "Boosted to 2x" in mobile_page.locator("#globalToast").text_content()
+
+    # First right-tap is swallowed as the hold release, the next exits the latch.
+    first_card.click(position={"x": 350, "y": 400})
+    mobile_page.wait_for_timeout(100)
+    assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 2.0
+    first_card.click(position={"x": 350, "y": 400})
+    mobile_page.wait_for_timeout(150)
     assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 1.25
-    assert "active" not in boost_btn.evaluate("el => el.className")
 
-    # Boost to 2x again, then advance to next reel
-    boost_btn.click()
+    # Latch again, then advance: the next reel must reset to default speed.
+    mobile_page.evaluate("""() => {
+        const card = document.querySelector('.reel-card');
+        engageBoost(card, card.querySelector('.reel-video'));
+    }""")
     assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 2.0
-
-    # Advance to next reel programmatically
     mobile_page.evaluate("""() => {
         const cards = document.querySelectorAll('.reel-card');
         advanceToNextReel(cards[0]);
     }""")
     mobile_page.wait_for_timeout(400)
-
-    # Next card rate should reset to default 1.25x
     second_card = mobile_page.locator(".reel-card").nth(1)
     assert second_card.locator(".reel-video").evaluate("v => v.playbackRate") == 1.25
-    # Booster button on second card should not be active
-    assert "active" not in second_card.locator(".boost-speed-btn").evaluate("el => el.className")
 
 
-def test_reel_actions_layout_nowrap(mobile_page: Page):
-    """Verify 2x speed button and WhatsApp share button remain on a single line and never wrap when toggled."""
+def test_share_action_without_2x_button(mobile_page: Page):
+    """Verify the 2x button is gone and WhatsApp share stands alone in reel actions."""
+    assert mobile_page.locator(".boost-speed-btn").count() == 0
+
     first_card = mobile_page.locator(".reel-card").first
-    boost_btn = first_card.locator(".boost-speed-btn")
     share_btn = first_card.locator(".whatsapp-share-btn")
-
-    assert boost_btn.is_visible()
     assert share_btn.is_visible()
-
-    # Initial vertical alignment on the same row
-    box1 = boost_btn.bounding_box()
-    box2 = share_btn.bounding_box()
-    assert abs(box1["y"] - box2["y"]) < 4, "Buttons must be on the same horizontal row"
-
-    # Click 2x booster
-    boost_btn.click()
-
-    # Text must stay compact ('2x', not expanding to '⚡ 2x' which forced wrapping)
-    assert boost_btn.text_content().strip() == "2x"
-
-    # Verify buttons remain strictly on the same row without wrapping
-    box1_after = boost_btn.bounding_box()
-    box2_after = share_btn.bounding_box()
-    assert abs(box1_after["y"] - box2_after["y"]) < 4, "Buttons must remain on the same horizontal row after 2x activation"
+    assert "Share" in share_btn.text_content()
 
 
-def test_double_tap_fullscreen_toggle_and_return(mobile_page: Page):
-    """Verify center double-tap toggles fullscreen on and OFF (resolving Feedback #5)."""
+def test_center_double_tap_routes_to_native_fullscreen_toggle(mobile_page: Page):
+    """Verify center double-tap calls the native fullscreen toggle; sides do not seek."""
     shell = mobile_page.locator("#appShell")
     assert "immersive-mode" not in shell.evaluate("el => el.className")
 
-    # Double tap in center zone (x = 393/2 = 196, y = 400)
+    # Spy on the native toggle (headless may not honor the Fullscreen API itself).
+    mobile_page.evaluate("""() => {
+        window.__toggleCalls = 0;
+        const orig = window.toggleUnifiedFullscreen;
+        window.toggleUnifiedFullscreen = (...args) => {
+            window.__toggleCalls += 1;
+            return orig(...args);
+        };
+    }""")
+
     feed = mobile_page.locator("#feedContainer")
+
+    # Double tap in center zone (x = 393/2 = 196, y = 400)
     feed.click(position={"x": 196, "y": 400})
     feed.click(position={"x": 196, "y": 400})
     mobile_page.wait_for_timeout(100)
+    assert mobile_page.evaluate("() => window.__toggleCalls") == 1
 
-    # Fullscreen should now be active
-    assert "immersive-mode" in shell.evaluate("el => el.className")
-
-    # Double tap center again -> should exit fullscreen back to normal mode
-    feed.click(position={"x": 196, "y": 400})
-    feed.click(position={"x": 196, "y": 400})
-    mobile_page.wait_for_timeout(100)
-
-    assert "immersive-mode" not in shell.evaluate("el => el.className")
-
-
-def test_double_tap_10s_skip_left_and_right(mobile_page: Page):
-    """Verify double-tap on Left rewinds 10s and Right advances 10s."""
-    first_card = mobile_page.locator(".reel-card").first
-    video = first_card.locator(".reel-video")
-
-    # Set video currentTime to 15s and mock duration to 30s
+    # Side double-taps must not seek and must not toggle: set a known time first.
     mobile_page.evaluate("""() => {
         const v = document.querySelector('.reel-card .reel-video');
         Object.defineProperty(v, 'duration', { value: 30, writable: true });
         v.currentTime = 15;
     }""")
-
-    feed = mobile_page.locator("#feedContainer")
-
-    # Double tap on Right zone (x = 350 > 393 * 0.65 = 255)
     feed.click(position={"x": 350, "y": 400})
     feed.click(position={"x": 350, "y": 400})
     mobile_page.wait_for_timeout(100)
+    curr_time = mobile_page.evaluate("() => document.querySelector('.reel-card .reel-video').currentTime")
+    assert abs(curr_time - 15) < 1.0
+    assert mobile_page.evaluate("() => window.__toggleCalls") == 1
 
-    # 15s + 10s = 25s (with minor playback advancement allowance)
-    curr_time = video.evaluate("v => v.currentTime")
-    assert abs(curr_time - 25) < 0.5
-    # Right ripple should be triggered
-    assert mobile_page.locator("#skipRippleRight").evaluate("el => el.classList.contains('active')")
-
-    # Double tap on Left zone (x = 50 < 393 * 0.35 = 137)
     feed.click(position={"x": 50, "y": 400})
     feed.click(position={"x": 50, "y": 400})
     mobile_page.wait_for_timeout(100)
+    curr_time = mobile_page.evaluate("() => document.querySelector('.reel-card .reel-video').currentTime")
+    assert abs(curr_time - 15) < 1.0
+    assert mobile_page.evaluate("() => window.__toggleCalls") == 1
 
-    # 25s - 10s = 15s (with minor playback advancement allowance)
-    curr_time = video.evaluate("v => v.currentTime")
-    assert abs(curr_time - 15) < 0.5
-    assert mobile_page.locator("#skipRippleLeft").evaluate("el => el.classList.contains('active')")
+    # Ripple elements are gone entirely.
+    assert mobile_page.locator("#skipRippleRight").count() == 0
+    assert mobile_page.locator("#skipRippleLeft").count() == 0
+
+
+def test_auto_immersive_hides_and_pause_reveals(mobile_page: Page):
+    """Verify play auto-hides chrome+scrim (immersive) and pause restores them."""
+    shell = mobile_page.locator("#appShell")
+    scrim = mobile_page.locator(".bottom-scrim").first
+    assert "immersive-mode" not in shell.evaluate("el => el.className")
+
+    # Headless media never really plays: shadow `paused` and fire the events.
+    mobile_page.evaluate("""() => {
+        const v = document.querySelector('.reel-card .reel-video');
+        Object.defineProperty(v, 'paused', { value: false, configurable: true });
+        v.dispatchEvent(new Event('play'));
+    }""")
+    mobile_page.wait_for_timeout(400)
+    assert "immersive-mode" in shell.evaluate("el => el.className")
+    assert scrim.evaluate("el => window.getComputedStyle(el).opacity") == "0"
+
+    mobile_page.evaluate("""() => {
+        const v = document.querySelector('.reel-card .reel-video');
+        Object.defineProperty(v, 'paused', { value: true, configurable: true });
+        v.dispatchEvent(new Event('pause'));
+    }""")
+    mobile_page.wait_for_timeout(400)
+    assert "immersive-mode" not in shell.evaluate("el => el.className")
+    assert float(scrim.evaluate("el => window.getComputedStyle(el).opacity")) > 0.9
 
 
 def test_swipe_up_forward_watched_recording(mobile_page: Page):
@@ -290,18 +300,18 @@ def test_whatsapp_share_url_generation(mobile_page: Page):
 
 
 def test_caption_and_controls_elevation(mobile_page: Page):
-    """Verify 'Reel by @channel' caption snippet is displayed, providing comfortable thumb elevation for 2x & share."""
+    """Verify caption snippet is displayed, with share comfortably elevated for the thumb."""
     first_card = mobile_page.locator(".reel-card").first
     caption_snippet = first_card.locator(".caption-snippet")
     assert caption_snippet.is_visible()
     caption_text = caption_snippet.text_content().strip()
     assert len(caption_text) > 0
 
-    # Verify 2x and share buttons sit comfortably elevated above the bottom of the viewport
-    boost_btn = first_card.locator(".boost-speed-btn")
-    boost_box = boost_btn.bounding_box()
+    # Verify the share button sits comfortably elevated above the bottom of the viewport
+    share_btn = first_card.locator(".whatsapp-share-btn")
+    share_box = share_btn.bounding_box()
     viewport_height = mobile_page.viewport_size["height"]
-    distance_from_bottom = viewport_height - (boost_box["y"] + boost_box["height"])
+    distance_from_bottom = viewport_height - (share_box["y"] + share_box["height"])
 
     # Elevation must be comfortably above home indicator (> 24px)
     assert distance_from_bottom >= 24

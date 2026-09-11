@@ -94,7 +94,7 @@
         const v = currentActiveCard.querySelector('.reel-video');
         if (v) v.pause();
       }
-      document.getElementById('appShell').classList.remove('playback-active');
+      syncImmersive();
       showToast('Taking a break 🌿 Continue whenever you like.');
     }
 
@@ -293,6 +293,9 @@
       const spdEl = document.getElementById('speedDisplay');
       if (spdEl) spdEl.textContent = currentSpeed + 'x';
 
+      // Cycling the default clears any latched hold-2x first
+      latchedBoostCard = null;
+
       // Apply to all currently loaded videos
       document.querySelectorAll('.reel-video').forEach(v => {
         v.playbackRate = currentSpeed;
@@ -300,35 +303,61 @@
         v.webkitPreservesPitch = true;
         v.mozPreservesPitch = true;
       });
-
-      // Reset any active boost buttons
-      document.querySelectorAll('.boost-speed-btn').forEach(btn => {
-        btn.classList.remove('active');
-        btn.textContent = '2x';
-      });
     }
 
-    // Toggle 2x Speed for the specific active reel (Feedback #4)
-    function toggleReelSpeed(btn, e) {
-      if (e) e.stopPropagation();
-      const card = (btn ? btn.closest('.reel-card') : null) || currentActiveCard;
-      if (!card) return;
-      if (!currentActiveCard) currentActiveCard = card;
-      const video = card.querySelector('.reel-video');
-      if (!video) return;
+    // Press-and-hold 2x (latched per reel): finger down in the rightmost 35%
+    // starts a 500ms timer; moving >10px (scrub/swipe) or lifting early cancels
+    // it; firing latches 2x for that reel until a right-zone tap exits or the
+    // reel changes. No button; the gesture owns the boost.
+    const HOLD_ZONE = 0.65;
+    const HOLD_MS = 500;
+    let holdTimer = null;
+    let latchedBoostCard = null;
+    let suppressNextClick = false;
 
-      const isBoosted = (video.playbackRate === 2.0);
-      const targetRate = isBoosted ? currentSpeed : 2.0;
-      video.defaultPlaybackRate = targetRate;
-      video.playbackRate = targetRate;
+    function cancelHold() {
+      if (holdTimer) {
+        clearTimeout(holdTimer);
+        holdTimer = null;
+      }
+    }
+
+    function engageBoost(card, video) {
+      if (pendingSingleTapTimer) {
+        clearTimeout(pendingSingleTapTimer);
+        pendingSingleTapTimer = null;
+      }
+      latchedBoostCard = card;
+      video.defaultPlaybackRate = 2.0;
+      video.playbackRate = 2.0;
       video.preservesPitch = true;
       video.webkitPreservesPitch = true;
+      showToast('Boosted to 2x for this reel');
+    }
 
-      if (btn) {
-        btn.classList.toggle('active', !isBoosted);
-        btn.textContent = '2x';
+    function exitBoost(video) {
+      latchedBoostCard = null;
+      video.defaultPlaybackRate = currentSpeed;
+      video.playbackRate = currentSpeed;
+      showToast(`Speed reset to ${currentSpeed}x`);
+    }
+
+    function armHoldTimer(card) {
+      cancelHold();
+      if (pendingSingleTapTimer) {
+        clearTimeout(pendingSingleTapTimer);
+        pendingSingleTapTimer = null;
       }
-      showToast(targetRate === 2.0 ? 'Boosted to 2x for this reel' : `Speed reset to ${targetRate}x`);
+      lastTapTime = 0;
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        if (currentActiveCard !== card) return;
+        const video = card.querySelector('.reel-video');
+        if (!video || video.paused) return;
+        engageBoost(card, video);
+        // Swallow the finger-up click so release never pauses or double-taps.
+        suppressNextClick = true;
+      }, HOLD_MS);
     }
 
     // P3 & P4: Bounded LRU in-memory prefetch cache for physical thumbnail file sharing
@@ -427,13 +456,28 @@
       }
     });
 
-    // Unified Fullscreen Toggle
-    function toggleUnifiedFullscreen() {
-      const shell = document.getElementById('appShell');
-      const isImmersive = shell.classList.contains('immersive-mode');
+    // Single auto-immersive state: immersive ⇔ (native fullscreen OR current
+    // video playing). Play adds it, pause drops it (unless fullscreen holds
+    // it) — the old twin state class is retired.
+    function isNativeFullscreen() {
+      return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
 
-      if (!isImmersive) {
-        shell.classList.add('immersive-mode');
+    function syncImmersive() {
+      const shell = document.getElementById('appShell');
+      if (!shell) return;
+      let playing = false;
+      if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        playing = !!(v && !v.paused && !v.ended);
+      }
+      shell.classList.toggle('immersive-mode', isNativeFullscreen() || playing);
+    }
+
+    // Center double-tap toggles the native Fullscreen API only; the immersive
+    // look follows on its own (auto on play, fullscreenchange keeps it).
+    function toggleUnifiedFullscreen() {
+      if (!isNativeFullscreen()) {
         const docEl = document.documentElement;
         if (docEl.requestFullscreen) {
           docEl.requestFullscreen().catch(() => {});
@@ -442,25 +486,18 @@
         }
         showToast('Fullscreen Active');
       } else {
-        shell.classList.remove('immersive-mode');
-        if (document.fullscreenElement || document.webkitFullscreenElement) {
-          if (document.exitFullscreen) {
-            document.exitFullscreen().catch(() => {});
-          } else if (document.webkitExitFullscreen) {
-            try { document.webkitExitFullscreen(); } catch (e) {}
-          }
+        if (document.exitFullscreen) {
+          document.exitFullscreen().catch(() => {});
+        } else if (document.webkitExitFullscreen) {
+          try { document.webkitExitFullscreen(); } catch (e) {}
         }
-        showToast('Controls Restored');
+        showToast('Fullscreen Exited');
       }
     }
 
     // Sync UI with native fullscreen state changes
     function onFullscreenChange() {
-      const shell = document.getElementById('appShell');
-      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
-      if (isFullscreen) {
-        shell.classList.add('immersive-mode');
-      }
+      syncImmersive();
     }
     document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('webkitfullscreenchange', onFullscreenChange);
@@ -471,12 +508,12 @@
       if (pill) pill.classList.add('visible');
     }
 
+    // Scoped: only the passed card's pill is cleared, so acting on a departing
+    // card can never wipe the newly active card's just-shown pill mid-scroll.
     function hideMutePill(card) {
-      if (card) {
-        const pill = card.querySelector('.mute-pill');
-        if (pill) pill.classList.remove('visible');
-      }
-      document.querySelectorAll('.mute-pill.visible').forEach(p => p.classList.remove('visible'));
+      if (!card) return;
+      const pill = card.querySelector('.mute-pill');
+      if (pill) pill.classList.remove('visible');
     }
 
     function unmuteFromPill(pill, e) {
@@ -486,12 +523,18 @@
       }
       isAudioMuted = false;
       if (currentActiveCard) {
-        const v = currentActiveCard.querySelector('.reel-video');
+        const card = currentActiveCard;
+        const v = card.querySelector('.reel-video');
         if (v) {
           v.muted = false;
-          v.play().catch(() => {});
+          const myGen = navGen;
+          v.play().then(() => {
+            // Retargeted mid-play (fling): stop the stale card instead of
+            // leaving it playing offscreen.
+            if (myGen !== navGen || currentActiveCard !== card) v.pause();
+          }).catch(() => {});
         }
-        hideMutePill(currentActiveCard);
+        hideMutePill(card);
       }
     }
 
@@ -509,7 +552,11 @@
     });
 
     // First Interaction Bootstrap (Unmutes audio inside the gesture & acquires wake lock)
+    // Self-disarming: `once` applies per event type, so without this the tap,
+    // touch, key and scroll registrations would each replay the bootstrap.
+    const initController = new AbortController();
     function handleInitialInteraction() {
+      initController.abort();
       isAudioMuted = false;
       if (currentActiveCard) {
         const v = currentActiveCard.querySelector('.reel-video');
@@ -524,36 +571,14 @@
       requestWakeLock();
     }
     ['click', 'touchstart', 'keydown', 'scroll'].forEach(evt => {
-      window.addEventListener(evt, handleInitialInteraction, { once: true, passive: true });
+      window.addEventListener(evt, handleInitialInteraction, { once: true, passive: true, signal: initController.signal });
     });
     requestWakeLock();
 
-    // Double-Tap 10s Skip & Ripple
-    function skipSeconds(delta) {
-      const card = currentActiveCard || document.querySelector('.reel-card');
-      if (!card) return;
-      const video = card.querySelector('.reel-video');
-      if (!video || !video.duration) return;
-
-      const newTime = Math.max(0, Math.min(video.duration, video.currentTime + delta));
-      video.currentTime = newTime;
-
-      showSkipRipple(delta > 0 ? 'right' : 'left');
-
-      if (video.currentTime / video.duration >= 0.35 && !card.dataset.markedWatched && card.dataset.id) {
-        card.dataset.markedWatched = 'true';
-        markAsWatched(card.dataset.id);
-      }
-    }
-
-    function showSkipRipple(side) {
-      const el = document.getElementById(side === 'right' ? 'skipRippleRight' : 'skipRippleLeft');
-      if (!el) return;
-      el.classList.add('active');
-      setTimeout(() => el.classList.remove('active'), 400);
-    }
-
-    // Double-Tap 3-Zone Mapping (Feedback #5 & #11) with P7 Single-Tap Timer Cancellation
+    // Double-tap zones: center toggles native fullscreen; the side zones belong
+    // to press-and-hold 2x (hold) and tap-to-exit-2x (single tap), so
+    // double-taps there intentionally do nothing. P7 Single-Tap Timer
+    // Cancellation retained.
     let lastTapTime = 0;
     let lastTapX = 0;
     let isTouchSwiping = false;
@@ -568,16 +593,26 @@
         clearTimeout(pendingSingleTapTimer);
         pendingSingleTapTimer = null;
       }
-      if (clickX < width * 0.35) {
-        skipSeconds(-10);
-      } else if (clickX > width * 0.65) {
-        skipSeconds(10);
-      } else {
+      // A rapid right-zone double while latched is still an exit intent —
+      // otherwise two quick exit taps would cancel each other out.
+      if (latchedBoostCard && currentActiveCard === latchedBoostCard &&
+          clickX > window.innerWidth * HOLD_ZONE) {
+        const booted = currentActiveCard.querySelector('.reel-video');
+        if (booted) exitBoost(booted);
+        return;
+      }
+      if (clickX >= width * 0.35 && clickX <= width * 0.65) {
         toggleUnifiedFullscreen();
       }
     }
 
     feed.addEventListener('click', (e) => {
+      // Hold-2x release clicks never pause and never seed a double-tap pair.
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        lastTapTime = 0;
+        return;
+      }
       if (isTouchSwiping) return;
       if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
       const now = Date.now();
@@ -595,6 +630,7 @@
     });
 
     feed.addEventListener('dblclick', (e) => {
+      if (suppressNextClick) { suppressNextClick = false; return; }
       if (isTouchSwiping || (performance.now() - lastScrollTime < 500)) return;
       if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
       handleDoubleAction(e.clientX, window.innerWidth);
@@ -608,11 +644,18 @@
       isPointerDown = true;
       pointerStartX = e.clientX;
       pointerStartY = e.clientY;
+      // Arm press-and-hold 2x for the rightmost 35% — never on controls.
+      if (e.clientX > window.innerWidth * HOLD_ZONE && currentActiveCard &&
+          !e.target.closest('button') && !e.target.closest('.creator-meta') &&
+          !e.target.closest('.caption-snippet') && !e.target.closest('.mute-pill')) {
+        armHoldTimer(currentActiveCard);
+      }
     }, { passive: true });
     window.addEventListener('pointermove', (e) => {
       if (!isPointerDown) return;
       if (Math.hypot(e.clientX - pointerStartX, e.clientY - pointerStartY) > 10) {
         isTouchSwiping = true;
+        cancelHold();
         if (pendingSingleTapTimer) {
           clearTimeout(pendingSingleTapTimer);
           pendingSingleTapTimer = null;
@@ -621,14 +664,21 @@
     }, { passive: true });
     window.addEventListener('pointerup', () => {
       isPointerDown = false;
+      cancelHold();
       if (isTouchSwiping) {
         setTimeout(() => { isTouchSwiping = false; }, 350);
       }
     }, { passive: true });
     window.addEventListener('pointercancel', () => {
       isPointerDown = false;
+      cancelHold();
       isTouchSwiping = false;
     }, { passive: true });
+
+    // Long-press reliability: never let the OS callout steal the hold gesture.
+    feed.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.reel-video')) e.preventDefault();
+    });
 
     // Horizontal Touch Gesture Video Seeking & Vertical Swipe Isolation
     let touchStartX = 0;
@@ -698,7 +748,7 @@
     feed.addEventListener('touchend', () => {
       if (isHorizontalScrubbing && currentActiveCard) {
         const video = currentActiveCard.querySelector('.reel-video');
-        if (video && video.duration) {
+        if (video && video.duration && video.readyState > 0) {
           video.currentTime = scrubTargetTime;
           if (scrubTargetTime / video.duration >= 0.35 && !currentActiveCard.dataset.markedWatched) {
             currentActiveCard.dataset.markedWatched = 'true';
@@ -722,12 +772,18 @@
       return `${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
+    // Overlapping toasts must not kill each other: only the latest timer hides.
+    let toastTimer = null;
     function showToast(msg) {
       const t = document.getElementById('globalToast');
       if (!t) return;
       t.textContent = msg;
       t.classList.add('visible');
-      setTimeout(() => t.classList.remove('visible'), 1600);
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toastTimer = null;
+        t.classList.remove('visible');
+      }, 1600);
     }
 
     // Update Story Rings: cross-browser dynamic unwinding progress ring
@@ -814,12 +870,15 @@
     // Launch & Paused State Preparation (Requirement 4: Top choices visible until play)
     function prepareCardVideoPaused(card) {
       if (!card || card.dataset.dead) return;
+      // Invalidate any pending goToCard rAF chain so it cannot hijack this
+      // paused card after its generation check.
+      navGen++;
       currentActiveCard = card;
       document.querySelectorAll('.reel-card.is-active').forEach(c => {
         if (c !== card) c.classList.remove('is-active');
       });
       card.classList.add('is-active');
-      document.getElementById('appShell').classList.remove('playback-active');
+      syncImmersive();
 
       if (card.dataset.index !== undefined) {
         const rankNum = parseInt(card.dataset.index, 10) + 1;
@@ -858,17 +917,23 @@
       if (window.location.protocol === 'file:') return;
       const v = card.querySelector('.reel-video');
       if (v && v.dataset.src && v.dataset.src.startsWith('data:')) return;
+      // Snapshot position BEFORE marking dead (visibleCards excludes dead
+      // cards, so indexing after would miss and jump to the first reel).
+      const cards = visibleCards();
+      const i = cards.indexOf(card);
+      const wasCurrent = (card === currentActiveCard);
       card.dataset.dead = '1';
       console.warn('Skipping dead reel', card.dataset.id, why);
       showToast('Reel unavailable, skipping');
-      const cards = visibleCards();
-      const i = cards.indexOf(card);
       card.style.display = 'none';
       if (v) {
         v.pause();
         v.removeAttribute('src');
         v.load();
       }
+      // Only navigate when the dead card is the current one; offscreen cards
+      // are just marked so they never stall a later scroll into view.
+      if (!wasCurrent) return;
       const next = cards[i + 1] || cards[i - 1];
       if (next) {
         goToCard(next);
@@ -911,7 +976,9 @@
           const video = card.querySelector('video');
           if (video) {
             video.pause();
-            video.currentTime = 0;
+            // F1-class guard: currentTime at HAVE_NOTHING throws and would
+            // abort the filter loop mid-iteration on category switches.
+            if (video.readyState > 0) video.currentTime = 0;
             // Release the decoder for hidden cards (was: pause only, src kept).
             if (video.getAttribute('src')) {
               video.removeAttribute('src');
@@ -1031,7 +1098,16 @@
     // Video Playback, Resilient iOS Fast-Scrolling & Fullscreen State (Requirements 3 & 4)
     function playCardVideo(card) {
       if (!card || card.dataset.dead) return;
-      navGen++;
+      // Redundant same-card drive (observer + scroll settle): already playing
+      // means setup is complete — return WITHOUT bumping navGen so the
+      // in-flight call's generation (and any pending auto-advance) survives.
+      if (currentActiveCard === card) {
+        const activeVideo = card.querySelector('.reel-video');
+        if (activeVideo && !activeVideo.paused && activeVideo.readyState >= 2) return;
+      }
+      const myGen = ++navGen;
+      // Hold-2x is scoped to one reel: changing cards clears the latch.
+      if (currentActiveCard !== card) latchedBoostCard = null;
       currentActiveCard = card;
       document.querySelectorAll('.reel-card.is-active').forEach(c => {
         if (c !== card) c.classList.remove('is-active');
@@ -1045,11 +1121,6 @@
         localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id);
         recordDailyView(card.dataset.id);
       }
-
-      document.querySelectorAll('.boost-speed-btn').forEach(btn => {
-        btn.classList.remove('active');
-        btn.textContent = '2x';
-      });
 
       if (card.dataset.index !== undefined) {
         const rankNum = parseInt(card.dataset.index, 10) + 1;
@@ -1078,12 +1149,18 @@
           const v = c.querySelector('.reel-video');
           if (v && !v.paused) {
             v.pause();
-            v.currentTime = 0;
+            // Fast-scroll race guard: setting currentTime while readyState is
+            // HAVE_NOTHING throws InvalidStateError, which used to abort this
+            // function before the new card's triggerPlay ran — the settled
+            // reel sat paused until manual tap. Metadata-less videos are
+            // already at 0, so skip the reset.
+            if (v.readyState > 0) v.currentTime = 0;
           }
         }
       });
 
-      video.playbackRate = currentSpeed;
+      // Redundant same-card calls (observer + scroll settle) must not drop a latch.
+      video.playbackRate = (latchedBoostCard === card) ? 2.0 : currentSpeed;
       video.preservesPitch = true;
       video.webkitPreservesPitch = true;
       video.mozPreservesPitch = true;
@@ -1091,18 +1168,28 @@
       video.loop = false;
 
       const triggerPlay = () => {
+        if (myGen !== navGen || currentActiveCard !== card) return;
         const playPromise = video.play();
         if (playPromise !== undefined) {
           playPromise.then(() => {
-            document.getElementById('appShell').classList.add('playback-active');
-          }).catch(() => {
+            if (myGen !== navGen || currentActiveCard !== card) return;
+            syncImmersive();
+          }).catch((err) => {
+            // Superseded by a newer card (fast scroll): the newer
+            // playCardVideo owns playback — never mute or replay this stale
+            // card in the background.
+            if (myGen !== navGen || currentActiveCard !== card) return;
+            // Interrupted play request, not a policy block: nothing to do.
+            if (err && err.name === 'AbortError') return;
             // P5: If browser restricts unmuted autoplay, mute and show mute pill
             video.muted = true;
             video.play().then(() => {
-              document.getElementById('appShell').classList.add('playback-active');
+              if (myGen !== navGen || currentActiveCard !== card) return;
+              syncImmersive();
               showMutePill(card);
             }).catch(() => {
-              document.getElementById('appShell').classList.remove('playback-active');
+              if (myGen !== navGen || currentActiveCard !== card) return;
+              syncImmersive();
             });
           });
         }
@@ -1112,16 +1199,22 @@
       if (video.readyState >= 2) {
         triggerPlay();
       } else {
+        // Single-flight ready wait: an older waiter only drops itself via the
+        // token, and load() is skipped while a fetch is already in flight so
+        // redundant calls stop aborting each other's streams.
         const onReady = () => {
           video.removeEventListener('canplay', onReady);
           video.removeEventListener('loadeddata', onReady);
-          if (currentActiveCard === card) {
-            triggerPlay();
-          }
+          if (video.dataset.readyWaiter !== String(myGen)) return;
+          delete video.dataset.readyWaiter;
+          if (myGen !== navGen || currentActiveCard !== card) return;
+          triggerPlay();
         };
+        const alreadyLoading = !!video.dataset.readyWaiter && video.networkState === 2;
+        video.dataset.readyWaiter = String(myGen);
         video.addEventListener('canplay', onReady, { once: true });
         video.addEventListener('loadeddata', onReady, { once: true });
-        video.load();
+        if (!alreadyLoading) video.load();
       }
     }
 
@@ -1148,11 +1241,10 @@
       const fill = card.querySelector('.reel-progress-fill');
       const playIcon = card.querySelector('.play-pause-indicator');
 
-      // P2: media error listener skips unplayable card
+      // P2: media error listener marks the card dead immediately, active or not
+    // (skipDeadCard only navigates away when the dead card is current).
       video.addEventListener('error', () => {
-        if (card === currentActiveCard) {
-          skipDeadCard(card, 'media error');
-        }
+        skipDeadCard(card, 'media error');
       });
 
       // P5: clear the tap-to-unmute pill as soon as audio is back
@@ -1160,17 +1252,17 @@
         if (!video.muted) hideMutePill(card);
       });
 
-      // Synchronize full screen mode with native video play and pause events
+      // Auto-immersive: play hides chrome + scrim, pause restores them.
       video.addEventListener('play', () => {
         if (card === currentActiveCard) {
-          document.getElementById('appShell').classList.add('playback-active');
+          syncImmersive();
           if (playIcon) playIcon.classList.remove('visible');
         }
       });
 
       video.addEventListener('pause', () => {
         if (card === currentActiveCard) {
-          document.getElementById('appShell').classList.remove('playback-active');
+          syncImmersive();
         }
       });
 
@@ -1199,16 +1291,30 @@
 
       // P7: Tap card to toggle play/pause with 280ms debounce so double-tap cancels single-tap
       card.addEventListener('click', (e) => {
+        // Hold-2x release clicks are swallowed here, but the flag is LEFT SET:
+        // the card handler fires before the bubbled feed handler, which must
+        // still see it to consume the tap — clearing here seeded phantom
+        // double-taps from the release + next tap pairing up.
+        if (suppressNextClick) {
+          lastTapTime = 0;
+          return;
+        }
         if (isTouchSwiping || (performance.now() - lastScrollTime < 500)) return;
         if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
         if (pendingSingleTapTimer) {
           clearTimeout(pendingSingleTapTimer);
           pendingSingleTapTimer = null;
         }
+        const clickX = e.clientX;
         pendingSingleTapTimer = setTimeout(() => {
           pendingSingleTapTimer = null;
           if (card !== currentActiveCard) return;
           if (isTouchSwiping || (performance.now() - lastScrollTime < 500)) return;
+          // Latched 2x exit: a right-zone tap only exits boost, never pauses.
+          if (latchedBoostCard === card && clickX > window.innerWidth * HOLD_ZONE) {
+            exitBoost(video);
+            return;
+          }
           if (video.paused) {
             playCardVideo(card);
             playIcon.textContent = '▶';
@@ -1216,7 +1322,7 @@
             setTimeout(() => playIcon.classList.remove('visible'), 400);
           } else {
             video.pause();
-            document.getElementById('appShell').classList.remove('playback-active');
+            syncImmersive();
             playIcon.textContent = '❚❚';
             playIcon.classList.add('visible');
             setTimeout(() => playIcon.classList.remove('visible'), 400);

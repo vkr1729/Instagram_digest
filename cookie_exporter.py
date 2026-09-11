@@ -73,10 +73,18 @@ def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
     return ""
 
 
+def _secure_write_text(path: Path, content: str) -> None:
+    """Write a credential-bearing file readable only by its owner (0600)."""
+    path.write_text(content, encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
 def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
     """
     Decrypts Instagram cookies from Chrome Default profile and exports them to
     output_dir/cookies.json and output_dir/cookies.txt (also copied to root/cookies.txt).
+    All three are written owner-only (0600). The root copy is required:
+    extractor.py passes it to yt-dlp via --cookies.
     Returns dict of {cookie_name: cookie_value}.
     """
     if output_dir is None:
@@ -132,13 +140,13 @@ def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
     txt_path = output_dir / "cookies.txt"
     root_txt_path = Path(__file__).parent / "cookies.txt"
 
-    json_path.write_text(
+    _secure_write_text(
+        json_path,
         json.dumps({"cookies_playwright": cookies_pw, "cookies_dict": cookies_dict}, indent=2),
-        encoding="utf-8",
     )
     txt_content = "\n".join(netscape_lines) + "\n"
-    txt_path.write_text(txt_content, encoding="utf-8")
-    root_txt_path.write_text(txt_content, encoding="utf-8")
+    _secure_write_text(txt_path, txt_content)
+    _secure_write_text(root_txt_path, txt_content)
 
     logger.info("Exported %d Instagram cookies to %s and %s", len(cookies_dict), json_path, txt_path)
     return cookies_dict
