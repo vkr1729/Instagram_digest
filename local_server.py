@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import mimetypes
 import os
 import shutil
 import threading
+import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -23,6 +26,75 @@ logger = logging.getLogger("InstagramDigest.LocalServer")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 _STATE_LOCK = threading.Lock()
+_SYNC_LOCK = threading.Lock()
+_SYNC_STATE: dict[str, Any] = {
+    "is_running": False,
+    "status": "idle",
+    "started_at": None,
+    "last_result": None,
+    "last_error": None,
+}
+
+
+def trigger_adhoc_sync_task() -> dict[str, Any]:
+    """Launch an ad-hoc sync thread picking reels between now and the stored last run."""
+    import main as main_module
+
+    with _SYNC_LOCK:
+        if _SYNC_STATE["is_running"]:
+            return {
+                "success": True,
+                "status": "already_running",
+                "message": "Ad-hoc sync is already running in background.",
+                "sync_state": dict(_SYNC_STATE),
+                "last_run": main_module.get_last_run_info(),
+            }
+
+        _SYNC_STATE["is_running"] = True
+        _SYNC_STATE["status"] = "running"
+        _SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        _SYNC_STATE["last_error"] = None
+
+    def _worker():
+        try:
+            logger.info("Background ad-hoc sync thread started.")
+            last_run = main_module.get_last_run_info()
+            since_ts = None
+            days_back = 7
+            if last_run and "timestamp" in last_run:
+                since_ts = int(last_run["timestamp"])
+                elapsed = time.time() - last_run["timestamp"]
+                days_back = max(1, int(round(elapsed / 86400.0)))
+                logger.info("Ad-hoc sync: fetching since %s (~%d days back)",
+                            last_run.get("last_run_utc"), days_back)
+
+            ret = main_module.run_full_sync(
+                dry_run=False,
+                deploy=False,
+                days_back=days_back,
+                since_timestamp=since_ts,
+            )
+            with _SYNC_LOCK:
+                _SYNC_STATE["is_running"] = False
+                _SYNC_STATE["status"] = "completed" if ret == 0 else "failed"
+                _SYNC_STATE["last_result"] = ret
+        except Exception as exc:
+            logger.exception("Ad-hoc sync worker error: %s", exc)
+            with _SYNC_LOCK:
+                _SYNC_STATE["is_running"] = False
+                _SYNC_STATE["status"] = "failed"
+                _SYNC_STATE["last_error"] = str(exc)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    return {
+        "success": True,
+        "status": "started",
+        "message": "Ad-hoc sync started in background.",
+        "sync_state": dict(_SYNC_STATE),
+        "last_run": main_module.get_last_run_info(),
+    }
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
@@ -115,6 +187,10 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             content = site_file.read_bytes()
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", mime or "application/octet-stream")
+            if site_file.name == "sw.js":
+                self.send_header("Service-Worker-Allowed", "/")
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -166,6 +242,26 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # API Ad-hoc sync status route -> /api/sync-adhoc
+        if clean_path in ("/api/sync-adhoc", "/api/sync-adhoc/status"):
+            import main as main_module
+            with _SYNC_LOCK:
+                state_copy = dict(_SYNC_STATE)
+            last_run = main_module.get_last_run_info()
+            resp = {
+                "success": True,
+                "sync_state": state_copy,
+                "last_run": last_run,
+            }
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -237,6 +333,18 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path in ("/api/sync-adhoc", "/api/sync-adhoc/"):
+            logger.info("Ad-hoc midweek sync triggered via API.")
+            resp = trigger_adhoc_sync_task()
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if parsed.path == "/api/sync-following":
             logger.info("On-demand following sync triggered via dashboard API.")
             try:
@@ -465,6 +573,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(file_size))
             self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Access-Control-Allow-Origin", "*")
             try:
                 with video_path.open("rb") as f:
                     shutil.copyfileobj(f, self.wfile)
@@ -495,6 +604,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
         self.send_header("Content-Length", str(chunk_size))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 

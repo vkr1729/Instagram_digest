@@ -12,6 +12,15 @@
   <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32" href="apple-touch-icon.png">
   <link rel="manifest" href="manifest.webmanifest">
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(err => {
+          console.warn('ServiceWorker registration error:', err);
+        });
+      });
+    }
+  </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -36,16 +45,24 @@
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       height: 100%;
       height: 100dvh;
+      height: var(--app-height, 100%);
+      width: 100%;
       overflow: hidden;
       user-select: none;
+      position: fixed;
+      inset: 0;
+      margin: 0;
+      padding: 0;
     }
 
     /* Outer App Shell - Native Edge-to-Edge Fullscreen on Mobile & Laptop */
     .app-shell {
-      position: relative;
+      position: fixed;
+      inset: 0;
       height: 100%;
       height: 100dvh;
-      width: 100vw;
+      height: var(--app-height, 100%);
+      width: 100%;
       max-width: 100vw;
       margin: 0;
       background: #000;
@@ -61,7 +78,8 @@
       justify-content: center;
       height: 100%;
       height: 100dvh;
-      width: 100vw;
+      height: var(--app-height, 100%);
+      width: 100%;
       overflow: hidden;
       overscroll-behavior-y: none;
     }
@@ -73,19 +91,20 @@
       left: 50%;
       transform: translateX(-50%);
       width: 100%;
-      max-width: calc(100vh * (9 / 16));
+      max-width: calc(var(--app-height, 100vh) * (9 / 16));
       z-index: 30;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.3) 70%, transparent 100%);
+      background: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.3) 70%, transparent 100%);
       pointer-events: none;
-      transition: opacity 0.25s ease, transform 0.25s ease;
+      transition: opacity 0.3s ease, transform 0.3s ease;
       padding-top: 0;
     }
     .top-chrome * {
       pointer-events: auto;
     }
 
-    /* Immersive Mode (Double-Tap to Hide Chrome) */
-    .app-shell.immersive-mode .top-chrome {
+    /* Immersive / Fullscreen Playback Mode (Auto-Hides Chrome During Video Playback) */
+    .app-shell.immersive-mode .top-chrome,
+    .app-shell.playback-active .top-chrome {
       opacity: 0;
       transform: translate(-50%, -100%);
       pointer-events: none;
@@ -468,9 +487,10 @@
     .feed-container {
       position: absolute;
       inset: 0;
-      width: 100vw;
+      width: 100%;
       height: 100%;
       height: 100dvh;
+      height: var(--app-height, 100%);
       overflow-y: scroll;
       scroll-snap-type: y mandatory;
       scrollbar-width: none;
@@ -483,9 +503,10 @@
 
     /* Single Reel Card */
     .reel-card {
-      width: 100vw;
+      width: 100%;
       height: 100%;
       height: 100dvh;
+      height: var(--app-height, 100%);
       scroll-snap-align: start;
       scroll-snap-stop: always;
       position: relative;
@@ -500,8 +521,8 @@
     .reel-video {
       width: 100%;
       height: 100%;
-      object-fit: cover;
-      max-width: calc(100vh * (9 / 16));
+      object-fit: contain;
+      max-width: calc(var(--app-height, 100vh) * (9 / 16));
       margin: 0 auto;
       background: #000;
       display: block;
@@ -516,7 +537,7 @@
       left: 50%;
       transform: translateX(-50%);
       width: 100%;
-      max-width: calc(100vh * (9 / 16));
+      max-width: calc(var(--app-height, 100vh) * (9 / 16));
       height: 2.5px;
       background: rgba(255, 255, 255, 0.2);
       z-index: 15;
@@ -535,7 +556,7 @@
       left: 50%;
       transform: translateX(-50%);
       width: 100%;
-      max-width: calc(100vh * (9 / 16));
+      max-width: calc(var(--app-height, 100vh) * (9 / 16));
       padding: 32px 16px max(14px, env(safe-area-inset-bottom, 14px));
       background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0.25) 60%, transparent 100%);
       z-index: 10;
@@ -813,13 +834,15 @@
     /* Celebratory "All Caught Up" Screen */
     .celebration-screen {
       display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 45;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100%;
       padding: 30px;
       text-align: center;
-      background: #000;
+      background: rgba(0, 0, 0, 0.96);
     }
     .celebration-screen.active { display: flex; }
     .party-emoji { font-size: 54px; margin-bottom: 16px; }
@@ -877,7 +900,13 @@
           <button class="speed-btn" id="speedToggleBtn" onclick="cycleSpeed()" title="Adjust Playback Speed">
             ⚡ <span id="speedDisplay">{{ default_speed|default(1.25) }}x</span>
           </button>
+          <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">
+            📥
+          </button>
           {% if is_local %}
+          <button class="speed-btn" id="adhocSyncViewerBtn" onclick="triggerAdhocSyncViewer()" title="Ad-hoc Refresh: Fetch reels since last run">
+            ⚡ Refresh
+          </button>
           <a href="/channels" class="speed-btn" style="text-decoration:none;" title="Manage Channels & Subscriptions">
             👥 Channels
           </a>
@@ -948,13 +977,12 @@
         <!-- HTML5 Video Tag with Virtualized Sliding-Window Loader -->
         <video 
           class="reel-video"
-          {% if loop.index0 < 3 %}src="{{ item.video_url }}" poster="{{ item.thumbnail }}"{% endif %}
+          {% if loop.index0 < 3 %}poster="{{ item.thumbnail }}" preload="auto"{% else %}preload="none"{% endif %}
           data-src="{{ item.video_url }}"
           data-poster="{{ item.thumbnail }}"
           playsinline
           webkit-playsinline
           x5-playsinline
-          {% if loop.index0 < 3 %}preload="auto"{% else %}preload="none"{% endif %}
         ></video>
 
         <!-- Variant 1A: Soft Natural Bottom Scrim -->
@@ -1003,13 +1031,57 @@
         <button class="modal-close-btn" onclick="closeModal('jumpModal')">Cancel</button>
       </div>
     </div>
+
+    <!-- Offline Cache Modal -->
+    <div class="modal-overlay" id="offlineModal" onclick="handleModalBackdrop(event, 'offlineModal')">
+      <div class="modal-dialog">
+        <div class="modal-icon-badge">📥</div>
+        <h3 class="modal-title">Offline Cache</h3>
+        <p class="modal-desc" id="offlineDesc">The rolling 25-video window (prev 5 + next 20) is always kept offline automatically. You can also pre-download all {{ items|length }} reels for airplane or travel mode.</p>
+        <div id="offlineProgressContainer" style="display:none; margin: 14px 0;">
+          <div style="background: rgba(255,255,255,0.15); height: 8px; border-radius: 4px; overflow: hidden;">
+            <div id="offlineProgressBar" style="width: 0%; height: 100%; background: var(--ig-gradient); transition: width 0.2s linear;"></div>
+          </div>
+          <div id="offlineProgressText" style="font-size: 11px; color: #a1a1aa; margin-top: 6px;">0 / {{ items|length }}</div>
+        </div>
+        <div class="modal-actions" style="margin-top: 14px;">
+          <button class="modal-btn-cancel" onclick="closeModal('offlineModal')">Close</button>
+          <button class="jump-submit-btn" id="startOfflineDownloadBtn" onclick="startFullDownload()">Download All</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
+    // iOS Viewport Height Synchronization
+    function syncAppHeight() {
+      const h = window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', `${h}px`);
+    }
+    window.addEventListener('resize', syncAppHeight);
+    window.addEventListener('orientationchange', syncAppHeight);
+    syncAppHeight();
+
     // State Variables
     const defaultSpeed = {{ default_speed|default(1.25) }};
     let currentSpeed = defaultSpeed;
     const availableSpeeds = [1.0, 1.25, 1.5, 1.75, 2.0];
+    document.querySelectorAll('.reel-video').forEach(v => {
+      v.defaultPlaybackRate = currentSpeed;
+      v.playbackRate = currentSpeed;
+      v.addEventListener('loadstart', () => {
+        if (v.playbackRate !== 2.0) {
+          v.defaultPlaybackRate = currentSpeed;
+          v.playbackRate = currentSpeed;
+        }
+      });
+      v.addEventListener('loadedmetadata', () => {
+        if (v.playbackRate !== 2.0) {
+          v.defaultPlaybackRate = currentSpeed;
+          v.playbackRate = currentSpeed;
+        }
+      });
+    });
     let currentCategory = 'all';
     let isAudioMuted = false;
     let autoAdvanceTimeout = null;
@@ -1019,6 +1091,7 @@
     let lastProgressAt = performance.now();
     let lastProgressTime = -1;
     let pendingSingleTapTimer = null;
+    let isInitialLaunch = true;
 
     // Current Week ID & Week-Scoped LocalStorage Keys
     const currentWeekId = "{{ week_id|default('current') }}";
@@ -1031,11 +1104,26 @@
         const keep = new Set({{ available_weeks | map(attribute='week_id') | list | tojson }});
         keep.add(currentWeekId);
         Object.keys(localStorage).forEach(k => {
-          const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id)_(\d{4}-\d{2}-\d{2})$/);
+          const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id|download_completed)_(\d{4}-\d{2}-\d{2})$/);
           if ((m && !keep.has(m[1])) || k === 'ig_digest_watched_ids') localStorage.removeItem(k);
         });
       } catch (e) {}
     })();
+
+    // Requirement: Download All button disappears once complete and reappears next week
+    function syncDownloadButtonState() {
+      const headerDlBtn = document.getElementById('offlineDownloadBtn');
+      if (!headerDlBtn) return;
+      try {
+        const isCompleted = localStorage.getItem('ig_digest_download_completed_' + currentWeekId) === 'true';
+        if (isCompleted) {
+          headerDlBtn.style.display = 'none';
+        } else {
+          headerDlBtn.style.display = '';
+        }
+      } catch (e) {}
+    }
+    syncDownloadButtonState();
 
     // Helper to get active, visible, non-dead cards (P1, P2)
     function visibleCards() {
@@ -1158,12 +1246,15 @@
     // Toggle 2x Speed for the specific active reel (Feedback #4)
     function toggleReelSpeed(btn, e) {
       if (e) e.stopPropagation();
-      if (!currentActiveCard) return;
-      const video = currentActiveCard.querySelector('.reel-video');
+      const card = (btn ? btn.closest('.reel-card') : null) || currentActiveCard;
+      if (!card) return;
+      if (!currentActiveCard) currentActiveCard = card;
+      const video = card.querySelector('.reel-video');
       if (!video) return;
 
       const isBoosted = (video.playbackRate === 2.0);
       const targetRate = isBoosted ? currentSpeed : 2.0;
+      video.defaultPlaybackRate = targetRate;
       video.playbackRate = targetRate;
       video.preservesPitch = true;
       video.webkitPreservesPitch = true;
@@ -1560,21 +1651,71 @@
       });
     }
 
-    // P1: Discrete Navigation with Generation Counter + Instant Scroll
-    function goToCard(card) {
+    // P1: Discrete Navigation with Generation Counter + Instant Scroll & Forward Watch Tracking
+    function goToCard(card, options = {}) {
       if (!card) return;
       const gen = ++navGen;
+      const shouldPlay = (options.play !== false);
+      const vCards = visibleCards();
+      const prevCard = currentActiveCard;
+
+      if (prevCard && prevCard !== card) {
+        const prevIdx = vCards.indexOf(prevCard);
+        const targetIdx = vCards.indexOf(card);
+        // Requirement 6: Swipe-up / forward advance marks departed card as watched immediately
+        if (targetIdx > prevIdx && prevCard.dataset.id) {
+          markAsWatched(prevCard.dataset.id);
+          prevCard.dataset.markedWatched = 'true';
+        }
+      }
+
       currentActiveCard = card;
       isScrollingTransition = true;
       requestAnimationFrame(() => {
-        if (gen !== navGen) { isScrollingTransition = false; return; }  // superseded by a newer intent
+        if (gen !== navGen) { isScrollingTransition = false; return; }
         card.scrollIntoView({ behavior: 'instant', block: 'start' });
         requestAnimationFrame(() => {
-          if (gen !== navGen) { isScrollingTransition = false; return; }  // user moved on mid-nav
-          playCardVideo(card);
+          if (gen !== navGen) { isScrollingTransition = false; return; }
+          if (shouldPlay) {
+            playCardVideo(card);
+          } else {
+            prepareCardVideoPaused(card);
+          }
           isScrollingTransition = false;
         });
       });
+    }
+
+    // Launch & Paused State Preparation (Requirement 4: Top choices visible until play)
+    function prepareCardVideoPaused(card) {
+      if (!card || card.dataset.dead) return;
+      currentActiveCard = card;
+      document.getElementById('appShell').classList.remove('playback-active');
+
+      if (card.dataset.index !== undefined) {
+        const rankNum = parseInt(card.dataset.index, 10) + 1;
+        const rankEl = document.getElementById('currentRankDisplay');
+        if (rankEl) rankEl.textContent = rankNum;
+      }
+
+      updateSlidingWindow(card);
+      syncCacheWindow(card);
+
+      const video = card.querySelector('.reel-video');
+      if (!video) return;
+
+      if (!video.getAttribute('src') && video.dataset.src) {
+        video.src = video.dataset.src;
+      }
+      video.preload = 'auto';
+      video.playbackRate = currentSpeed;
+      video.pause();
+
+      const playIcon = card.querySelector('.play-pause-indicator');
+      if (playIcon) {
+        playIcon.textContent = '▶';
+        playIcon.classList.add('visible');
+      }
     }
 
     // P2: Stall/Error Recovery: skip unplayable cards permanently (ignoring file:// test fixtures)
@@ -1602,8 +1743,8 @@
       }
     }
 
-    // Story Category Filtering & Resume from Last Unwatched Reel
-    function filterCategory(cat) {
+    // Story Category Filtering & Resume from First Unwatched Reel (Requirement 7)
+    function filterCategory(cat, options = {}) {
       currentCategory = cat;
       const watched = getWatchedIds();
       const bubbles = document.querySelectorAll('.story-bubble');
@@ -1611,7 +1752,7 @@
       updateCategoryProgressRings();
 
       const cards = Array.from(document.querySelectorAll('.reel-card'));
-      let visibleCount = 0;
+      let matchingCards = [];
 
       cards.forEach(card => {
         const cardCat = card.dataset.category;
@@ -1625,12 +1766,11 @@
           (cat === 'entertainment' && cardCat === 'culture') ||
           (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
         );
-        
-        const isWatched = watched.has(card.dataset.id);
 
-        if (matchesCat && !isWatched && !card.dataset.dead) {
+        // Requirement 7: Keep watched videos visible and accessible in feed!
+        if (matchesCat && !card.dataset.dead) {
           card.style.display = 'flex';
-          visibleCount++;
+          matchingCards.push(card);
         } else {
           card.style.display = 'none';
           const video = card.querySelector('video');
@@ -1642,16 +1782,36 @@
       });
 
       const celebration = document.getElementById('celebrationScreen');
-      if (visibleCount === 0) {
+      const allWatched = matchingCards.length > 0 && matchingCards.every(c => watched.has(c.dataset.id));
+
+      if (matchingCards.length === 0 || allWatched) {
         celebration.classList.add('active');
-        currentActiveCard = null;
       } else {
         celebration.classList.remove('active');
-        const firstVisible = visibleCards()[0];
-        if (firstVisible) {
-          goToCard(firstVisible);
+      }
+
+      if (matchingCards.length === 0) {
+        currentActiveCard = null;
+        return;
+      }
+
+      // Locate first unwatched card in matching category
+      let targetCard = matchingCards.find(c => !watched.has(c.dataset.id));
+      let isAllCaughtUp = allWatched;
+
+      if (!targetCard) {
+        isAllCaughtUp = true;
+        targetCard = matchingCards[matchingCards.length - 1]; // Open at final reel
+      }
+
+      const shouldPlay = (options.play !== undefined) ? options.play : (!isInitialLaunch);
+      if (targetCard) {
+        goToCard(targetCard, { play: allWatched ? false : shouldPlay });
+        if (isAllCaughtUp) {
+          showToast("You're all caught up! Scroll up to rewatch.");
         }
       }
+      isInitialLaunch = false;
     }
 
     // P3 & P8: High-Performance Sliding Window Loader (Max 5 posters, prefetch & warmup)
@@ -1661,8 +1821,8 @@
       const activeIdx = vCards.indexOf(activeCard);
       if (activeIdx === -1) return;
 
-      const lookAhead = 2;
-      const lookBehind = 1;
+      const lookAhead = 3;
+      const lookBehind = 2;
 
       vCards.forEach((card, idx) => {
         const video = card.querySelector('.reel-video');
@@ -1672,14 +1832,10 @@
         const distance = idx - activeIdx;
         const isWithinWindow = (distance >= -lookBehind && distance <= lookAhead);
 
-        // P3: Dynamic poster management (max 5 cards: distance -1 to +3)
-        if (distance >= -1 && distance <= 3 && targetPoster) {
+        // Dynamic poster management
+        if (distance >= -1 && distance <= 4 && targetPoster) {
           if (video.getAttribute('poster') !== targetPoster) {
             video.setAttribute('poster', targetPoster);
-          }
-        } else {
-          if (video.hasAttribute('poster')) {
-            video.removeAttribute('poster');
           }
         }
 
@@ -1694,8 +1850,7 @@
           if (distance === 0) {
             video.preload = 'auto';
             if ('fetchPriority' in video) video.fetchPriority = 'high';
-          } else if (distance === 1) {
-            // P8: Warm up next video metadata
+          } else if (distance >= 1 && distance <= 2) {
             if (!video.dataset.warmed) {
               video.preload = 'metadata';
               video.load();
@@ -1716,7 +1871,7 @@
       });
     }
 
-    // Video Playback, B5 Localized Pausing & P5 Mute-Pill Fallback
+    // Video Playback, Resilient iOS Fast-Scrolling & Fullscreen State (Requirements 3 & 4)
     function playCardVideo(card) {
       if (!card || card.dataset.dead) return;
       navGen++;
@@ -1743,16 +1898,17 @@
       if (!video) return;
 
       updateSlidingWindow(card);
+      syncCacheWindow(card);
 
       if (!video.getAttribute('src') && video.dataset.src) {
         video.src = video.dataset.src;
       }
 
-      // B5: Pause only nearby videos within sliding window instead of scanning all DOM cards
+      // Pause only nearby videos within sliding window instead of scanning all DOM cards
       const vCards = visibleCards();
       const activeIdx = vCards.indexOf(card);
       vCards.forEach((c, idx) => {
-        if (c !== card && Math.abs(idx - activeIdx) <= 3) {
+        if (c !== card && Math.abs(idx - activeIdx) <= 4) {
           const v = c.querySelector('.reel-video');
           if (v && !v.paused) {
             v.pause();
@@ -1768,15 +1924,38 @@
       video.muted = isAudioMuted;
       video.loop = false;
 
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(() => {
-          // P5: If browser restricts unmuted autoplay, mute and show mute pill
-          video.muted = true;
-          video.play().then(() => {
-            showMutePill(card);
-          }).catch(() => {});
-        });
+      const triggerPlay = () => {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.then(() => {
+            document.getElementById('appShell').classList.add('playback-active');
+          }).catch(() => {
+            // P5: If browser restricts unmuted autoplay, mute and show mute pill
+            video.muted = true;
+            video.play().then(() => {
+              document.getElementById('appShell').classList.add('playback-active');
+              showMutePill(card);
+            }).catch(() => {
+              document.getElementById('appShell').classList.remove('playback-active');
+            });
+          });
+        }
+      };
+
+      // Resilient playback for momentum scrolling: if metadata isn't buffered yet, attach listeners
+      if (video.readyState >= 2) {
+        triggerPlay();
+      } else {
+        const onReady = () => {
+          video.removeEventListener('canplay', onReady);
+          video.removeEventListener('loadeddata', onReady);
+          if (currentActiveCard === card) {
+            triggerPlay();
+          }
+        };
+        video.addEventListener('canplay', onReady, { once: true });
+        video.addEventListener('loadeddata', onReady, { once: true });
+        video.load();
       }
     }
 
@@ -1815,7 +1994,20 @@
         if (!video.muted) hideMutePill(card);
       });
 
-      // Update hairline progress & 35% watched threshold + watchdog progress timestamp
+      // Synchronize full screen mode with native video play and pause events
+      video.addEventListener('play', () => {
+        if (card === currentActiveCard) {
+          document.getElementById('appShell').classList.add('playback-active');
+        }
+      });
+
+      video.addEventListener('pause', () => {
+        if (card === currentActiveCard) {
+          document.getElementById('appShell').classList.remove('playback-active');
+        }
+      });
+
+      // Update hairline progress (Requirement 6: 30% rule removed; watched recorded on swipe-up)
       video.addEventListener('timeupdate', () => {
         if (video.currentTime !== lastProgressTime) {
           lastProgressTime = video.currentTime;
@@ -1824,11 +2016,6 @@
         if (video.duration) {
           const pct = (video.currentTime / video.duration) * 100;
           fill.style.width = pct + '%';
-
-          if (pct >= 35 && !card.dataset.markedWatched) {
-            card.dataset.markedWatched = 'true';
-            markAsWatched(card.dataset.id);
-          }
 
           if (video.currentTime >= video.duration - 0.25 && !video.paused && !card.dataset.endedHandled) {
             card.dataset.endedHandled = 'true';
@@ -1843,12 +2030,13 @@
         clearTimeout(pendingSingleTapTimer);
         pendingSingleTapTimer = setTimeout(() => {
           if (video.paused) {
-            video.play().catch(() => {});
+            playCardVideo(card);
             playIcon.textContent = '▶';
             playIcon.classList.add('visible');
             setTimeout(() => playIcon.classList.remove('visible'), 400);
           } else {
             video.pause();
+            document.getElementById('appShell').classList.remove('playback-active');
             playIcon.textContent = '❚❚';
             playIcon.classList.add('visible');
             setTimeout(() => playIcon.classList.remove('visible'), 400);
@@ -2148,6 +2336,12 @@
       });
 
       if (closestCard && closestCard !== currentActiveCard && closestDist < feedRect.height * 0.45) {
+        const prevIdx = vCards.indexOf(currentActiveCard);
+        const newIdx = vCards.indexOf(closestCard);
+        if (currentActiveCard && newIdx > prevIdx && currentActiveCard.dataset.id) {
+          markAsWatched(currentActiveCard.dataset.id);
+          currentActiveCard.dataset.markedWatched = 'true';
+        }
         playCardVideo(closestCard);
       }
     }
@@ -2174,6 +2368,160 @@
       }
     }, 2000);
 
+    // Progressive Service Worker Caching (Requirements 5 & 8: Prev 5 + Next 20)
+    function syncCacheWindow(activeCard) {
+      if (!navigator.serviceWorker || !navigator.serviceWorker.controller || !activeCard) return;
+      const vCards = visibleCards();
+      const activeIdx = vCards.indexOf(activeCard);
+      if (activeIdx === -1) return;
+
+      const start = Math.max(0, activeIdx - 5);
+      const end = Math.min(vCards.length - 1, activeIdx + 20);
+
+      const keepUrls = [];
+      const prefetchUrls = [];
+
+      // Immediate high-priority: next 1, next 2, next 3
+      for (let i = 1; i <= 3; i++) {
+        if (activeIdx + i <= end) {
+          const v = vCards[activeIdx + i].querySelector('.reel-video');
+          if (v && v.dataset.src) prefetchUrls.push(v.dataset.src);
+        }
+      }
+
+      // Rest of the 20-ahead window
+      for (let i = activeIdx + 4; i <= end; i++) {
+        const v = vCards[i].querySelector('.reel-video');
+        if (v && v.dataset.src) prefetchUrls.push(v.dataset.src);
+      }
+
+      // Prev 5 window
+      for (let i = activeIdx - 1; i >= start; i--) {
+        const v = vCards[i].querySelector('.reel-video');
+        if (v && v.dataset.src) prefetchUrls.push(v.dataset.src);
+      }
+
+      // Keep set for cache pruning
+      for (let i = start; i <= end; i++) {
+        const v = vCards[i].querySelector('.reel-video');
+        if (v && v.dataset.src) keepUrls.push(v.dataset.src);
+      }
+
+      navigator.serviceWorker.controller.postMessage({
+        action: 'PRECACHE_VIDEOS',
+        urls: prefetchUrls
+      });
+
+      navigator.serviceWorker.controller.postMessage({
+        action: 'PRUNE_CACHE',
+        keepUrls: keepUrls
+      });
+    }
+
+    // Full Batch Offline Download (Travel / Airplane Mode)
+    function startFullDownload() {
+      if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
+        showToast('Service worker active on reload');
+        return;
+      }
+      const allUrls = visibleCards()
+        .map(c => c.querySelector('.reel-video'))
+        .filter(v => v && v.dataset.src)
+        .map(v => v.dataset.src);
+
+      const btn = document.getElementById('startOfflineDownloadBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Downloading...';
+      }
+
+      const pCont = document.getElementById('offlineProgressContainer');
+      if (pCont) pCont.style.display = 'block';
+
+      requestWakeLock(); // Keep screen awake during download
+
+      navigator.serviceWorker.controller.postMessage({
+        action: 'DOWNLOAD_ALL',
+        urls: allUrls
+      });
+    }
+
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        const data = event.data;
+        if (!data) return;
+        if (data.action === 'DOWNLOAD_PROGRESS') {
+          const bar = document.getElementById('offlineProgressBar');
+          const txt = document.getElementById('offlineProgressText');
+          if (bar && txt) {
+            const pct = Math.round((data.completed / data.total) * 100);
+            bar.style.width = pct + '%';
+            txt.textContent = `Downloading ${data.completed} / ${data.total} (${pct}%)`;
+          }
+        } else if (data.action === 'DOWNLOAD_COMPLETE') {
+          const txt = document.getElementById('offlineProgressText');
+          if (txt) txt.textContent = `All ${data.total} reels stored offline! 🎉`;
+          const btn = document.getElementById('startOfflineDownloadBtn');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Completed';
+          }
+          // Requirement 1: Hide the download all button once downloads are complete for this week
+          try {
+            localStorage.setItem('ig_digest_download_completed_' + currentWeekId, 'true');
+          } catch (e) {}
+          const headerDlBtn = document.getElementById('offlineDownloadBtn');
+          if (headerDlBtn) {
+            headerDlBtn.style.display = 'none';
+          }
+          setTimeout(() => closeModal('offlineModal'), 1200);
+          showToast('Offline download complete');
+        }
+      });
+    }
+
+    {% if is_local %}
+    async function triggerAdhocSyncViewer() {
+      const btn = document.getElementById('adhocSyncViewerBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⚡ Syncing...';
+      }
+      showToast('Starting ad-hoc midweek sync...');
+      try {
+        const res = await fetch('/api/sync-adhoc', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Sync running in background');
+
+        const poll = setInterval(async () => {
+          try {
+            const stRes = await fetch('/api/sync-adhoc');
+            const stData = await stRes.json();
+            if (stData.sync_state && !stData.sync_state.is_running) {
+              clearInterval(poll);
+              if (btn) {
+                btn.disabled = false;
+                btn.textContent = '⚡ Refresh';
+              }
+              if (stData.sync_state.status === 'completed') {
+                showToast('Midweek sync complete! Reloading...');
+                setTimeout(() => window.location.reload(), 1500);
+              } else {
+                showToast('Sync completed with warnings');
+              }
+            }
+          } catch (e) {
+            clearInterval(poll);
+            if (btn) { btn.disabled = false; btn.textContent = '⚡ Refresh'; }
+          }
+        }, 3000);
+      } catch (e) {
+        showToast('Failed starting sync');
+        if (btn) { btn.disabled = false; btn.textContent = '⚡ Refresh'; }
+      }
+    }
+    {% endif %}
+
     // Initialize & Resume from First Unwatched Reel (or Deep Link ?reel=ID)
     const urlParams = new URLSearchParams(window.location.search);
     const targetReelId = urlParams.get('reel');
@@ -2182,16 +2530,16 @@
       const allCards = Array.from(document.querySelectorAll('.reel-card'));
       const targetCard = allCards.find(c => c.dataset.id === targetReelId);
       if (targetCard) {
-        filterCategory('all');
+        filterCategory('all', { play: false });
         targetCard.style.display = 'flex';
         setTimeout(() => {
-          goToCard(targetCard);
+          goToCard(targetCard, { play: false });
         }, 60);
       } else {
-        filterCategory('all');
+        filterCategory('all', { play: false });
       }
     } else {
-      filterCategory('all');
+      filterCategory('all', { play: false });
     }
   </script>
 </body>

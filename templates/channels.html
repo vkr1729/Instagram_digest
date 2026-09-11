@@ -423,6 +423,22 @@
       </p>
     </div>
 
+    <!-- Ad-hoc Midweek Sync Card -->
+    <div class="adhoc-card" id="adhocCard" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 14px 18px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+          <span>⚡ Midweek Refresh (Ad-hoc Sync)</span>
+          <span id="adhocStatusBadge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,0.1); color: #a1a1aa;">Idle</span>
+        </div>
+        <div id="adhocLastRunText" style="font-size: 12px; color: var(--text-muted);">
+          Syncs reels published between now and your last run date/time.
+        </div>
+      </div>
+      <button id="adhocSyncBtn" onclick="triggerAdhocSync()" style="background: var(--ig-gradient); border: none; color: #fff; font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+        <span>⚡ Sync Midweek Now</span>
+      </button>
+    </div>
+
     <!-- Controls Card (Sticky) -->
     <div class="controls-card">
       <div class="search-input-wrapper">
@@ -659,8 +675,66 @@
       }
     }
 
+    async function checkAdhocStatus() {
+      try {
+        const res = await fetch('/api/sync-adhoc');
+        const data = await res.json();
+        const badge = document.getElementById('adhocStatusBadge');
+        const lastRunText = document.getElementById('adhocLastRunText');
+        const btn = document.getElementById('adhocSyncBtn');
+
+        if (data.last_run && data.last_run.last_run_utc) {
+          const d = new Date(data.last_run.last_run_utc);
+          lastRunText.textContent = `Last run: ${d.toLocaleString()} (${data.last_run.week_id}). Syncs videos between then and now.`;
+        }
+
+        if (data.sync_state && data.sync_state.is_running) {
+          if (badge) {
+            badge.textContent = 'Syncing in background...';
+            badge.style.background = 'rgba(240, 148, 51, 0.2)';
+            badge.style.color = '#f09433';
+          }
+          if (btn) {
+            btn.disabled = true;
+            btn.style.opacity = '0.6';
+          }
+          setTimeout(checkAdhocStatus, 3000);
+        } else {
+          if (badge) {
+            badge.textContent = data.sync_state && data.sync_state.status === 'completed' ? 'Up to date' : 'Idle';
+            badge.style.background = 'rgba(255,255,255,0.1)';
+            badge.style.color = '#a1a1aa';
+          }
+          if (btn) {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+          }
+        }
+      } catch (e) {}
+    }
+
+    async function triggerAdhocSync() {
+      const btn = document.getElementById('adhocSyncBtn');
+      const badge = document.getElementById('adhocStatusBadge');
+      if (btn) btn.disabled = true;
+      if (badge) {
+        badge.textContent = 'Starting...';
+        badge.style.color = '#f09433';
+      }
+      try {
+        const res = await fetch('/api/sync-adhoc', { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Ad-hoc sync started in background');
+        checkAdhocStatus();
+      } catch (e) {
+        showToast('Failed starting ad-hoc sync');
+        if (btn) btn.disabled = false;
+      }
+    }
+
     // Initialize
     loadChannels();
+    checkAdhocStatus();
   </script>
 </body>
 </html>

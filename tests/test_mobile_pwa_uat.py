@@ -211,24 +211,25 @@ def test_double_tap_10s_skip_left_and_right(mobile_page: Page):
     assert mobile_page.locator("#skipRippleLeft").evaluate("el => el.classList.contains('active')")
 
 
-def test_35_percent_watched_threshold(mobile_page: Page):
-    """Verify reel is marked watched once 35% is reached (Feedback #9)."""
-    first_card = mobile_page.locator(".reel-card").first
+def test_swipe_up_forward_watched_recording(mobile_page: Page):
+    """Verify reel is marked watched upon forward swipe / navigation (Requirement 6)."""
+    cards = mobile_page.locator(".reel-card")
+    first_card = cards.first
     card_id = first_card.evaluate("c => c.dataset.id")
 
     # Initially unwatched
     assert mobile_page.evaluate(f"() => getWatchedIds().has('{card_id}')") is False
 
-    # Simulate reaching 36% duration
+    # Simulate navigating forward to the next card (swipe-up / goToCard)
     mobile_page.evaluate("""() => {
-        const card = document.querySelector('.reel-card');
-        const v = card.querySelector('.reel-video');
-        Object.defineProperty(v, 'duration', { value: 20, writable: true });
-        v.currentTime = 7.5; // 7.5 / 20 = 37.5% > 35%
-        v.dispatchEvent(new Event('timeupdate'));
+        const vCards = visibleCards();
+        if (vCards.length > 1) {
+            goToCard(vCards[1]);
+        }
     }""")
+    mobile_page.wait_for_timeout(200)
 
-    # Should be marked watched in DOM and localStorage
+    # Departed card should now be marked watched in DOM and localStorage
     assert first_card.evaluate("c => c.dataset.markedWatched") == "true"
     assert mobile_page.evaluate(f"() => getWatchedIds().has('{card_id}')") is True
 
@@ -379,3 +380,28 @@ def test_deep_link_specific_reel(built_site):
         active_id = page.evaluate("() => currentActiveCard ? currentActiveCard.dataset.id : null")
         assert active_id == target_id
         browser.close()
+
+
+def test_download_all_button_lifecycle(mobile_page: Page):
+    """Verify download all button disappears once download completes and persists across reloads."""
+    dl_btn = mobile_page.locator("#offlineDownloadBtn")
+    assert dl_btn.is_visible()
+
+    # Simulate download complete for current week
+    mobile_page.evaluate("""() => {
+        localStorage.setItem('ig_digest_download_completed_' + currentWeekId, 'true');
+        syncDownloadButtonState();
+    }""")
+    assert not dl_btn.is_visible()
+
+    # Reload page - button remains hidden for that week
+    mobile_page.reload()
+    mobile_page.wait_for_timeout(200)
+    assert not mobile_page.locator("#offlineDownloadBtn").is_visible()
+
+    # If next week arrives (simulated by clearing or changing week ID)
+    mobile_page.evaluate("""() => {
+        localStorage.removeItem('ig_digest_download_completed_' + currentWeekId);
+        syncDownloadButtonState();
+    }""")
+    assert mobile_page.locator("#offlineDownloadBtn").is_visible()

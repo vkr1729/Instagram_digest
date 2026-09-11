@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import random
 import sys
 import time
@@ -30,6 +31,34 @@ MAX_EMPTY_CREATOR_RATIO = 0.6  # fraction of creators that returned 0 reels
 MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)
 
 
+def get_last_run_info() -> dict[str, Any] | None:
+    """Retrieve timestamp and metadata about the last completed sync run."""
+    try:
+        if config.LAST_RUN_FILE.exists():
+            return json.loads(config.LAST_RUN_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed reading last_run.json: %s", exc)
+    return None
+
+
+def save_last_run_info(week_id: str, timestamp: float | None = None) -> dict[str, Any]:
+    """Persist the timestamp and week_id of a successful sync run."""
+    ts = timestamp if timestamp is not None else time.time()
+    dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    info = {
+        "timestamp": ts,
+        "last_run_utc": dt_utc,
+        "week_id": week_id,
+    }
+    try:
+        config.LAST_RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        config.LAST_RUN_FILE.write_text(json.dumps(info, indent=2), encoding="utf-8")
+        logger.info("Saved last run info: %s (%s)", dt_utc, week_id)
+    except Exception as exc:
+        logger.warning("Failed saving last_run.json: %s", exc)
+    return info
+
+
 def _digest_item_count() -> int:
     """Return the item count of the persisted digest batch (0 when missing/unreadable)."""
     try:
@@ -45,10 +74,16 @@ def run_full_sync(
     deploy: bool = False,
     days_back: int = 7,
     limit_per_creator: int = 15,
+    since_timestamp: int | None = None,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    logger.info("Starting Instagram Digest weekly sync for week %s (dry_run=%s)...", week_id, dry_run)
+    if since_timestamp is not None:
+        logger.info("Starting Instagram Digest ad-hoc sync for week %s (since_ts=%d, days_back=%d, dry_run=%s)...",
+                    week_id, since_timestamp, days_back, dry_run)
+    else:
+        logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s)...",
+                    week_id, days_back, dry_run)
 
     # 1. Pre-flight quota check on Cloudflare R2
     if not dry_run and config.R2_ACCOUNT_ID:
@@ -157,9 +192,9 @@ def run_full_sync(
         )
 
         # Enrich shortlist with real metadata and filter by cutoff date
-        cutoff_ts = int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
+        cutoff_ts = since_timestamp if since_timestamp is not None else int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
         enriched: list[dict[str, Any]] = []
-        logger.info("Enriching shortlist of %d reels with real metadata...", len(shortlist))
+        logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s)...", len(shortlist), cutoff_ts)
         for reel in shortlist:
             meta = extractor.extract_single_reel_metadata(reel, session=session)
             if not meta or (meta.get("timestamp") or 0) < cutoff_ts:
@@ -274,13 +309,17 @@ def run_full_sync(
             return 2
         site_builder.deploy_to_gh_pages()
 
-    logger.info("Weekly sync completed successfully! Local viewer ready at %s", local_index)
+    if not dry_run:
+        save_last_run_info(week_id)
+
+    logger.info("Sync completed successfully! Local viewer ready at %s", local_index)
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Instagram Digest v1.0 — Weekly High-Signal Reel Curator")
     parser.add_argument("--sync", action="store_true", help="Run full weekly extraction, ranking, and sync")
+    parser.add_argument("--ad-hoc", action="store_true", help="Run ad-hoc midweek sync picking reels between now and the last run timestamp")
     parser.add_argument("--serve", action="store_true", help="Run local dashboard HTTP server on port 8080")
     parser.add_argument("--port", type=int, default=8080, help="Port for local server (default: 8080)")
     parser.add_argument("--sync-following", action="store_true", help="Force sync followed creators from Chrome session")
@@ -315,7 +354,7 @@ def main() -> int:
         return 0
 
     # Deploy only mode
-    if args.deploy and not args.sync:
+    if args.deploy and not args.sync and not args.ad_hoc:
         if _digest_item_count() < MIN_DEPLOY_ITEMS:
             logger.error(
                 "Digest has fewer than %d items; refusing to deploy over the previous digest.",
@@ -325,12 +364,26 @@ def main() -> int:
         site_builder.deploy_to_gh_pages()
         return 0
 
-    # Default to running full sync (or when --sync is specified)
+    days_back = args.days_back
+    since_ts = None
+    if args.ad_hoc:
+        last_run = get_last_run_info()
+        if last_run and "timestamp" in last_run:
+            since_ts = int(last_run["timestamp"])
+            elapsed = time.time() - last_run["timestamp"]
+            days_back = max(1, int(round(elapsed / 86400.0)))
+            logger.info("Ad-hoc run: picking reels between %s (%d days ago) and now",
+                        last_run.get("last_run_utc"), days_back)
+        else:
+            logger.info("Ad-hoc run: no previous run timestamp stored; defaulting to %d days back", days_back)
+
+    # Default to running full sync (or when --sync or --ad-hoc is specified)
     return run_full_sync(
         dry_run=args.dry_run,
         deploy=args.deploy,
-        days_back=args.days_back,
+        days_back=days_back,
         limit_per_creator=args.limit_per_creator,
+        since_timestamp=since_ts,
     )
 
 

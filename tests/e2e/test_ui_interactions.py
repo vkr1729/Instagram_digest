@@ -315,9 +315,9 @@ def test_uat_6_10_watched_persistence_and_resuming(setup_test_site):
         card1_display = cards.nth(1).evaluate("el => el.style.display")
         card2_display = cards.nth(2).evaluate("el => el.style.display")
 
-        # Watched reels are hidden, unwatched reel is active and visible
-        assert card0_display == "none"
-        assert card1_display == "none"
+        # Watched reels remain visible in feed so user can scroll back up, and active reel resumes at first unwatched
+        assert card0_display == "flex"
+        assert card1_display == "flex"
         assert card2_display == "flex"
 
         # Verify active reel is reel_health_1 (the 3rd video, resuming after the 2 watched)

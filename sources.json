@@ -12,12 +12,6 @@
     "enabled": true
   },
   {
-    "handle": "_djsuvan_",
-    "name": "Suvan Dural Jha",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "_masalalab",
     "name": "Krish Ashok",
     "category": "food",
@@ -36,12 +30,6 @@
     "enabled": true
   },
   {
-    "handle": "actorguru_official",
-    "name": "Sharwany Gurucharan Kodur",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "aevytvdaily",
     "name": "AevyTV",
     "category": "ai_tech",
@@ -51,12 +39,6 @@
     "handle": "airesearches",
     "name": "AI researches | AI",
     "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "aiyyoshraddha",
-    "name": "Shraddha",
-    "category": "entertainment",
     "enabled": true
   },
   {
@@ -96,20 +78,8 @@
     "enabled": true
   },
   {
-    "handle": "aravindsrinivas",
-    "name": "Aravind Srinivas",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
     "handle": "archdigest",
     "name": "Architectural Digest",
-    "category": "niche",
-    "enabled": true
-  },
-  {
-    "handle": "austinkleon",
-    "name": "Austin Kleon",
     "category": "niche",
     "enabled": true
   },
@@ -156,12 +126,6 @@
     "enabled": true
   },
   {
-    "handle": "chatgptricks",
-    "name": "AI / Tech",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
     "handle": "cinema.positivity",
     "name": "Cinema Positivity ➕",
     "category": "entertainment",
@@ -174,27 +138,9 @@
     "enabled": true
   },
   {
-    "handle": "clickwise_ai",
-    "name": "Clickwise AI",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "cnbctv18india",
-    "name": "CNBC-TV18",
-    "category": "finance",
-    "enabled": true
-  },
-  {
     "handle": "codesensei.dev",
     "name": "Gowtham Paruchuru",
     "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "dadaunplugged",
-    "name": "Eric Lobo",
-    "category": "niche",
     "enabled": true
   },
   {
@@ -207,12 +153,6 @@
     "handle": "daytradertelugu",
     "name": "Day Trader తెలుగు | Finance",
     "category": "finance",
-    "enabled": true
-  },
-  {
-    "handle": "deloitted_memer",
-    "name": "Deloitted Memer",
-    "category": "entertainment",
     "enabled": true
   },
   {
@@ -273,18 +213,6 @@
     "handle": "earthful.sisters",
     "name": "Earthful Sisters",
     "category": "food",
-    "enabled": true
-  },
-  {
-    "handle": "everypaisamatters",
-    "name": "Every Paisa Matters",
-    "category": "finance",
-    "enabled": true
-  },
-  {
-    "handle": "evolving.ai",
-    "name": "Evolving AI",
-    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -360,12 +288,6 @@
     "enabled": true
   },
   {
-    "handle": "harshinihari28",
-    "name": "Harshini Hari",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "hubermanlab",
     "name": "Dr. Andrew Huberman",
     "category": "health",
@@ -414,18 +336,6 @@
     "enabled": true
   },
   {
-    "handle": "kurzgesagt",
-    "name": "Kurzgesagt – In a Nutshell",
-    "category": "niche",
-    "enabled": true
-  },
-  {
-    "handle": "lalithajayabalan_",
-    "name": "Lalitha Jayabalan",
-    "category": "finance",
-    "enabled": true
-  },
-  {
     "handle": "lavin_creator",
     "name": "Vallabhaneni Lakshmi Suresh Chandra",
     "category": "entertainment",
@@ -456,12 +366,6 @@
     "enabled": true
   },
   {
-    "handle": "mesa.school",
-    "name": "Mesa School of Business",
-    "category": "niche",
-    "enabled": true
-  },
-  {
     "handle": "meta.ai",
     "name": "Meta AI",
     "category": "ai_tech",
@@ -486,12 +390,6 @@
     "enabled": true
   },
   {
-    "handle": "moviesingapore",
-    "name": "Movies Singapore",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "mrwhosetheboss",
     "name": "Arun Maini",
     "category": "ai_tech",
@@ -504,21 +402,9 @@
     "enabled": true
   },
   {
-    "handle": "natgeo",
-    "name": "National Geographic",
-    "category": "niche",
-    "enabled": true
-  },
-  {
     "handle": "natoutofoffice",
     "name": "Natasha Starcheski | Out of Office",
     "category": "niche",
-    "enabled": true
-  },
-  {
-    "handle": "nigeldsouza12",
-    "name": "Nigel D'Souza",
-    "category": "finance",
     "enabled": true
   },
   {
@@ -542,12 +428,6 @@
   {
     "handle": "openai",
     "name": "OpenAI",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "overpowered.ai",
-    "name": "Overpowered",
     "category": "ai_tech",
     "enabled": true
   },
@@ -636,12 +516,6 @@
     "enabled": true
   },
   {
-    "handle": "sagneet_withactingminds",
-    "name": "Sagneet Kaur | Money Psychology",
-    "category": "finance",
-    "enabled": true
-  },
-  {
     "handle": "sandeepdasauthor",
     "name": "Sandeep Das",
     "category": "niche",
@@ -657,12 +531,6 @@
     "handle": "satwikpedia",
     "name": "Satvik Bhatia | Nutritionist | Health and mindset Coach",
     "category": "health",
-    "enabled": true
-  },
-  {
-    "handle": "sheenamelwani",
-    "name": "Sheena Melwani",
-    "category": "entertainment",
     "enabled": true
   },
   {
@@ -684,12 +552,6 @@
     "enabled": true
   },
   {
-    "handle": "soraofficial",
-    "name": "Sora",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
     "handle": "storiesbytwoplusone",
     "name": "Arpitha Kowtal",
     "category": "entertainment",
@@ -708,57 +570,15 @@
     "enabled": true
   },
   {
-    "handle": "tanyaavats_",
-    "name": "Tanya Vats 🇮🇳",
-    "category": "niche",
-    "enabled": true
-  },
-  {
     "handle": "techcrunch",
     "name": "TechCrunch",
     "category": "ai_tech",
     "enabled": true
   },
   {
-    "handle": "thatcreditcardguy",
-    "name": "Aly Hajiani",
-    "category": "finance",
-    "enabled": true
-  },
-  {
     "handle": "thatguy_uday",
     "name": "Sarat Uday Boddeda",
     "category": "entertainment",
-    "enabled": true
-  },
-  {
-    "handle": "the.aiphilosopher",
-    "name": "The AI Philosopher | Pablo M. Salcedo",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "the.datascience.gal",
-    "name": "Aishwarya Srinivasan | Data & AI | LinkedIn Top Voice",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "theaifield",
-    "name": "AI | Technology",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "theaipage",
-    "name": "© The AI Page 👽",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "theartificialintelligence",
-    "name": "Artificial Intelligence | AI",
-    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -792,12 +612,6 @@
     "enabled": true
   },
   {
-    "handle": "therealindiandad",
-    "name": "TRID",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "thethinkschool",
     "name": "Ganeshprasad Sridharan",
     "category": "niche",
@@ -810,33 +624,15 @@
     "enabled": true
   },
   {
-    "handle": "theverticalplaylistsouth",
-    "name": "The Vertical Playlist South",
-    "category": "entertainment",
-    "enabled": true
-  },
-  {
     "handle": "tjpower",
     "name": "Tj Power | Neuroscientist",
     "category": "niche",
     "enabled": true
   },
   {
-    "handle": "tldr_newsletter",
-    "name": "TLDR Newsletter",
-    "category": "ai_tech",
-    "enabled": true
-  },
-  {
     "handle": "unconventional.conversations",
     "name": "Unconventional Conversations",
     "category": "niche",
-    "enabled": true
-  },
-  {
-    "handle": "uncover.robotics",
-    "name": "AI & Robotics",
-    "category": "ai_tech",
     "enabled": true
   },
   {
@@ -858,21 +654,9 @@
     "enabled": true
   },
   {
-    "handle": "vanshxvermaa",
-    "name": "Vansh Verma",
-    "category": "niche",
-    "enabled": true
-  },
-  {
     "handle": "veritasium",
     "name": "Veritasium",
     "category": "niche",
-    "enabled": true
-  },
-  {
-    "handle": "virdas",
-    "name": "Vir Das",
-    "category": "entertainment",
     "enabled": true
   },
   {
@@ -891,12 +675,6 @@
     "handle": "zarnagarg",
     "name": "Zarna Garg",
     "category": "entertainment",
-    "enabled": true
-  },
-  {
-    "handle": "zuck",
-    "name": "Mark Zuckerberg",
-    "category": "ai_tech",
     "enabled": true
   }
 ]

@@ -339,6 +339,7 @@ def build_site(
         "description": "Weekly curated Instagram Reels digest",
         "start_url": "./",
         "display": "standalone",
+        "display_override": ["fullscreen", "standalone"],
         "background_color": "#000000",
         "theme_color": "#000000",
         "icons": [
@@ -362,6 +363,11 @@ def build_site(
     (config.SITE_DIR / "manifest.webmanifest").write_text(
         json.dumps(manifest_data, indent=2), encoding="utf-8"
     )
+
+    # 8. Copy Service Worker
+    sw_src = config.TEMPLATES_DIR / "sw.js"
+    if sw_src.exists():
+        shutil.copy2(sw_src, config.SITE_DIR / "sw.js")
 
     logger.info("Successfully compiled static site at %s and %s (%d available weeks)",
                 r2_index_path, local_index_path, len(sorted_weeks))
