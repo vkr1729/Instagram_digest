@@ -85,8 +85,10 @@ def run_full_sync(
         logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s)...",
                     week_id, days_back, dry_run)
 
-    # 1. Pre-flight quota check on Cloudflare R2
+    # 1. Pre-flight cleanup & quota check on Cloudflare R2
     if not dry_run and config.R2_ACCOUNT_ID:
+        storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
+        storage_r2.purge_unreferenced_r2_videos()
         if not storage_r2.check_preflight_quota():
             logger.error("Pre-flight quota check failed. Aborting to protect Cloudflare free limits.")
             return 1
@@ -288,6 +290,7 @@ def run_full_sync(
 
         # 7. Execute 14-Day Rolling Purge (both R2 and local disk)
         storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
+        storage_r2.purge_unreferenced_r2_videos()
         storage_r2.purge_expired_local_videos(max_age_days=config.RETENTION_DAYS)
     else:
         # Dry-run: save ranked reels

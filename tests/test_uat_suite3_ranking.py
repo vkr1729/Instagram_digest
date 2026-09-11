@@ -36,6 +36,7 @@ def test_uat_3_2_and_3_3_and_3_4_guaranteed_rep_capping_and_deterministic_output
     UAT-3.2, 3.3, 3.4: Tests representation, 4-reel cap, deterministic rank order #01-#N.
     """
     monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "top100_digest.json")
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
 
     sources = [
         {"handle": f"creator_{i}", "name": f"Creator {i}", "category": "tech"}

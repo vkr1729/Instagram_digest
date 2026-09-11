@@ -4,6 +4,7 @@ storage_r2.py — Cloudflare R2 S3-compatible media uploader, quota guard, and 1
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -137,6 +138,74 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
 
     logger.info("Purged %d expired objects from Cloudflare R2.", len(purged))
     return purged
+
+
+def purge_unreferenced_r2_videos() -> list[str]:
+    """
+    Purge unreferenced / orphan video objects on Cloudflare R2 for completed digests.
+    Ensures that stale videos from re-ranking or deleted sources do not exhaust the R2 storage quota.
+    """
+    s3 = get_s3_client()
+    if not s3:
+        return []
+
+    # 1. Collect all referenced video keys across known digests
+    known_weeks: set[str] = set()
+    active_keys: set[str] = set()
+
+    digest_files = []
+    if config.DIGESTS_DIR.exists():
+        digest_files.extend(config.DIGESTS_DIR.glob("*.json"))
+    if config.DIGEST_BATCH_FILE.exists() and config.DIGEST_BATCH_FILE not in digest_files:
+        digest_files.append(config.DIGEST_BATCH_FILE)
+
+    for df in digest_files:
+        try:
+            data = json.loads(df.read_text(encoding="utf-8"))
+            wk = data.get("run_date") or df.stem
+            if not wk or wk == "top100_digest":
+                continue
+            known_weeks.add(wk)
+            for item in data.get("items", []):
+                rank = item.get("rank", 1)
+                handle = item.get("creator_handle")
+                rid = item.get("id")
+                if handle and rid:
+                    active_keys.add(f"videos/{wk}/{rank:02d}_{handle}_{rid}.mp4")
+        except Exception as exc:
+            logger.warning("Error reading digest %s during orphan purge: %s", df, exc)
+
+    if not known_weeks:
+        return []
+
+    # 2. Find orphan keys in known week prefixes
+    orphan_keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    try:
+        for wk in known_weeks:
+            for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix=f"videos/{wk}/"):
+                for obj in page.get("Contents") or []:
+                    k = obj.get("Key", "")
+                    if k and k.endswith(".mp4") and k not in active_keys:
+                        orphan_keys.append(k)
+
+        # Batch delete in chunks of up to 1000 keys
+        purged: list[str] = []
+        for i in range(0, len(orphan_keys), 1000):
+            chunk = orphan_keys[i : i + 1000]
+            logger.info("Batch deleting %d unreferenced R2 video objects...", len(chunk))
+            s3.delete_objects(
+                Bucket=config.R2_BUCKET_NAME,
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+            )
+            purged.extend(chunk)
+
+        if purged:
+            logger.info("Purged %d unreferenced video objects from Cloudflare R2.", len(purged))
+        return purged
+    except ClientError as e:
+        logger.warning("Error during R2 unreferenced videos purge: %s", e)
+        return []
 
 
 def get_existing_r2_keys(prefix: str = "videos/") -> set[str]:
