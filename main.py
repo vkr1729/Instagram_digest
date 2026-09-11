@@ -285,6 +285,13 @@ def run_full_sync(
             logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
             ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
 
+        if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
+                len(ranked_reels), MIN_DEPLOY_ITEMS
+            )
+            return 2
+
         # 6. Save digest batch payload (only playable reels saved!)
         ranker.save_digest_batch(ranked_reels, run_date=week_id)
 
@@ -304,12 +311,6 @@ def run_full_sync(
 
     # 9. Deploy to GitHub Pages (Viability & Minimum items gate)
     if deploy and not dry_run:
-        if len(ranked_reels) < MIN_DEPLOY_ITEMS:
-            logger.error(
-                "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
-                len(ranked_reels), MIN_DEPLOY_ITEMS
-            )
-            return 2
         site_builder.deploy_to_gh_pages()
 
     if not dry_run:

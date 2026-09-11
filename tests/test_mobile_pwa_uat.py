@@ -78,9 +78,8 @@ def test_safe_area_padding_and_symmetry(mobile_page: Page):
 
 
 def test_default_playback_speed_1_25x(mobile_page: Page):
-    """Verify default speed starts at 1.25x as configured."""
-    speed_display = mobile_page.locator("#speedDisplay").text_content()
-    assert "1.25x" in speed_display
+    """Verify default speed starts at 1.25x as configured and top header speed button is dropped."""
+    assert not mobile_page.locator("#speedToggleBtn").is_visible()
 
     # Active video should have playbackRate = 1.25
     rate = mobile_page.evaluate("""() => {

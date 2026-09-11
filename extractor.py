@@ -762,8 +762,10 @@ def download_reel_video(
 
     # 3. Fallback to yt-dlp
     logger.info("Direct stream failed; falling back to yt-dlp for %s", reel_url)
+    cookie_args = get_cookie_args() if use_cookies else []
     cmd = [
         "yt-dlp",
+        *cookie_args,
         "--user-agent", DEFAULT_USER_AGENT,
         "--referer", "https://www.instagram.com/",
         "-f", "b[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]/b",

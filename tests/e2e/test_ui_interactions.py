@@ -129,7 +129,7 @@ def test_uat_6_2_story_category_filtering(setup_test_site):
 
 
 def test_uat_6_3_playback_speed_cycling(setup_test_site):
-    """UAT-6.3: Initial speed default (1.25x); clicking speed button cycles correctly."""
+    """UAT-6.3: Initial speed default (1.25x); top speed button dropped for clean UI; speed cycling works."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -137,32 +137,28 @@ def test_uat_6_3_playback_speed_cycling(setup_test_site):
         page = browser.new_page()
         page.goto(file_url)
 
-        speed_display = page.locator("#speedDisplay")
-        assert speed_display.inner_text() == f"{config.DEFAULT_PLAYBACK_SPEED}x"
+        # Speed toggle button is dropped from header to keep UI uncluttered
+        assert not page.locator("#speedToggleBtn").is_visible()
 
-        # Check video.playbackRate is default (1.25)
-        first_video = page.locator(".reel-video").first
+        # Check video.playbackRate and currentSpeed initialized to default
         assert page.evaluate("() => currentSpeed") == config.DEFAULT_PLAYBACK_SPEED
+        assert page.evaluate("() => document.querySelector('.reel-card video').playbackRate") == config.DEFAULT_PLAYBACK_SPEED
 
-        # Click to cycle: 1.25x -> 1.5x
-        page.click("#speedToggleBtn")
-        assert speed_display.inner_text() == "1.5x"
+        # cycleSpeed() function cycles speeds correctly: 1.25 -> 1.5 -> 1.75 -> 2.0 -> 1.0 -> 1.25
+        page.evaluate("() => cycleSpeed()")
+        assert page.evaluate("() => currentSpeed") == 1.5
 
-        # Click to cycle: 1.5x -> 1.75x
-        page.click("#speedToggleBtn")
-        assert speed_display.inner_text() == "1.75x"
+        page.evaluate("() => cycleSpeed()")
+        assert page.evaluate("() => currentSpeed") == 1.75
 
-        # Click to cycle: 1.75x -> 2x
-        page.click("#speedToggleBtn")
-        assert speed_display.inner_text() == "2x"
+        page.evaluate("() => cycleSpeed()")
+        assert page.evaluate("() => currentSpeed") == 2.0
 
-        # Click to cycle: 2x -> 1x
-        page.click("#speedToggleBtn")
-        assert speed_display.inner_text() == "1x"
+        page.evaluate("() => cycleSpeed()")
+        assert page.evaluate("() => currentSpeed") == 1.0
 
-        # Click to cycle: 1x -> 1.25x
-        page.click("#speedToggleBtn")
-        assert speed_display.inner_text() == "1.25x"
+        page.evaluate("() => cycleSpeed()")
+        assert page.evaluate("() => currentSpeed") == 1.25
 
         browser.close()
 
@@ -328,7 +324,7 @@ def test_uat_6_10_watched_persistence_and_resuming(setup_test_site):
 
 
 def test_uat_6_11_keyboard_shortcuts_and_week_switcher(setup_test_site):
-    """UAT-6.11: Desktop keyboard shortcuts (Space for play/pause, F for fullscreen) and week selector."""
+    """UAT-6.11: Desktop keyboard shortcuts (Space for play/pause, F for fullscreen) and week selector omission for single week."""
     file_url = setup_test_site.as_uri()
 
     with sync_playwright() as p:
@@ -336,9 +332,9 @@ def test_uat_6_11_keyboard_shortcuts_and_week_switcher(setup_test_site):
         page = browser.new_page()
         page.goto(file_url)
 
-        # Verify week selector dropdown exists in header
+        # Single-week site drops week selector to keep top uncluttered
         selector = page.locator("#weekSelector")
-        assert selector.is_visible()
+        assert not selector.is_visible()
 
         # Mock video play/pause on active video to test Spacebar keyboard binding
         page.evaluate("""() => {
@@ -361,6 +357,25 @@ def test_uat_6_11_keyboard_shortcuts_and_week_switcher(setup_test_site):
         page.keyboard.press("f")
 
         browser.close()
+
+
+def test_multi_week_selector_rendered_when_multiple_weeks_available():
+    """Verify week selector dropdown appears when multiple weeks are available."""
+    from jinja2 import Environment, FileSystemLoader
+    env = Environment(loader=FileSystemLoader(config.TEMPLATES_DIR))
+    template = env.get_template("viewer.html")
+    html = template.render(
+        items=[{"id": "r1", "rank_display": "#01", "creator_handle": "user", "category": "tech", "video_url": "v.mp4"}],
+        week_id="2026-09-06",
+        available_weeks=[
+            {"week_id": "2026-09-06", "label": "Current", "url": "index.html"},
+            {"week_id": "2026-08-30", "label": "Prev", "url": "archive/2026-08-30.html"},
+        ],
+        is_local=False,
+    )
+    assert 'id="weekSelector"' in html
+    assert 'Current' in html
+    assert 'Prev' in html
 
 
 def test_uat_6_12_jump_to_reel_and_mark_prior_watched(setup_test_site):

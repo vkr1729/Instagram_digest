@@ -178,20 +178,32 @@ def build_site(
     for item in r2_items:
         reel_id = item.get("id", "")
         item["share_url"] = f"{config.PAGES_BASE_URL}/share/{reel_id}.html"
+        portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
         thumb_file = thumb_dir / f"{reel_id}.jpg"
         if thumb_file.exists():
             item["thumbnail"] = f"{config.PAGES_BASE_URL}/thumbnails/{reel_id}.jpg"
         elif not item.get("thumbnail"):
             item["thumbnail"] = f"{config.PAGES_BASE_URL}/apple-touch-icon.png"
 
+        if portrait_file.exists():
+            item["poster"] = f"{config.PAGES_BASE_URL}/thumbnails/{reel_id}_portrait.jpg"
+        else:
+            item["poster"] = item["thumbnail"]
+
     for item in local_items:
         reel_id = item.get("id", "")
         item["share_url"] = f"/share/{reel_id}.html"
+        portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
         thumb_file = thumb_dir / f"{reel_id}.jpg"
         if thumb_file.exists():
             item["thumbnail"] = f"/thumbnails/{reel_id}.jpg"
         elif not item.get("thumbnail"):
             item["thumbnail"] = "/apple-touch-icon.png"
+
+        if portrait_file.exists():
+            item["poster"] = f"/thumbnails/{reel_id}_portrait.jpg"
+        else:
+            item["poster"] = item["thumbnail"]
 
     def build_weeks_metadata(is_local: bool) -> list[dict[str, Any]]:
         meta_list = []

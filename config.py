@@ -61,7 +61,7 @@ MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
 R2_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024  # Strict 5 GB safety guard (out of 10 GB free)
 
 # Playback & UI Defaults
-DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.25"))
+DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.0"))
 AUTO_ADVANCE_DELAY_SECONDS = 0.5
 AVAILABLE_SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0]
 
