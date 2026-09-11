@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Instagram Digest — Weekly Top 200</title>
+  <title>Instagram Digest — Weekly Top {{ items|length if items else 250 }}</title>
 
   <!-- iOS PWA & Home Screen App Icon -->
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -578,10 +578,10 @@
       font-weight: 700;
       color: #fff;
       text-decoration: none;
-      max-width: 140px;
+      max-width: 130px;
       overflow: hidden;
       text-overflow: ellipsis;
-      flex-shrink: 1;
+      flex-shrink: 0;
       white-space: nowrap;
       text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
     }
@@ -595,10 +595,29 @@
       border: 1px solid rgba(240, 148, 51, 0.3);
       flex-shrink: 0;
     }
+    .discovery-pill {
+      font-size: 10px;
+      font-weight: 700;
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.15);
+      padding: 2px 6px;
+      border-radius: 8px;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      letter-spacing: 0.2px;
+    }
     .views-label {
       font-size: 11px;
       color: #a1a1aa;
       flex-shrink: 0;
+    }
+    @media (max-width: 480px) {
+      .discovery-pill ~ .views-label {
+        display: none;
+      }
     }
     .reel-actions {
       margin-left: auto;
@@ -927,7 +946,7 @@
       <nav class="story-bar" id="storyBar">
         <div class="story-bubble active" data-category="all" onclick="filterCategory('all')">
           <div class="story-ring"><div class="story-avatar">🔥</div></div>
-          <span class="story-title">Top 200</span>
+          <span class="story-title">Top {{ items|length if items else 250 }}</span>
           <div class="active-dot"></div>
         </div>
         <div class="story-bubble" data-category="entertainment" onclick="filterCategory('entertainment')">
@@ -987,6 +1006,9 @@
         <div class="bottom-scrim">
           <div class="creator-meta">
             <span class="creator-badge">@{{ item.creator_handle }}</span>
+            {% if item.is_external %}
+            <span class="discovery-pill" title="Discovered from Instagram Explore feed">🌐 Discovery</span>
+            {% endif %}
             <span class="rank-pill">{{ item.rank_display }}</span>
             <span class="views-label">{{ "{:,}".format(item.view_count|default(0)) }} views</span>
             <div class="reel-actions">

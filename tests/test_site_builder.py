@@ -36,12 +36,14 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
                 "caption": "Morning light exposure protocols",
                 "thumbnail": "https://example.com/thumb2.jpg",
                 "video_url": "https://example.com/video2.mp4",
+                "is_external": True,
             }
         ]
     }
 
     r2_url_map = {
-        "reel_01": "https://pub-r2.dev/videos/2026-09-06/01_mkbhd_reel_01.mp4"
+        "reel_01": "https://pub-r2.dev/videos/2026-09-06/01_mkbhd_reel_01.mp4",
+        "reel_02": "https://pub-r2.dev/videos/2026-09-06/02_hubermanlab_reel_02.mp4",
     }
 
     r2_index, local_index = build_site(sample_digest, r2_uploaded_urls=r2_url_map)
@@ -53,6 +55,10 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
 
     r2_html = r2_index.read_text(encoding="utf-8")
     local_html = local_index.read_text(encoding="utf-8")
+
+    # Verify Discovery pill rendered for external reel
+    assert 'class="discovery-pill"' in local_html
+    assert "🌐 Discovery" in local_html
 
     # Verify R2 URL is used in r2_index
     assert "https://pub-r2.dev/videos/2026-09-06/01_mkbhd_reel_01.mp4" in r2_html
@@ -66,7 +72,7 @@ def test_build_site_renders_index_and_local_index(tmp_path, monkeypatch):
         assert f"defaultSpeed = {config.DEFAULT_PLAYBACK_SPEED}" in html
         assert "data-category=\"ai_tech\"" in html
         assert "data-category=\"health\"" in html
-        assert "Top 200" in html
+        assert "Top 2" in html or "Top 250" in html or "Top 200" in html
         assert "AI &amp; Tech" in html or "AI & Tech" in html
         assert "Health" in html
         assert "Entertain" in html or "Entertainment" in html

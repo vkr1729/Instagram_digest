@@ -84,3 +84,36 @@ def test_send_digest_email_handles_exception(monkeypatch):
     with patch("smtplib.SMTP", side_effect=ConnectionRefusedError("Connection refused")):
         res = notifier.send_digest_email(week_id="2026-09-11", count=200)
         assert res is False
+
+
+def test_build_email_message_with_breakdown(monkeypatch):
+    monkeypatch.setattr(config, "SMTP_USER", "bot@example.com")
+    monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "owner@example.com")
+
+    msg = notifier.build_email_message(week_id="2026-09-11", count=250, followed_count=180, external_count=70)
+    payloads = [part.get_payload(decode=True).decode("utf-8") for part in msg.get_payload()]
+    text_body, html_body = payloads[0], payloads[1]
+
+    assert "Followed Channels: 180" in text_body
+    assert "External Discovery: 70" in text_body
+    assert "180" in html_body
+    assert "70" in html_body
+    assert "External" in html_body
+
+
+def test_cookie_alert_email(monkeypatch):
+    monkeypatch.setattr(config, "SMTP_USER", "bot@example.com")
+    monkeypatch.setattr(config, "SMTP_PASS", "pass")
+    monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "owner@example.com")
+
+    msg = notifier.build_cookie_alert_message("http://localhost:8080/retrigger")
+    assert "Action Required" in msg["Subject"]
+    payloads = [part.get_payload(decode=True).decode("utf-8") for part in msg.get_payload()]
+    assert "http://localhost:8080/retrigger" in payloads[0]
+    assert "http://localhost:8080/retrigger" in payloads[1]
+
+    mock_smtp_instance = MagicMock()
+    with patch("smtplib.SMTP", return_value=mock_smtp_instance):
+        mock_smtp_instance.__enter__.return_value = mock_smtp_instance
+        res = notifier.send_cookie_alert_email("http://localhost:8080/retrigger")
+        assert res is True

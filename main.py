@@ -193,19 +193,28 @@ def run_full_sync(
             shuffle=False,
         )
 
-        # Enrich shortlist with real metadata and filter by cutoff date
+        # Enrich shortlist with real metadata and filter by cutoff date in parallel
         cutoff_ts = since_timestamp if since_timestamp is not None else int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
         enriched: list[dict[str, Any]] = []
-        logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s)...", len(shortlist), cutoff_ts)
-        for reel in shortlist:
-            meta = extractor.extract_single_reel_metadata(reel, session=session)
-            if not meta or (meta.get("timestamp") or 0) < cutoff_ts:
-                logger.info(
-                    "Skipping reel %s: too old, pinned, or unknown date (%s < %s)",
-                    (meta or {}).get("id"), (meta or {}).get("timestamp"), cutoff_ts,
-                )
-                continue
-            enriched.append(meta)
+        logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s, max_workers=6)...", len(shortlist), cutoff_ts)
+
+        def _enrich_item(r: dict[str, Any]) -> dict[str, Any] | None:
+            m = extractor.extract_single_reel_metadata(r, session=None)
+            if not m or (m.get("timestamp") or 0) < cutoff_ts:
+                return None
+            return m
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(_enrich_item, r) for r in shortlist]
+            for f in as_completed(futures):
+                try:
+                    res = f.result()
+                    if res:
+                        enriched.append(res)
+                except Exception as exc:
+                    logger.debug("Enrichment error: %s", exc)
+
+        logger.info("Enriched %d valid reels within date window out of %d candidates.", len(enriched), len(shortlist))
 
         # Pass 2: Final ranking on enriched candidates only (no fallback:
         # ranking the un-enriched shortlist would reintroduce stale/undated reels)
@@ -215,6 +224,38 @@ def run_full_sync(
             top_n=config.TOP_DIGEST_COUNT,
             max_per_creator=config.MAX_PER_CREATOR,
         )
+
+        # Pass 3: External Reels Discovery to fill remaining quota up to TOP_DIGEST_COUNT
+        deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
+        if deficit > 0 and not dry_run:
+            logger.info(
+                "Followed channels produced %d reels (%d below target %d). Discovering external high-signal reels...",
+                len(ranked_reels), deficit, config.TOP_DIGEST_COUNT
+            )
+            try:
+                existing_ids = {r["id"] for r in ranked_reels}
+                external_reels = extractor.extract_external_reels_from_feed(
+                    session=session,
+                    target_count=deficit,
+                    existing_ids=existing_ids,
+                    active_sources=active_sources,
+                )
+                if external_reels:
+                    logger.info("Discovered %d external high-signal reels from feed.", len(external_reels))
+                    combined = ranked_reels + external_reels
+                    for idx, r in enumerate(combined, 1):
+                        r["rank"] = idx
+                        r["rank_display"] = f"#{idx:02d}"
+                    ranked_reels = combined
+            except extractor.CookieExpiredException as exc:
+                logger.warning("Cookie expired during external discovery: %s", exc)
+                try:
+                    import notifier
+                    notifier.send_cookie_alert_email()
+                except Exception as alert_err:
+                    logger.warning("Failed to send cookie alert email: %s", alert_err)
+            except Exception as exc:
+                logger.warning("External reels discovery failed: %s", exc)
 
     if not ranked_reels:
         logger.error("No reels qualified for Top Digest. Aborting run without touching digest/site.")
@@ -318,9 +359,13 @@ def run_full_sync(
         # 10. Send notification email confirming weekly refresh
         try:
             import notifier
+            ext_cnt = sum(1 for r in ranked_reels if r.get("is_external"))
+            fol_cnt = len(ranked_reels) - ext_cnt
             notifier.send_digest_email(
                 week_id=week_id,
                 count=len(ranked_reels),
+                followed_count=fol_cnt,
+                external_count=ext_cnt,
                 top_reels=ranked_reels[:5],
                 site_url=config.PAGES_BASE_URL if deploy else None,
             )
@@ -381,15 +426,16 @@ def main() -> int:
 
     days_back = args.days_back
     since_ts = None
-    if args.ad_hoc:
-        last_run = get_last_run_info()
+    last_run = get_last_run_info()
+    if args.ad_hoc or (last_run and "timestamp" in last_run and args.days_back == 7):
         if last_run and "timestamp" in last_run:
-            since_ts = int(last_run["timestamp"])
             elapsed = time.time() - last_run["timestamp"]
-            days_back = max(1, int(round(elapsed / 86400.0)))
-            logger.info("Ad-hoc run: picking reels between %s (%d days ago) and now",
-                        last_run.get("last_run_utc"), days_back)
-        else:
+            if 3600 <= elapsed <= 7 * 86400:
+                since_ts = int(last_run["timestamp"])
+                days_back = max(1, int(round(elapsed / 86400.0)))
+                logger.info("Anchor to last run: picking reels between %s (~%d days ago) and now",
+                            last_run.get("last_run_utc"), days_back)
+        elif args.ad_hoc:
             logger.info("Ad-hoc run: no previous run timestamp stored; defaulting to %d days back", days_back)
 
     # Default to running full sync (or when --sync or --ad-hoc is specified)

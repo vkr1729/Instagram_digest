@@ -36,7 +36,7 @@ _SYNC_STATE: dict[str, Any] = {
 }
 
 
-def trigger_adhoc_sync_task() -> dict[str, Any]:
+def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
     """Launch an ad-hoc sync thread picking reels between now and the stored last run."""
     import main as main_module
 
@@ -57,7 +57,15 @@ def trigger_adhoc_sync_task() -> dict[str, Any]:
 
     def _worker():
         try:
-            logger.info("Background ad-hoc sync thread started.")
+            logger.info("Background sync thread started: refreshing Chrome cookies...")
+            cookie_exp = config.ROOT_DIR / "cookie_exporter.py"
+            if cookie_exp.exists():
+                try:
+                    import subprocess
+                    subprocess.run(["/usr/bin/python3", str(cookie_exp)], capture_output=True, text=True, timeout=25)
+                except Exception as c_err:
+                    logger.warning("Failed refreshing cookies before sync: %s", c_err)
+
             last_run = main_module.get_last_run_info()
             since_ts = None
             days_back = 7
@@ -70,7 +78,7 @@ def trigger_adhoc_sync_task() -> dict[str, Any]:
 
             ret = main_module.run_full_sync(
                 dry_run=False,
-                deploy=False,
+                deploy=deploy,
                 days_back=days_back,
                 since_timestamp=since_ts,
             )
@@ -153,6 +161,105 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         clean_path = parsed.path
+
+        # /api/sync-status -> return current sync status
+        if clean_path in ("/api/sync-status", "/api/sync-status/"):
+            with _SYNC_LOCK:
+                body = json.dumps(dict(_SYNC_STATE)).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # /retrigger -> launch sync with cookie refresh and render live status page
+        if clean_path in ("/retrigger", "/retrigger/"):
+            trigger_adhoc_sync_task(deploy=True)
+            html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instagram Digest — Retriggering Sync</title>
+  <style>
+    body {
+      margin: 0; padding: 0; background: #09090b; color: #f4f4f5;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    }
+    .card {
+      background: #141419; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 20px;
+      padding: 36px 28px; max-width: 440px; width: 90%; text-align: center;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.7);
+    }
+    .spinner {
+      width: 56px; height: 56px; border: 4px solid rgba(255, 255, 255, 0.1);
+      border-top: 4px solid #fd1d1d; border-radius: 50%; animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    h2 {
+      margin: 0 0 10px; font-size: 20px; font-weight: 700;
+      background: linear-gradient(135deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    p { color: #a1a1aa; font-size: 14px; line-height: 1.5; margin: 0 0 20px; }
+    .status-badge {
+      display: inline-block; background: rgba(255, 255, 255, 0.06); padding: 6px 14px;
+      border-radius: 20px; font-size: 12px; font-weight: 600; color: #38bdf8;
+    }
+    .btn {
+      display: inline-block; margin-top: 18px; padding: 10px 22px; border-radius: 12px;
+      background: #27272a; color: #fff; text-decoration: none; font-size: 13px; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner" id="spinner"></div>
+    <h2 id="title">Refreshing Instagram Feed</h2>
+    <p id="msg">Decrypting fresh cookies from Chrome and curating the top 250 reels...</p>
+    <div class="status-badge" id="badge">Sync Running</div>
+    <div><a href="/" class="btn" id="homeBtn" style="display:none;">Return to Viewer</a></div>
+  </div>
+  <script>
+    async function checkStatus() {
+      try {
+        const res = await fetch('/api/sync-status');
+        const data = await res.json();
+        if (!data.is_running) {
+          if (data.status === 'completed' || data.last_result === 0) {
+            document.getElementById('title').textContent = 'Sync Complete!';
+            document.getElementById('msg').textContent = 'Your digest has been refreshed. Redirecting to viewer...';
+            document.getElementById('badge').textContent = 'Completed';
+            document.getElementById('badge').style.color = '#4ade80';
+            document.getElementById('spinner').style.display = 'none';
+            setTimeout(() => { window.location.href = '/'; }, 1800);
+            return;
+          } else {
+            document.getElementById('title').textContent = 'Sync Finished';
+            document.getElementById('msg').textContent = data.last_error || 'Check logs for details.';
+            document.getElementById('badge').textContent = 'Done';
+            document.getElementById('spinner').style.display = 'none';
+            document.getElementById('homeBtn').style.display = 'inline-block';
+            return;
+          }
+        }
+      } catch (e) {}
+      setTimeout(checkStatus, 2000);
+    }
+    checkStatus();
+  </script>
+</body>
+</html>""".encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html_content)))
+            self.end_headers()
+            self.wfile.write(html_content)
+            return
 
         # Root route -> serve local_index.html
         if clean_path in ("/", "/index.html"):

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -296,6 +297,10 @@ class InstagramBlocked(RuntimeError):
     """Instagram served a login/challenge wall instead of content."""
 
 
+class CookieExpiredException(RuntimeError):
+    """Instagram session cookies are missing or expired (redirected to login)."""
+
+
 _BLOCK_MARKERS = ("/accounts/login", "/challenge/", "/accounts/suspended")
 
 
@@ -565,29 +570,32 @@ def extract_single_reel_metadata(
         ]
         video_cdn_url = candidates[0] if candidates else ""
 
-        return {
-            "id": shortcode or reel_info["id"],
-            "url": reel_url,
-            "creator_handle": creator_handle,
-            "caption": caption,
-            "view_count": reel_info.get("view_count", 0),
-            "like_count": like_count,
-            "comment_count": comment_count,
-            "duration": 0,
-            "timestamp": timestamp,
-            "thumbnail": thumb_url,
-            "video_cdn_url": video_cdn_url,
-            "metrics_estimated": metrics_estimated,
-        }
+        if timestamp > 0:
+            return {
+                "id": shortcode or reel_info["id"],
+                "url": reel_url,
+                "creator_handle": creator_handle,
+                "caption": caption,
+                "view_count": reel_info.get("view_count", 0),
+                "like_count": like_count,
+                "comment_count": comment_count,
+                "duration": 0,
+                "timestamp": timestamp,
+                "thumbnail": thumb_url,
+                "video_cdn_url": video_cdn_url,
+                "metrics_estimated": metrics_estimated,
+            }
     except Exception as exc:
         logger.debug("Playwright extraction failed on %s: %s; trying yt-dlp fallback...", reel_url, exc)
     finally:
         if local_session:
             local_session.close()
 
-    # 2. Fallback to yt-dlp
+    # 2. Fallback to yt-dlp with cookies
+    cookie_args = get_cookie_args()
     cmd = [
         "yt-dlp",
+        *cookie_args,
         "--user-agent", DEFAULT_USER_AGENT,
         "--referer", "https://www.instagram.com/",
         "--dump-single-json",
@@ -602,11 +610,14 @@ def extract_single_reel_metadata(
             data = json.loads(res.stdout)
             reel_id = str(data.get("id") or reel_info["id"])
             views = int(data.get("view_count") or data.get("play_count") or reel_info.get("view_count", 0))
+            handle = data.get("channel") or data.get("uploader_id") or creator_handle
+            name = data.get("uploader") or handle
 
             return {
                 "id": reel_id,
                 "url": reel_url,
-                "creator_handle": creator_handle,
+                "creator_handle": handle,
+                "creator_name": name,
                 "caption": (data.get("description") or data.get("title") or "").strip(),
                 "view_count": views,
                 "like_count": int(data.get("like_count") or 0),
@@ -625,7 +636,7 @@ def extract_single_reel_metadata(
         "id": reel_info["id"],
         "url": reel_url,
         "creator_handle": creator_handle,
-        "caption": reel_info.get("caption") or f"Reel by @{creator_handle}",
+        "caption": reel_info.get("caption", ""),
         "view_count": reel_info.get("view_count", 0),
         "like_count": 0,
         "comment_count": 0,
@@ -785,3 +796,224 @@ def download_reel_video(
     if temp_path.exists():
         temp_path.unlink(missing_ok=True)
     return False
+
+
+def extract_external_reels_from_feed(
+    session: InstagramSession,
+    target_count: int,
+    existing_ids: set[str] | None = None,
+    active_sources: list[dict[str, Any]] | None = None,
+    max_evaluations: int = 120,
+) -> list[dict[str, Any]]:
+    """Crawl Instagram Reels discovery feed (instagram.com/reels/) with Playwright to discover
+    high-signal reels from external creators to fill the remaining weekly quota.
+
+    Filters:
+      - Excludes followed channels, blacklist, and existing IDs.
+      - Requires visible likes >= 50,000 OR (if hidden) comments >= 250.
+      - Classifies topic into the 6 digest categories (ai_tech, finance, health, entertainment, niche, food).
+      - Maximum 2 reels per external creator.
+      - Raises CookieExpiredException if redirected to login.
+    """
+    if target_count <= 0:
+        return []
+
+    existing = set(existing_ids or set())
+    followed_handles = set(
+        s.get("handle", "").lower().replace("@", "") for s in (active_sources or [])
+    )
+    blacklist = get_blacklisted_creators()
+    creator_counts: dict[str, int] = {}
+    external_candidates: list[dict[str, Any]] = []
+
+    page = session.get_page()
+    logger.info("Opening Instagram Reels feed to discover %d external high-signal reels...", target_count)
+
+    try:
+        page.goto("https://www.instagram.com/reels/", wait_until="domcontentloaded", timeout=30000)
+    except Exception as exc:
+        logger.warning("Failed navigating to reels feed: %s", exc)
+        return []
+
+    # Check for authentication redirect
+    current_url = getattr(page, "url", "") or ""
+    if any(m in current_url for m in _BLOCK_MARKERS):
+        raise CookieExpiredException(f"Instagram session expired: redirected to {current_url}")
+
+    page.wait_for_timeout(3000)
+
+    eval_count = 0
+    while len(external_candidates) < target_count and eval_count < max_evaluations:
+        eval_count += 1
+        current_url = getattr(page, "url", "") or ""
+        if any(m in current_url for m in _BLOCK_MARKERS):
+            raise CookieExpiredException(f"Instagram session expired during feed scroll: {current_url}")
+
+        try:
+            data = page.evaluate("""() => {
+                // 1. Reel ID from location or link
+                let reelId = null;
+                const pathMatch = window.location.pathname.match(/\\/reels?\\/([A-Za-z0-9_-]+)/);
+                if (pathMatch) {
+                    reelId = pathMatch[1];
+                }
+                if (!reelId) {
+                    const reelLink = document.querySelector('a[href*="/reel/"], a[href*="/reels/"]');
+                    if (reelLink) {
+                        const m = reelLink.href.match(/\\/reels?\\/([A-Za-z0-9_-]+)/);
+                        if (m) reelId = m[1];
+                    }
+                }
+
+                // 2. Creator Handle
+                let handle = '';
+                const creatorLinks = Array.from(document.querySelectorAll('a[aria*=" reels"], a[role="link"]'));
+                for (const a of creatorLinks) {
+                    const aria = (a.getAttribute('aria-label') || '').replace(/ reels$/i, '').trim();
+                    const txt = (a.innerText || '').trim();
+                    const candidate = aria || txt;
+                    if (candidate && !candidate.includes(' ') && candidate.length > 2) {
+                        handle = candidate.toLowerCase().replace('@', '');
+                        break;
+                    }
+                }
+                if (!handle) {
+                    const allLinks = Array.from(document.querySelectorAll('a'));
+                    const reserved = ['explore', 'reels', 'direct', 'stories', 'accounts', 'legal', 'about', 'p', 'tags', 'locations'];
+                    for (const a of allLinks) {
+                        const href = a.getAttribute('href') || '';
+                        const parts = href.split('/').filter(Boolean);
+                        if (parts.length >= 1 && !reserved.includes(parts[0].toLowerCase())) {
+                            handle = parts[0].toLowerCase().replace('@', '');
+                            break;
+                        }
+                    }
+                }
+
+                // 3. Caption
+                let caption = '';
+                const textNodes = Array.from(document.querySelectorAll('h1, span, div[dir="auto"]'));
+                for (const el of textNodes) {
+                    const txt = (el.innerText || '').trim();
+                    if (txt.length > 25 && !txt.includes('likes') && !txt.includes('comments') && !txt.includes('Follow')) {
+                        caption = txt;
+                        break;
+                    }
+                }
+
+                // 4. Likes & Comments
+                let rawLikes = '';
+                let rawComments = '';
+                const allButtonsAndSpans = Array.from(document.querySelectorAll('button, span, a'));
+                for (const el of allButtonsAndSpans) {
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    const txt = (el.innerText || '').trim();
+                    if (aria.includes('like') || aria.includes('likes')) {
+                        rawLikes = aria || txt;
+                    }
+                    if (aria.includes('comment') || aria.includes('comments')) {
+                        rawComments = aria || txt;
+                    }
+                }
+
+                // 5. Video CDN URL & Poster Thumbnail
+                let videoSrc = '';
+                const videoEl = document.querySelector('video');
+                if (videoEl) {
+                    videoSrc = videoEl.getAttribute('src') || '';
+                    if (!videoSrc) {
+                        const sourceEl = videoEl.querySelector('source');
+                        if (sourceEl) videoSrc = sourceEl.getAttribute('src') || '';
+                    }
+                }
+                let posterSrc = '';
+                if (videoEl && videoEl.getAttribute('poster')) {
+                    posterSrc = videoEl.getAttribute('poster');
+                } else {
+                    const imgEl = document.querySelector('img[src*="cdninstagram"]');
+                    if (imgEl) posterSrc = imgEl.getAttribute('src') || '';
+                }
+
+                return {
+                    reelId,
+                    reelUrl: reelId ? `https://www.instagram.com/reel/${reelId}/` : '',
+                    handle,
+                    caption,
+                    rawLikes,
+                    rawComments,
+                    videoSrc,
+                    posterSrc
+                };
+            }""")
+        except Exception as exc:
+            logger.debug("Error evaluating reel DOM: %s", exc)
+            data = None
+
+        if data and data.get("reelId"):
+            rid = data["reelId"]
+            h = (data.get("handle") or "").lower()
+            caption = data.get("caption", "")
+            likes = parse_view_count_text(data.get("rawLikes", ""))
+            comments = parse_view_count_text(data.get("rawComments", ""))
+            video_cdn = data.get("videoSrc", "") or ""
+            poster = data.get("posterSrc", "") or ""
+
+            # If handle or metrics not fully parsed from DOM, enrich via yt-dlp fallback
+            if not h or (likes == 0 and comments == 0):
+                meta = extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h})
+                if meta:
+                    h = (meta.get("creator_handle") or h).lower()
+                    caption = caption or meta.get("caption", "")
+                    likes = max(likes, meta.get("like_count", 0))
+                    comments = max(comments, meta.get("comment_count", 0))
+                    video_cdn = meta.get("video_cdn_url", "") or video_cdn
+                    poster = meta.get("thumbnail", "") or poster
+
+            # Check duplication and blacklists
+            if (
+                rid not in existing
+                and h
+                and h not in followed_handles
+                and h not in blacklist
+                and creator_counts.get(h, 0) < 2
+            ):
+                # High-signal threshold: visible likes >= 50,000 OR (if hidden) comments >= 250
+                is_high_signal = (likes >= 50000) or (likes == 0 and comments >= 250)
+                if is_high_signal:
+                    cat = categorize_creator(h, caption)
+                    if cat:
+                        estimated_views = max(likes * 6, comments * 60, 150000)
+                        external_candidates.append({
+                            "id": rid,
+                            "url": f"https://www.instagram.com/reel/{rid}/",
+                            "creator_handle": h,
+                            "creator_name": h,
+                            "caption": caption[:300],
+                            "view_count": estimated_views,
+                            "like_count": likes,
+                            "comment_count": comments,
+                            "duration": 30,
+                            "timestamp": int(time.time()),
+                            "category": cat,
+                            "thumbnail": poster,
+                            "video_cdn_url": video_cdn,
+                            "metrics_estimated": True,
+                            "is_external": True,
+                        })
+                        existing.add(rid)
+                        creator_counts[h] = creator_counts.get(h, 0) + 1
+                        logger.info(
+                            "Discovered external high-signal reel [%s] by @%s (%s | %d likes, %d comments) [%d/%d]",
+                            rid, h, cat, likes, comments, len(external_candidates), target_count
+                        )
+
+        # Scroll to next reel with humanized jitter
+        try:
+            page.keyboard.press("PageDown")
+        except Exception:
+            pass
+        time.sleep(random.uniform(1.8, 3.2))
+
+    logger.info("External Reels discovery finished: harvested %d high-signal external reels (evaluated %d).",
+                len(external_candidates), eval_count)
+    return external_candidates

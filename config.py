@@ -56,7 +56,7 @@ NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("RECIPIENT_EMAIL"
 # Pipeline & Retention Limits (Default: 1 week rolling archive)
 RETENTION_WEEKS = int(os.getenv("RETENTION_WEEKS", "1"))
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", str(RETENTION_WEEKS * 7 + 1)))
-TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "200"))
+TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "250"))
 MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
 R2_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024  # Strict 5 GB safety guard (out of 10 GB free)
 
