@@ -81,6 +81,38 @@ def _alert_sync_abort(reason: str, detail: str) -> None:
         logger.warning("Failed to send abort alert email: %s", alert_err)
 
 
+def _ensure_valid_session(session) -> bool:
+    """Probe the session; on failure refresh Chrome cookies once and retry.
+
+    Stale files self-heal with no human involved. A dead login stays dead
+    (return False) so the caller aborts with an alert instead of retrying
+    forever. Never raises.
+    """
+    try:
+        if session.validate():
+            return True
+    except Exception as exc:
+        logger.warning("Session validation error: %s", exc)
+    logger.warning("Session invalid; refreshing Chrome cookies and retrying once...")
+    try:
+        import cookie_exporter
+        cookie_exporter.export_instagram_cookies()
+    except Exception as exc:
+        logger.warning("Cookie refresh failed: %s", exc)
+        return False
+    for op in ("close", "start"):
+        try:
+            getattr(session, op)()
+        except Exception as exc:
+            logger.warning("Session %s during refresh retry failed: %s", op, exc)
+            return False
+    try:
+        return bool(session.validate())
+    except Exception as exc:
+        logger.warning("Session re-validation error: %s", exc)
+        return False
+
+
 def run_full_sync(
     dry_run: bool = False,
     deploy: bool = False,
@@ -146,6 +178,10 @@ def run_full_sync(
             expected = 0
             empty_creators = 0
             empty_streak = 0
+            if not _ensure_valid_session(session):
+                candidates_cache_file.unlink(missing_ok=True)
+                _alert_sync_abort("Instagram session blocked", "validation failed after one cookie refresh")
+                return 2
             try:
                 # Ensure candidate gathering covers all active creators so all category quotas can be fulfilled
                 for idx, src in enumerate(ordered_sources, 1):

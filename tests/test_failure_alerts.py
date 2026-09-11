@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import config
 import cookie_exporter
+import extractor
 import main
 import notifier
 
@@ -114,3 +115,96 @@ def test_run_weekly_mails_on_failure_and_preserves_exit():
     assert "notifier.py --failure-alert" in script
     # Alert is sent from the failure branch before the original exit code propagates.
     assert script.index("--failure-alert") < script.index("exit $EXIT_CODE")
+
+
+class _FakeSession:
+    """Stand-in for InstagramSession recording validate/close/start calls."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.validations = 0
+        self.closed = 0
+        self.started = 0
+
+    def validate(self):
+        self.validations += 1
+        outcome = self._results.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def close(self):
+        self.closed += 1
+
+    def start(self):
+        self.started += 1
+
+
+def _mock_page(url="https://www.instagram.com/", fail_nav=False):
+    page = MagicMock()
+    page.url = url
+    if fail_nav:
+        page.goto.side_effect = RuntimeError("net down")
+    return page
+
+
+def test_session_validate_accepts_clean_session():
+    sess = extractor.InstagramSession()
+    sess._page = _mock_page()
+    assert sess.validate() is True
+
+
+def test_session_validate_rejects_login_wall():
+    sess = extractor.InstagramSession()
+    sess._page = _mock_page(url="https://www.instagram.com/accounts/login/?next=/")
+    assert sess.validate() is False
+
+
+def test_session_validate_never_raises():
+    sess = extractor.InstagramSession()
+    sess._page = _mock_page(fail_nav=True)
+    assert sess.validate() is False
+    sess._page = None
+    assert sess.validate() is False
+
+
+def test_ensure_valid_session_skips_refresh_when_healthy(monkeypatch):
+    monkeypatch.setattr(cookie_exporter, "export_instagram_cookies",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not refresh")))
+    sess = _FakeSession([True])
+    assert main._ensure_valid_session(sess) is True
+    assert sess.validations == 1
+    assert sess.closed == 0
+
+
+def test_ensure_valid_session_refreshes_once_and_heals(monkeypatch):
+    exports = []
+    monkeypatch.setattr(cookie_exporter, "export_instagram_cookies",
+                        lambda: exports.append(1) or {"sessionid": "fresh"})
+    sess = _FakeSession([False, True])
+    assert main._ensure_valid_session(sess) is True
+    assert exports == [1]
+    assert (sess.validations, sess.closed, sess.started) == (2, 1, 1)
+
+
+def test_ensure_valid_session_gives_up_after_one_retry(monkeypatch):
+    exports = []
+    monkeypatch.setattr(cookie_exporter, "export_instagram_cookies",
+                        lambda: exports.append(1) or {})
+    sess = _FakeSession([False, False])
+    assert main._ensure_valid_session(sess) is False
+    assert exports == [1]
+    assert sess.validations == 2
+
+
+def test_ensure_valid_session_survives_broken_helpers(monkeypatch):
+    def _boom():
+        raise RuntimeError("dbus down")
+    monkeypatch.setattr(cookie_exporter, "export_instagram_cookies", _boom)
+    assert main._ensure_valid_session(_FakeSession([False])) is False
+    # A raising validate() still routes into the single refresh path.
+    exports = []
+    monkeypatch.setattr(cookie_exporter, "export_instagram_cookies",
+                        lambda: exports.append(1) or {})
+    assert main._ensure_valid_session(_FakeSession([RuntimeError("x"), True])) is True
+    assert exports == [1]

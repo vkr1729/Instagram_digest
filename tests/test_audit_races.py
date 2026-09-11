@@ -125,6 +125,14 @@ def test_manual_pause_cooldown_blocks_auto_resume():
     assert "playCardVideo(card, true)" in js
 
 
+def test_total_playback_failure_traced_and_tappable():
+    # A dead reel (even the muted fallback rejected, e.g. Low Power Mode)
+    # must be visible in the trace and offer a tap affordance.
+    js = _js()
+    assert "play-reject2" in js
+    assert js.count("textContent = '▶'") >= 2
+
+
 def test_ready_waiter_cleared_on_src_detach():
     # A waiter token must never outlive its fetch: cleared on ready, on
     # error, and wherever src is detached (sliding window, filter hide).

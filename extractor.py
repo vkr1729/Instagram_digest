@@ -508,6 +508,28 @@ class InstagramSession:
             self._playwright = None
             self._nav_count = 0
 
+    def validate(self, url: str = "https://www.instagram.com/") -> bool:
+        """Lightweight login check: True if the session looks authenticated.
+
+        Loads one page and applies the same block markers as extraction.
+        Never raises: any failure means "not usable", never "usable".
+        """
+        if not self._page:
+            return False
+        try:
+            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
+        except Exception as exc:
+            logger.warning("Session validation navigation failed: %s", exc)
+            return False
+        try:
+            _assert_not_blocked(self._page, "session-validation")
+        except InstagramBlocked:
+            return False
+        except Exception as exc:
+            logger.warning("Session validation check failed: %s", exc)
+            return False
+        return True
+
     def get_page(self):
         self.start()
         if self._nav_count >= self.RECYCLE_EVERY:

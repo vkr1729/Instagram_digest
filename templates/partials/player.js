@@ -29,6 +29,12 @@
     });
     let currentCategory = 'all';
     let isAudioMuted = false;
+    // Tap-to-unmute guard: stamped when a gesture handler flips a muted video
+    // back to sound. The card's tap timer then swallows the same gesture's
+    // pause-toggle (the tap meant "sound", not "pause"). Consumed synchronously
+    // by the card click handler; timestamped so a stale stamp can never eat a
+    // later, unrelated pause tap.
+    let gestureUnmuteAt = 0;
     let autoAdvanceTimeout = null;
     let isScrollingTransition = false;
     let currentActiveCard = null;
@@ -548,6 +554,9 @@
         e.preventDefault();
       }
       isAudioMuted = false;
+      // Explicit pill tap owns the unmute: no pause-toggle is pending, so any
+      // stamp from this gesture's touchstart must not swallow a later tap.
+      gestureUnmuteAt = 0;
       if (currentActiveCard) {
         const card = currentActiveCard;
         const v = card.querySelector('.reel-video');
@@ -570,6 +579,7 @@
       const activeVideo = currentActiveCard.querySelector('.reel-video');
       if (activeVideo && !isAudioMuted && activeVideo.muted) {
         activeVideo.muted = false;
+        gestureUnmuteAt = performance.now();
       }
       hideMutePill(currentActiveCard);
     }
@@ -587,6 +597,7 @@
       if (currentActiveCard) {
         const v = currentActiveCard.querySelector('.reel-video');
         if (v) {
+          if (v.muted) gestureUnmuteAt = performance.now();
           v.muted = false;
           v.play().catch(() => {});
         }
@@ -1226,8 +1237,17 @@
               if (myGen !== navGen || currentActiveCard !== card) return;
               syncImmersive();
               showMutePill(card);
-            }).catch(() => {
+            }).catch((err2) => {
               if (myGen !== navGen || currentActiveCard !== card) return;
+              mtrace(`play-reject2 idx=${card.dataset.index} err=${err2 && err2.name}`);
+              // Total playback failure (e.g. Low Power Mode rejects even muted
+              // programmatic play): leave a visible tap affordance. The next
+              // tap resumes through the normal manual path.
+              const icon = card.querySelector('.play-indicator');
+              if (icon) {
+                icon.textContent = '▶';
+                icon.classList.add('visible');
+              }
               syncImmersive();
             });
           });
@@ -1335,6 +1355,11 @@
 
       // P7: Tap card to toggle play/pause with 280ms debounce so double-tap cancels single-tap
       card.addEventListener('click', (e) => {
+        // Same-gesture unmute capture: if this tap's touchstart already
+        // restored sound, the pending single-tap must not ALSO pause. Consumed
+        // here (not in the timer) so only this gesture's toggle is suppressed.
+        const tapUnmutedAt = gestureUnmuteAt;
+        gestureUnmuteAt = 0;
         // Hold-2x release clicks are swallowed here, but the flag is LEFT SET:
         // the card handler fires before the bubbled feed handler, which must
         // still see it to consume the tap — clearing here seeded phantom
@@ -1357,6 +1382,13 @@
           // Latched 2x exit: a right-zone tap only exits boost, never pauses.
           if (latchedBoostCard === card && clickX > window.innerWidth * HOLD_ZONE) {
             exitBoost(video);
+            return;
+          }
+          // Tap-to-unmute: this gesture already restored sound on a playing
+          // video, so the tap meant "sound", not "pause" — keep playing. A
+          // paused video still resumes (never a dead tap). The 1500ms bound
+          // keeps a stale capture from eating an unrelated later pause.
+          if (tapUnmutedAt && performance.now() - tapUnmutedAt < 1500 && !video.paused) {
             return;
           }
           if (video.paused) {
