@@ -71,7 +71,7 @@ def test_dead_cards_marked_without_hijack():
     block = js[start:start + 1600]
     assert "wasCurrent" in block
     assert block.index("const cards = visibleCards()") < block.index("card.dataset.dead = '1'")
-    err = js[js.index("media error listener"):js.index("media error listener") + 300]
+    err = js[js.index("media error listener"):js.index("media error listener") + 500]
     assert "skipDeadCard(card, 'media error')" in err
     assert "if (card ===" not in err
 
@@ -103,3 +103,30 @@ def test_toast_timer_single_flight():
     js = _js()
     assert "toastTimer" in js
     assert "clearTimeout(toastTimer)" in js
+
+
+def test_mediadebug_tracer_present_and_gated():
+    # Field diagnosis overlay: present, strictly query-flag gated, and wired
+    # through every playback decision point (play/nav/pause/reject/event).
+    js = _js()
+    assert "mediadebug" in js
+    assert "mediaDebugOverlay" in js
+    assert "function mtrace" in js
+    assert js.count("mtrace(`") >= 12
+
+
+def test_manual_pause_cooldown_blocks_auto_resume():
+    # iOS tap-scroll-into-view must not auto-resume a tap-paused card;
+    # explicit tap resume bypasses via isManual.
+    js = _js()
+    assert "manualPause" in js
+    assert "MANUAL_PAUSE_COOLDOWN_MS" in js
+    assert "isManual" in js
+    assert "playCardVideo(card, true)" in js
+
+
+def test_ready_waiter_cleared_on_src_detach():
+    # A waiter token must never outlive its fetch: cleared on ready, on
+    # error, and wherever src is detached (sliding window, filter hide).
+    js = _js()
+    assert js.count("delete video.dataset.readyWaiter") >= 4

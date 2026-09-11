@@ -33,10 +33,36 @@
     let isScrollingTransition = false;
     let currentActiveCard = null;
     let navGen = 0;
+    // Media-debug overlay (?mediadebug=1): ring buffer of playback events for
+    // field diagnosis, rendered on-screen so a screenshot captures it. Zero
+    // impact when the flag is absent (a single boolean per call site).
+    const MEDIA_DEBUG = new URLSearchParams(location.search).has('mediadebug');
+    const mediaTrace = [];
+    let traceEl = null;
+    function mtrace(evt) {
+      if (!MEDIA_DEBUG) return;
+      const t = new Date();
+      const stamp = `${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}.${String(t.getMilliseconds()).padStart(3, '0')}`;
+      mediaTrace.push(`${stamp} ${evt}`);
+      if (mediaTrace.length > 80) mediaTrace.shift();
+      if (!traceEl) {
+        traceEl = document.createElement('div');
+        traceEl.id = 'mediaDebugOverlay';
+        traceEl.style.cssText = 'position:fixed;left:0;right:0;bottom:0;max-height:38vh;overflow:hidden;z-index:9999;pointer-events:none;background:rgba(0,0,0,.82);color:#7CFC98;font:10px/1.5 monospace;white-space:pre-wrap;padding:6px 8px;';
+        document.body.appendChild(traceEl);
+      }
+      traceEl.textContent = mediaTrace.slice(-25).join('\n');
+    }
     let lastProgressAt = performance.now();
     let lastProgressTime = -1;
     let pendingSingleTapTimer = null;
     let isInitialLaunch = true;
+    // Manual-pause cooldown: a tap-paused card stays paused until tap-resumed.
+    // (iOS Safari scrolls tapped content into view; without this, the
+    // resulting observer/settle drive re-runs playCardVideo and undoes the
+    // pause ~80-300ms later.)
+    let manualPause = { card: null, at: 0 };
+    const MANUAL_PAUSE_COOLDOWN_MS = 1500;
 
     // Current Week ID & Week-Scoped LocalStorage Keys
     const currentWeekId = {{ week_id|default('current')|tojson }};
@@ -835,6 +861,7 @@
     // P1: Discrete Navigation with Generation Counter + Instant Scroll & Forward Watch Tracking
     function goToCard(card, options = {}) {
       if (!card) return;
+      mtrace(`goto idx=${card.dataset.index}`);
       const gen = ++navGen;
       const shouldPlay = (options.play !== false);
       const vCards = visibleCards();
@@ -983,6 +1010,7 @@
             if (video.getAttribute('src')) {
               video.removeAttribute('src');
               delete video.dataset.warmed;
+              delete video.dataset.readyWaiter;
               video.load();
             }
           }
@@ -1089,6 +1117,7 @@
             video.pause();
             video.removeAttribute('src');
             delete video.dataset.warmed;
+            delete video.dataset.readyWaiter;
             video.load();
           }
         }
@@ -1096,8 +1125,12 @@
     }
 
     // Video Playback, Resilient iOS Fast-Scrolling & Fullscreen State (Requirements 3 & 4)
-    function playCardVideo(card) {
+    function playCardVideo(card, isManual = false) {
       if (!card || card.dataset.dead) return;
+      // Manual-pause cooldown blocks auto paths (observer, settle, advance);
+      // explicit tap resume passes isManual and always goes through.
+      if (!isManual && manualPause.card === card &&
+          performance.now() - manualPause.at < MANUAL_PAUSE_COOLDOWN_MS) return;
       // Redundant same-card drive (observer + scroll settle): already playing
       // means setup is complete — return WITHOUT bumping navGen so the
       // in-flight call's generation (and any pending auto-advance) survives.
@@ -1109,6 +1142,8 @@
       // Hold-2x is scoped to one reel: changing cards clears the latch.
       if (currentActiveCard !== card) latchedBoostCard = null;
       currentActiveCard = card;
+      if (manualPause.card !== card) manualPause = { card: null, at: 0 };
+      mtrace(`playcard idx=${card.dataset.index} gen=${myGen}`);
       document.querySelectorAll('.reel-card.is-active').forEach(c => {
         if (c !== card) c.classList.remove('is-active');
       });
@@ -1149,6 +1184,7 @@
           const v = c.querySelector('.reel-video');
           if (v && !v.paused) {
             v.pause();
+            mtrace(`pausing-neighbor idx=${c.dataset.index}`);
             // Fast-scroll race guard: setting currentTime while readyState is
             // HAVE_NOTHING throws InvalidStateError, which used to abort this
             // function before the new card's triggerPlay ran — the settled
@@ -1169,16 +1205,19 @@
 
       const triggerPlay = () => {
         if (myGen !== navGen || currentActiveCard !== card) return;
+        mtrace(`doplay idx=${card.dataset.index} rs=${video.readyState}`);
         const playPromise = video.play();
         if (playPromise !== undefined) {
           playPromise.then(() => {
             if (myGen !== navGen || currentActiveCard !== card) return;
+            mtrace(`play-ok idx=${card.dataset.index}`);
             syncImmersive();
           }).catch((err) => {
             // Superseded by a newer card (fast scroll): the newer
             // playCardVideo owns playback — never mute or replay this stale
             // card in the background.
             if (myGen !== navGen || currentActiveCard !== card) return;
+            mtrace(`play-reject idx=${card.dataset.index} err=${err && err.name}`);
             // Interrupted play request, not a policy block: nothing to do.
             if (err && err.name === 'AbortError') return;
             // P5: If browser restricts unmuted autoplay, mute and show mute pill
@@ -1208,6 +1247,7 @@
           if (video.dataset.readyWaiter !== String(myGen)) return;
           delete video.dataset.readyWaiter;
           if (myGen !== navGen || currentActiveCard !== card) return;
+          mtrace(`ready idx=${card.dataset.index}`);
           triggerPlay();
         };
         const alreadyLoading = !!video.dataset.readyWaiter && video.networkState === 2;
@@ -1244,6 +1284,8 @@
       // P2: media error listener marks the card dead immediately, active or not
     // (skipDeadCard only navigates away when the dead card is current).
       video.addEventListener('error', () => {
+        mtrace(`ev-error idx=${card.dataset.index}`);
+        delete video.dataset.readyWaiter;
         skipDeadCard(card, 'media error');
       });
 
@@ -1254,6 +1296,7 @@
 
       // Auto-immersive: play hides chrome + scrim, pause restores them.
       video.addEventListener('play', () => {
+        mtrace(`ev-play idx=${card.dataset.index} cur=${card === currentActiveCard}`);
         if (card === currentActiveCard) {
           syncImmersive();
           if (playIcon) playIcon.classList.remove('visible');
@@ -1261,6 +1304,7 @@
       });
 
       video.addEventListener('pause', () => {
+        mtrace(`ev-pause idx=${card.dataset.index} cur=${card === currentActiveCard} t=${video.currentTime.toFixed(1)}`);
         if (card === currentActiveCard) {
           syncImmersive();
         }
@@ -1316,12 +1360,14 @@
             return;
           }
           if (video.paused) {
-            playCardVideo(card);
+            manualPause = { card: null, at: 0 };
+            playCardVideo(card, true);
             playIcon.textContent = '▶';
             playIcon.classList.add('visible');
             setTimeout(() => playIcon.classList.remove('visible'), 400);
           } else {
             video.pause();
+            manualPause = { card, at: performance.now() };
             syncImmersive();
             playIcon.textContent = '❚❚';
             playIcon.classList.add('visible');
@@ -1340,6 +1386,7 @@
 
     // P1: Discrete Advance to Next Card
     function advanceToNextReel(currentCard) {
+      mtrace(`adv from idx=${currentCard && currentCard.dataset.index}`);
       const vCards = visibleCards();
       const currentIndex = vCards.indexOf(currentCard);
 
@@ -1592,6 +1639,7 @@
       if (isScrollingTransition) return;
       entries.forEach(entry => {
         if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+          mtrace(`io idx=${entry.target.dataset.index} ratio=${entry.intersectionRatio.toFixed(2)}`);
           playCardVideo(entry.target);
         }
       });
@@ -1628,6 +1676,7 @@
           markAsWatched(currentActiveCard.dataset.id);
           currentActiveCard.dataset.markedWatched = 'true';
         }
+        mtrace(`settle idx=${closestCard.dataset.index}`);
         playCardVideo(closestCard);
       }
     }
