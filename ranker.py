@@ -10,6 +10,7 @@ import statistics
 from datetime import datetime, timezone
 from typing import Any
 
+import atomic_io
 import config
 
 logger = logging.getLogger("InstagramDigest.Ranker")
@@ -257,14 +258,13 @@ def save_digest_batch(ranked_items: list[dict[str, Any]], run_date: str | None =
         "count": len(ranked_items),
         "items": ranked_items,
     }
-    payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
-    config.DIGEST_BATCH_FILE.write_text(payload_json, encoding="utf-8")
+    atomic_io.durable_write_json(config.DIGEST_BATCH_FILE, payload)
 
     # Also archive by week_id for multi-week switching
     if hasattr(config, "DIGESTS_DIR"):
         config.DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
         archive_path = config.DIGESTS_DIR / f"{run_date}.json"
-        archive_path.write_text(payload_json, encoding="utf-8")
+        atomic_io.durable_write_json(archive_path, payload)
 
     logger.info("Saved Top %d digest batch to %s", len(ranked_items), config.DIGEST_BATCH_FILE)
     return config.DIGEST_BATCH_FILE

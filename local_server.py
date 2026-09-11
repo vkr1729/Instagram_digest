@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
+import atomic_io
 import config
 import extractor
 
@@ -27,6 +28,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 _STATE_LOCK = threading.Lock()
 _SYNC_LOCK = threading.Lock()
+# Mutual exclusion across sync AND expand pipelines: only one digest-mutating
+# pipeline may run at a time (they share DIGEST_BATCH_FILE, videos/, and R2).
+_PIPELINE_LOCK = threading.Lock()
 _SYNC_STATE: dict[str, Any] = {
     "is_running": False,
     "status": "idle",
@@ -34,6 +38,19 @@ _SYNC_STATE: dict[str, Any] = {
     "last_result": None,
     "last_error": None,
 }
+
+
+def _pipeline_busy() -> bool:
+    """True when either pipeline holds the shared digest-mutating lock."""
+    if _PIPELINE_LOCK.locked():
+        return True
+    with _SYNC_LOCK:
+        if _SYNC_STATE["is_running"]:
+            return True
+    with _EXPAND_LOCK:
+        if _EXPAND_STATE["is_running"]:
+            return True
+    return False
 
 
 def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
@@ -50,6 +67,18 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 "last_run": main_module.get_last_run_info(),
             }
 
+    if not _PIPELINE_LOCK.acquire(blocking=False):
+        with _SYNC_LOCK:
+            snapshot = dict(_SYNC_STATE)
+        return {
+            "success": True,
+            "status": "already_running",
+            "message": "Another pipeline (sync or expand) is already running.",
+            "sync_state": snapshot,
+            "last_run": main_module.get_last_run_info(),
+        }
+
+    with _SYNC_LOCK:
         _SYNC_STATE["is_running"] = True
         _SYNC_STATE["status"] = "running"
         _SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -92,6 +121,11 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 _SYNC_STATE["is_running"] = False
                 _SYNC_STATE["status"] = "failed"
                 _SYNC_STATE["last_error"] = str(exc)
+        finally:
+            try:
+                _PIPELINE_LOCK.release()
+            except RuntimeError:
+                pass
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -128,6 +162,17 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
                 "state": dict(_EXPAND_STATE),
             }
 
+    if not _PIPELINE_LOCK.acquire(blocking=False):
+        with _EXPAND_LOCK:
+            snapshot = dict(_EXPAND_STATE)
+        return {
+            "success": True,
+            "status": "already_running",
+            "message": "Another pipeline (sync or expand) is already running.",
+            "state": snapshot,
+        }
+
+    with _EXPAND_LOCK:
         _EXPAND_STATE["is_running"] = True
         _EXPAND_STATE["status"] = "running"
         _EXPAND_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -155,6 +200,11 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
                 _EXPAND_STATE["is_running"] = False
                 _EXPAND_STATE["status"] = "failed"
                 _EXPAND_STATE["last_error"] = str(exc)
+        finally:
+            try:
+                _PIPELINE_LOCK.release()
+            except RuntimeError:
+                pass
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -168,11 +218,29 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
-    """Safely write JSON to disk via atomic replace under process/thread uniqueness."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}_{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    """Crash-safe JSON write: temp + flush + fsync + atomic replace + dir fsync."""
+    atomic_io.durable_write_json(path, data)
+
+
+def _load_json_tolerant(path: Path, default: Any) -> Any:
+    """Load JSON, quarantining corrupt files instead of silently discarding them.
+
+    A corrupt state file previously parsed as empty (silent state wipe).
+    Now the corrupt bytes are preserved alongside for forensics.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+    except Exception as exc:
+        try:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = path.with_name(f"{path.name}.corrupt-{ts}")
+            shutil.copy2(path, backup)
+            logger.warning("Quarantined corrupt %s to %s: %s", path, backup, exc)
+        except Exception:
+            logger.warning("Unreadable %s; starting fresh: %s", path, exc)
+        return default
 
 
 class LocalDigestHandler(SimpleHTTPRequestHandler):
@@ -385,12 +453,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if clean_path == "/api/watched":
             query = parse_qs(parsed.query)
             week_id = query.get("week_id", ["default"])[0]
-            watched_data = {}
-            if config.WATCHED_FILE.exists():
-                try:
-                    watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+            watched_data = _load_json_tolerant(config.WATCHED_FILE, {})
             watched_list = watched_data.get(week_id, [])
             body = json.dumps({"watched": watched_list}).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -402,12 +465,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
         # API Blacklist route -> /api/blacklist
         if clean_path == "/api/blacklist":
-            data = {"creators": []}
-            if config.BLACKLIST_FILE.exists():
-                try:
-                    data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+            data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
             body = json.dumps(data).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
@@ -466,18 +524,12 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if clean_path == "/api/channels":
             sources = []
             if config.SOURCES_FILE.exists():
-                try:
-                    sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+                sources = _load_json_tolerant(config.SOURCES_FILE, [])
 
             blacklist = set()
             if config.BLACKLIST_FILE.exists():
-                try:
-                    b_data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
-                    blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
-                except Exception:
-                    pass
+                b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
+                blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
 
             source_map = {}
             for s in sources:
@@ -571,12 +623,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             reel_id = payload.get("reel_id")
 
             with _STATE_LOCK:
-                watched_data = {}
-                if config.WATCHED_FILE.exists():
-                    try:
-                        watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
+                watched_data = _load_json_tolerant(config.WATCHED_FILE, {})
 
                 if action == "reset":
                     watched_data[week_id] = []
@@ -610,12 +657,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             watched_ids = payload.get("watched_ids", [])
 
             with _STATE_LOCK:
-                watched_data = {}
-                if config.WATCHED_FILE.exists():
-                    try:
-                        watched_data = json.loads(config.WATCHED_FILE.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
+                watched_data = _load_json_tolerant(config.WATCHED_FILE, {})
 
                 current_set = set(watched_data.get(week_id, []))
                 for wid in watched_ids:
@@ -649,12 +691,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             action = payload.get("action", "add")
 
             with _STATE_LOCK:
-                data = {"creators": []}
-                if config.BLACKLIST_FILE.exists():
-                    try:
-                        data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
+                data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
 
                 creators = set(c.lower().replace("@", "") for c in data.get("creators", []))
                 if action == "remove":
@@ -672,7 +709,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 # Also remove creator from sources.json so it never syncs or extracts again
                 if handle and action == "add" and config.SOURCES_FILE.exists():
                     try:
-                        sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                        sources = _load_json_tolerant(config.SOURCES_FILE, [])
                         new_sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") != handle]
                         _atomic_write_json(config.SOURCES_FILE, new_sources)
                         logger.info("Removed @%s from sources.json permanently.", handle)
@@ -701,21 +738,13 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             clean_handles = set(h.lower().replace("@", "").strip() for h in handles_in if h)
 
             with _STATE_LOCK:
-                b_data = {"creators": []}
-                if config.BLACKLIST_FILE.exists():
-                    try:
-                        b_data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
+                b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
 
                 blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
 
                 sources = []
                 if config.SOURCES_FILE.exists():
-                    try:
-                        sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
+                    sources = _load_json_tolerant(config.SOURCES_FILE, [])
 
                 if action == "add":
                     blacklist.update(clean_handles)

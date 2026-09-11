@@ -1,196 +1,162 @@
-# Instagram Digest — System Architecture & Technical Rationale
+# Instagram Digest — Architecture
 
-> **Audience & Purpose:**  
-> This architectural design document details the end-to-end topography, mechanical invariants, and design trade-offs of the **Instagram Digest** platform. It is explicitly tailored for deep technical review by principal software architects and frontier AI reasoning models to stress-test design choices, evaluate edge cases, and propose high-leverage optimizations.
+> Status: post-hardening revision (2026-09-11). Supersedes all earlier
+> revisions. Where this document and code disagree, the code wins; where it
+> and `CHANGELOG.md` disagree on history, the changelog wins.
+> Review baseline: pre-fix adversarial score F/39 → post-fix B+/87.
 
----
+## 1. What the system is
 
-## 1. Domain Problem & Design Principles
+Instagram Digest converts an unbounded algorithmic Reels feed into a finite
+weekly briefing: top 300 reels (expandable by +100), ranked by
+creator-normalized viral score, delivered as a zero-dependency static PWA.
 
-### 1.1 The Behavioral Problem
-Modern social video feeds (Instagram Reels, TikTok, YouTube Shorts) are architected around variable-ratio dopamine schedules, infinite scroll mechanics, and engagement algorithms that optimize for platform time-on-app rather than signal-to-noise ratio. Users seeking educational, technical, or creative updates from specific creators are inevitably pulled into doom-scrolling.
+Hard constraints the architecture serves:
 
-### 1.2 The Core Solution
-**Instagram Digest** transforms Instagram Reels into a **finite, structured, high-signal weekly media briefing**:
-1. **Finite Quota:** Exactly 300 top-ranked reels per week (with an optional on-demand `+100` expansion on desktop).
-2. **Anti-Doomscroll Watched State:** Watched reels are tracked in local storage and excluded from playback; completing the digest displays a celebratory terminal screen (*"You're all caught up! 🎉"*).
-3. **Daily Mindful Check-in:** A gentle nudge at 50 reels in a single calendar day promotes conscious media consumption without hard lockouts.
-4. **Zero Cloud Infrastructure Fees:** Cloudflare R2 provides S3-compatible storage with **$0 egress fees**, paired with GitHub Pages for high-availability static web hosting.
-5. **Zero-Roundtrip PWA:** The published viewer is compiled into an atomic, single-document Progressive Web App with zero external CSS/JS dependencies, complete with Service Worker media caching and HTTP 206 byte-range slicing for offline flight mode.
+- **$0 marginal cost.** R2 ($0 egress) + GitHub Pages. Repo stays ~2 MB.
+- **Finite by construction.** Watched state + "All Caught Up" terminal.
+- **Stable links.** Instagram CDN URLs expire in hours; R2 URLs live all week.
+- **Offline on iOS.** Service Worker + CacheStorage + synthetic HTTP 206.
 
----
-
-## 2. End-to-End Pipeline Topography
+## 2. Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             INGESTION LAYER                                 │
-│                                                                             │
-│   [ Chrome SQLite / Session Cookies ]                                       │
-│                    │                                                        │
-│                    ▼                                                        │
-│           cookie_exporter.py                                                │
-│                    │                                                        │
-│                    ▼ (Netscape cookies.txt / Playwright cookies.json)        │
-│              extractor.py                                                   │
-│        ┌───────────┴───────────────────────────────┐                        │
-│        ▼                                           ▼                        │
-│   Tracked Creators                          External Discovery              │
-│   (Profile Scraping)                        (Reels Feed Crawl)              │
-│   - Following list sync                     - Visible likes ≥ 25,000        │
-│   - 7-day candidate window                  - Human jitter: 2.8s – 4.8s     │
-│   - Direct CDN / yt-dlp                     - 12s cooldown every 25 reels   │
-└────────────────────────────────────┬────────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             RANKING LAYER                                   │
-│                                                                             │
-│                                ranker.py                                    │
-│   - Engagement Multiplier: V_reel / Median(V_creator)                       │
-│   - Anti-Monopoly Guard: Max 4 reels per creator                            │
-│   - Proportional Category Quotas (40% Ent, 15% Fin, 15% Tech, 10% Niche...) │
-│   - Append-Only Invariance on Expansion: Tail insertion (#258 – #300)        │
-└────────────────────────────────────┬────────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             STORAGE LAYER                                   │
-│                                                                             │
-│                              storage_r2.py                                  │
-│   - Cloudflare R2 Object Storage (S3 API, $0 Egress Bandwidth)              │
-│   - Content-Addressed Asset Invariance: Deduplication by Immutable Reel ID  │
-│   - Rolling Retention Purge: Automatic cleanup of media > 14 days           │
-│   - Orphan Object Pruner: Garbage-collects unreferenced video assets        │
-└────────────────────────────────────┬────────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            BUILD & DELIVERY                                 │
-│                                                                             │
-│                             site_builder.py                                 │
-│   - Inlined Modular Jinja Partials (styles.css, player.js, header, feed...) │
-│   - Static Asset Optimization (Thumbnails, WebManifest, Icons)              │
-│   - Atomic Compilation: Outputs site/index.html & site/local_index.html     │
-│   - Direct Git Push to GitHub Pages (orphan gh-pages branch)                │
-└────────────────────────────────────┬────────────────────────────────────────┘
-                                     │
-         ┌───────────────────────────┴───────────────────────────┐
-         ▼                                                       ▼
-┌───────────────────────────────────┐   ┌────────────────────────────────────┐
-│      GITHUB PAGES & PWA           │   │     LOCAL DESKTOP COMPANION        │
-│                                   │   │                                    │
-│  - Static Atomic Index (HTML/CSS) │   │  - local_server.py (Port 8080)     │
-│  - sw.js HTTP 206 Partial Slicing │   │  - RFC 7233 Byte-Range Video Stream│
-│  - Native Instagram Floating HUD  │   │  - Channel Manager (/channels)     │
-│  - Strict object-fit: contain     │   │  - Ad-hoc Sync & Expand Triggers   │
-│  - Sliding Window Memory Cleanup  │   │  - Launch Script (launch.sh)       │
-└───────────────────────────────────┘   └────────────────────────────────────┘
+Chrome cookies → cookie_exporter.py → extractor.py ─┬─ tracked creators
+                                                     └─ feed discovery
+        → ranker.py → main.py (download pool) → storage_r2.py (R2)
+        → ranker.save_digest_batch → site_builder.py → site/
+        → gh-pages  …  local_server.py serves / builds locally
 ```
 
----
+Stage contracts:
 
-## 3. Deep Architectural Choices & Rationale
+1. **Ingest** (`extractor.py`, `cookie_exporter.py`). No login automation;
+   reuses the user's Chrome session. Emits candidate reels with
+   best-effort metadata.
+2. **Rank** (`ranker.py`). Pure function of candidates + sources. Bayesian-
+   damped viral score, fair-share caps (max 4/creator), category quotas,
+   deterministic shuffle. Assigns final ranks.
+3. **Materialize** (`main.py` + `storage_r2.py`). Downloads, uploads,
+   drops unplayables. The digest file is written only after filtering, so
+   the manifest never references missing media.
+4. **Build** (`site_builder.py`). Jinja partials → atomic `index.html` +
+   `local_index.html` + share pages + `data.json`. Cards without a
+   playable URL are never rendered.
+5. **Serve** (`local_server.py` locally; GitHub Pages + `sw.js` remotely).
 
-### 3.1 Session Extraction & Anti-Bot Evasion (`cookie_exporter.py`, `extractor.py`)
+## 3. Decisions that matter
 
-#### Decision: Direct Browser Cookie Extraction vs. Headless Login Automation
-* **Choice:** Extract active authentication tokens (`sessionid`, `csrftoken`, `ds_user_id`) directly from the user's local Google Chrome SQLite profile (`cookie_exporter.py`), exporting into dual formats: Netscape `cookies.txt` (for `yt-dlp`) and JSON format (for Playwright).
-* **Rationale:** Instagram's bot detection systems employ aggressive device fingerprinting, TLS JA3/JA4 fingerprint analysis, and CAPTCHA challenges during automated login flows. By piggybacking on a pre-authenticated user session from an established desktop browser, we bypass the entire login challenge surface with zero credential storage in plain text.
-* **Failure Circuit Breaker:** When cookies expire, the system raises `CookieExpiredException`, sends an email notification via `notifier.py`, and aborts rather than triggering challenge loops.
+### 3.1 Extraction without login (`cookie_exporter.py`)
 
-#### Decision: Pacing & Anti-Detection Architecture for Feed Discovery
-* **Choice:** 
-  1. High-signal pre-filter: Visible likes $\ge 25,000$ (or comments $\ge 150$ if likes are hidden).
-  2. Randomized humanized scroll jitter: `time.sleep(random.uniform(2.8, 4.8))`.
-  3. Cooldown pause: Forced `time.sleep(12.0)` rest every 25 evaluated reels.
-* **Rationale:** Automated scrapers that issue constant-frequency keystrokes or scrolls at superhuman velocity (>1 scroll/sec) are immediately flagged by Instagram's behavioral telemetry. Emulating the distribution of a human user browsing the feed prevents IP rate-limiting, shadowbanning, and session invalidation.
-* **Context Recycling:** Playwright contexts are recycled every 40 navigations to eliminate Chromium memory leaks and detached DOM retention.
+Choice: read the local Chrome SQLite profile, export Netscape + Playwright
+JSON. Rationale: Instagram's login surface (2FA, CAPTCHA, TLS heuristics)
+is the highest-risk automation point; a pre-authenticated session skips it
+entirely. Expiry raises `CookieExpiredException` → email alert → abort, so
+the pipeline never challenge-loops.
 
----
+### 3.2 Anti-bot pacing (post-fix)
 
-### 3.2 Media Delivery & Asset Invariance (`storage_r2.py`, `main.py`)
+Choice: Gaussian `human_pause()` (10% long tail) everywhere; randomized
+cooldowns (every 18–32 evals, N(12,3)s); per-context UA/viewport/locale/
+timezone rotation from a Chrome-only pool; webdriver-mask init script;
+enrichment capped at 2 pooled browsers with exclusive checkout; API
+pagination with truncated exponential backoff.
 
-#### Decision: Cloudflare R2 vs. AWS S3 / Git LFS / Direct CDN
-* **Choice:** Cloudflare R2 object storage with S3-compatible API.
-* **Rationale:**
-  1. **Egress Economics:** AWS S3 charges $0.09/GB for egress. Streaming 300 high-definition reels (~2.5 GB) across multiple devices weekly would incur substantial ongoing bandwidth costs. Cloudflare R2 has **$0 egress fees**, enabling free high-bandwidth video streaming indefinitely.
-  2. **Storage Limits:** Committing videos to Git or GitHub Pages would violate repository storage limits (1 GB soft cap on GitHub Pages). R2 keeps the repository strictly code-only (~2 MB).
-  3. **Direct Instagram CDN Links vs. R2:** Direct Instagram CDN URLs expire within hours due to signed security tokens (`?_nc_ht=...&oh=...`). Storing files in R2 ensures stable, immutable URLs across the entire 7-day digest window.
+Trade-off stated plainly: uniform jitter was a classifier feature, so it
+had to go. What remains is probabilistic defense, not proof — expect to
+tune against real 429s. Deliberately not done: cursor biometrics, full
+stealth frameworks (fragile, high-maintenance, marginal ROI at this scale).
 
-#### Decision: Content-Addressed Asset Invariance
-* **Choice:** Identify and index local and remote video assets by immutable entity ID (`{reel_id}.mp4` or `{creator_handle}_{reel_id}.mp4`) rather than ordinal rank numbers (`{rank:02d}_{handle}_{id}.mp4`).
-* **Rationale:** When an existing digest is expanded (e.g. +43 reels to reach 300, or +100 on desktop), ordinal ranks shift. If assets are named by ordinal prefix, the downloader would fail to find the existing local video and re-download it over the network. Under content-addressed lookup, `main.py` searches for `*_{reel_id}.mp4` before invoking network downloads, achieving **100% deduplication and zero redundant bandwidth consumption**.
+### 3.3 Parser resilience (post-fix)
 
----
+Choice: selector fallback chains, pure parse helpers (`_extract_shortcode`,
+`_parse_date_flexible` with naive-dates-pinned-to-UTC), canonical-link
+recovery, extended URL + soft-block (HTTP-200) detection, fail-closed
+empty grids.
 
-### 3.3 Frontend Architecture & Static PWA Compilation (`templates/`, `site_builder.py`)
+Rationale: every Instagram markup dependency is a silent-zero-items risk.
+The viability gate in `main.py` (candidate ratio + empty-creator ratio)
+remains the backstop that aborts a run before it touches the digest.
 
-#### Decision: Modular Jinja Partials with Compile-Time Inlining
-* **Choice:** 
-  - Authoring: Modular files in `templates/partials/`:
-    - `styles.css`: CSS tokens, layout, typography, animations (~870 lines).
-    - `player.js`: Video engine, gesture isolation, watched tracker, cache manager (~1,750 lines).
-    - `header.html`: Top chrome, story bubbles, action buttons.
-    - `feed.html`: Feed container and reel card loops.
-    - `modals.html`: Jump to reel, offline cache, mindful check-in.
-    - `viewer.html`: Concise 75-line skeleton.
-  - Compilation: Inlined via Jinja2 `{% include %}` into a single standalone document (`site/index.html`).
-* **Rationale:**
-  1. **Developer Ergonomics:** Editing separate CSS, JS, and HTML partials prevents monolithic file merge conflicts and cognitive overload.
-  2. **PWA Runtime Snappiness:** Separate HTTP assets (`index.html`, `style.css`, `bundle.js`) introduce network waterfalls, render-blocking delays, and asset version mismatches when updated. Inlining produces a single atomic document: **1 HTTP request loads 100% of the UI**.
-  3. **Offline Reliability:** Service Worker caching is simplified: caching `index.html` guarantees that CSS, JS, and HTML are always in complete lockstep, with zero partial-cache corruption risk.
+### 3.4 Durability (post-fix)
 
-#### Decision: Native Instagram Display Paradigm (`object-fit: contain` + Floating HUD)
-* **Choice:** Strict `object-fit: contain` on `.reel-video`, paired with a transparent floating HUD overlay (`rgba(0,0,0,0.38)` gradient, text drop-shadows `0 1px 3px rgba(0,0,0,0.95)`).
-* **Rationale:**
-  - Setting `object-fit: cover` to fill tall mobile screens (19.5:9) catastrophically crops 9:16 vertical videos and cuts off ~60% of horizontal landscape videos.
-  - Native Instagram handles aspect ratios by preserving native dimensions (`contain`) and floating metadata over the bottom with text drop shadows.
-  - Earlier iterations of this project placed an 88% opaque black gradient across the bottom 100px, which mimicked a heavy, artificial toolbar. The floating HUD restores native video real estate while maintaining legibility over bright video backgrounds.
+Choice: `atomic_io.durable_write_json` (temp + flush + fsync + replace +
+dir-fsync) for all state; one `_PIPELINE_LOCK` across sync/expand;
+corrupt files quarantined, never silently reset; R2 key-set access locked.
 
-#### Decision: Mobile WebKit Safe Area Clearance
-* **Choice:** `padding-bottom: max(56px, calc(env(safe-area-inset-bottom, 34px) + 16px))` on `.bottom-scrim`.
-* **Rationale:** In iOS Safari standalone PWA mode (added to Home Screen), `env(safe-area-inset-bottom)` can inconsistently evaluate to `0px` depending on WebKit version and display mode. Providing a hard minimum floor of `56px` guarantees that captions and badges never collide with or get obscured by the iOS Home Indicator bar.
+Rationale: the two worst pre-fix failure modes were torn digests and a
+pruner that treated them as truth. Durability is now structural, not
+conventional — no code path writes state any other way.
 
-#### Decision: Touch Gesture Isolation vs. WebKit Synthetic Clicks
-* **Choice:** Dedicated pointer tracking (`isPointerDown`, `pointermove` distance calculation) combined with a 500ms temporal scroll suppression window (`performance.now() - lastScrollTime < 500`).
-* **Rationale:** Mobile WebKit dispatches a synthetic `click` event ~150ms after finger release following a fast momentum scroll. Because the newly centered card begins auto-playing on arrival, the incoming synthetic click immediately paused the video. The dual guard ensures that swipe gestures never trigger playback toggle events.
+### 3.5 Storage identity: rank keys, id truth (post-fix)
 
----
+Choice: R2 object keys stay rank-prefixed (`{rank:02d}_{handle}_{id}.mp4`)
+for backward compatibility, but **all** matching logic (pruner, dedup) keys
+on `(week, reel-id)` suffix. `run_expand` is two-phase and append-only:
+existing ranks/keys are immutable; new keys derive from post-filter ranks.
 
-### 3.4 Service Worker & Offline Range Request Engine (`templates/sw.js`)
+Trade-off: re-ranks still churn key prefixes (quota cost only, correctness
+is unaffected). A hash-key migration would fix the churn; deferred as
+non-blocking.
 
-#### Decision: Synthetic HTTP 206 Partial Content Generation via `Blob.slice()`
-* **Choice:** Service Worker intercepts `.mp4` video requests, queries `CacheStorage`, and constructs synthetic HTTP `206 Partial Content` responses using zero-copy `Blob.slice()`.
-* **Rationale:**
-  - Mobile Safari/WebKit strictly requires HTTP 206 Partial Content responses with `Range`, `Content-Range`, and `Accept-Ranges: bytes` headers for media playback.
-  - Standard `CacheStorage.match()` returns a full HTTP 200 response. Passing HTTP 200 into an iOS `<video>` element fails or causes infinite stall loops.
-  - `sw.js` parses incoming `bytes=start-end` Range headers, slices the cached `Blob` without memory copies, and synthesizes compliant HTTP 206 responses.
+### 3.6 Static atomic PWA (`site_builder.py`, `templates/`)
 
-#### Decision: Dynamic Sliding Window Memory Virtualization
-* **Choice:** JavaScript virtualization window restricting loaded media to `[-2, +3]` cards around active index. Cards outside this window have their `src` removed and call `video.load()` to free GPU and RAM decode buffers.
-* **Rationale:** A 300-video feed cannot instantiate 300 active `<video>` decoders simultaneously without exceeding mobile RAM limits (resulting in iOS Safari `WebContent` process crashes). The sliding window caps active video instances to at most 5, ensuring smooth 60fps scrolling on resource-constrained devices.
+Choice: author in Jinja partials, ship one inlined document. One request
+loads 100% of UI; SW caching can't partially corrupt; no build toolchain.
 
----
+Security discipline (post-fix): no attacker-controlled value is ever
+interpolated into a JS string — feed handlers use `dataset`, share pages
+use `html.escape(quote=True)`, dynamic JS values use `|tojson`. There is
+an adversarial corpus test; any new interpolation must extend it.
 
-## 4. Architectural Decision Matrix & Trade-Offs
+### 3.7 Offline video (`sw.js`)
 
-| Decision Area | Selected Pattern | Alternative Considered | Trade-Off Rationale |
-| :--- | :--- | :--- | :--- |
-| **Media Hosting** | Cloudflare R2 | AWS S3 / Self-Hosted MinIO | R2 provides $0 egress fees; AWS S3 bandwidth costs scale linearly with video consumption. |
-| **Frontend Distribution** | Atomic Compiled PWA | Multi-file SPA (React/Vite) | Inlining eliminates asset waterfalls and build tool complexity; zero runtime overhead. |
-| **Video Scaling** | `object-fit: contain` | `object-fit: cover` | `cover` crops portrait videos and destroys landscape aspect ratios; `contain` preserves creator intent. |
-| **Expansion Strategy** | Append-only tail insertion | Global re-ranking | Appending preserves watched progress and active index; global re-ranking forces users to re-start from #1. |
-| **Authentication** | Local Chrome SQLite cookies | Headless credentials login | Bypasses Instagram 2FA, CAPTCHA, and TLS fingerprint heuristics completely. |
-| **PWA Video Cache** | Synthetic HTTP 206 in SW | Standard CacheStorage 200 | WebKit media pipeline fails on HTTP 200 for video; synthetic range slicing is mandatory for iOS offline playback. |
+Choice: intercept `.mp4`, slice from CacheStorage, synthesize RFC 7233
+ranges — including suffix ranges and real `416 + bytes */size`.
 
----
+Rationale: WebKit rejects 200s for media and stalls on clamped 1-byte
+206s. The range matrix is executed against the shipped file in Node, so
+regressions fail loudly. Known limit: full-blob materialization per seek;
+no physical-iOS observation yet.
 
-## 5. Review Inquiries for Frontier Reasoning Models
+### 3.8 Rendering performance (post-fix)
 
-When evaluating this repository, please direct adversarial focus to the following architectural vectors:
+Choice: `content-visibility: auto` + `contain` on cards, compositing layer
+only on `.is-active`, decoder release on filter-hide and outside the
+`[-2,+3]` sliding window, scroll-guarded tap handlers.
 
-1. **Anti-Detection Longevity:** Can Instagram's heuristics distinguish our randomized human pacing (2.8s–4.8s + 12s cooling every 25 reels) from genuine human consumption via mouse/keyboard dispatch in Playwright? What additional behavioral telemetry (e.g. cursor bezier curves, touch event distributions) would increase detection resistance?
-2. **WebKit Service Worker Reliability:** Are there edge cases where `Blob.slice()` byte-range calculation could mismatch Safari's internal media buffer expectations during rapid seeking or playback rate changes?
-3. **DOM Virtualization Scaling:** With 300 (or 400) `<article class="reel-card">` nodes in the DOM, does passive DOM node presence (even with videos unloaded) degrade scroll performance on low-end Android devices? Would a full virtual-scroll recycler (swapping DOM nodes entirely) provide measurable CWV benefits without compromising scroll snap?
-4. **State Synchronization:** Can the dual watched-state mechanism (`localStorage` on client, `data/watched.json` on local server) diverge during multi-device or offline PWA usage? What CRDT or timestamp-based reconciliation strategy would be most resilient?
+Rationale: 300 cards × listeners × layers is the actual mobile bottleneck,
+not network. A full DOM recycler stays rejected: intersection-driven
+`scrollIntoView` + containment gets most of the benefit at none of the
+complexity risk.
+
+## 4. Failure modes and backstops
+
+- Instagram blocks session → `InstagramBlocked`/`CookieExpiredException` →
+  abort without touching digest/site; viability gate catches silent zeros.
+- Upload fails → reel dropped from manifest AND site (never a dead card).
+- Digest corrupt → quarantined; pruner skips that week entirely.
+- Sync and expand collide → second caller gets `already_running`.
+- Deploy threshold: refuses to publish under 60% of target playable items.
+
+## 5. Verification (what "done" meant)
+
+- 84 non-browser tests green; 16 Playwright tests green on maintainer
+  hardware (sandbox kills browser processes with SIGTRAP — see CHANGELOG).
+- SW range logic executed in Node (12-case matrix), not just read.
+- Rendered bundle inspected: fix markers present, inline scripts pass
+  `node --check`.
+- Live server probed: 7/7 routes 200, watched round-trip, quarantine,
+  pipeline exclusion.
+
+## 6. Open questions for the next reviewer
+
+1. **Evasion economics.** Given real 429/soft-block logs (none exist yet —
+   add telemetry first), which is cheaper: slower pacing or more sessions?
+2. **Key migration.** Is hash-keyed R2 storage worth a one-time copy pass
+   over rank-prefix churn within a 5 GB quota?
+3. **SW memory.** Does per-seek blob materialization jank on a physical
+   iPhone SE during rapid scrub? Needs a device, not a theory.
+4. **State sync.** Watched state is per-device (`localStorage` + server
+   file). Is multi-device divergence a real user complaint before any
+   CRDT talk?

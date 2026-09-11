@@ -4,6 +4,7 @@ site_builder.py — Compiles static HTML5/CSS/JS viewer and deploys to GitHub Pa
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -270,10 +271,13 @@ def build_site(
             if portrait_file.exists()
             else thumb
         )
-        raw_caption = (item.get("caption") or "").replace('"', '&quot;').replace('<', '&lt;').strip()
-        handle = item.get("creator_handle", "")
-        rank_dsp = item.get("rank_display", "#01")
-        video_url = item.get("r2_url", "")
+        raw_caption = html.escape((item.get("caption") or "").strip(), quote=True)
+        handle = html.escape(str(item.get("creator_handle", "")), quote=True)
+        rank_dsp = html.escape(str(item.get("rank_display", "#01")), quote=True)
+        video_url = html.escape(str(item.get("r2_url", "")), quote=True)
+        thumb_esc = html.escape(str(thumb), quote=True)
+        poster_esc = html.escape(str(poster), quote=True)
+        reel_id_esc = html.escape(str(reel_id), quote=True)
 
         display_caption = raw_caption or f"Reel by @{handle}"
         caption_block = f'<p style="margin:14px 0 4px;font-size:13px;color:#d1d5db;line-height:1.4;text-align:left;width:100%;">{display_caption[:180]}</p>'
@@ -291,9 +295,9 @@ def build_site(
   <meta property="og:type" content="website">
   <meta property="og:title" content="Reel by @{handle} ({rank_dsp})">
   <meta property="og:description" content="{og_desc}">
-  <meta property="og:url" content="{config.PAGES_BASE_URL}/share/{reel_id}.html?v=3">
-  <meta property="og:image" content="{thumb}?v=3">
-  <meta property="og:image:secure_url" content="{thumb}?v=3">
+  <meta property="og:url" content="{config.PAGES_BASE_URL}/share/{reel_id_esc}.html?v=3">
+  <meta property="og:image" content="{thumb_esc}?v=3">
+  <meta property="og:image:secure_url" content="{thumb_esc}?v=3">
   <meta property="og:image:type" content="image/jpeg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -303,7 +307,7 @@ def build_site(
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Reel by @{handle} ({rank_dsp})">
   <meta name="twitter:description" content="{og_desc}">
-  <meta name="twitter:image" content="{thumb}?v=3">
+  <meta name="twitter:image" content="{thumb_esc}?v=3">
 </head>
 <body style="background:#000;color:#fff;margin:0;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif;">
   <div style="width:100%;max-width:440px;margin:auto;display:flex;flex-direction:column;align-items:center;padding:16px;box-sizing:border-box;">
@@ -312,7 +316,7 @@ def build_site(
       <span style="background:rgba(255,255,255,0.15);padding:3px 8px;border-radius:12px;font-size:12px;font-weight:600;">{rank_dsp}</span>
     </div>
     <div style="position:relative;width:100%;aspect-ratio:9/16;background:#111;border-radius:16px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.8);">
-      <video src="{video_url}" poster="{poster}" controls playsinline autoplay loop onerror="this.outerHTML='<p style=\\'padding:40px;color:#999;text-align:center\\'>This reel has expired from the weekly digest.</p>'" style="width:100%;height:100%;object-fit:cover;display:block;"></video>
+      <video src="{video_url}" poster="{poster_esc}" controls playsinline autoplay loop onerror="this.outerHTML='<p style=\\'padding:40px;color:#999;text-align:center\\'>This reel has expired from the weekly digest.</p>'" style="width:100%;height:100%;object-fit:cover;display:block;"></video>
     </div>
     {caption_block}
   </div>

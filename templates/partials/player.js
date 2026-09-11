@@ -39,7 +39,7 @@
     let isInitialLaunch = true;
 
     // Current Week ID & Week-Scoped LocalStorage Keys
-    const currentWeekId = "{{ week_id|default('current') }}";
+    const currentWeekId = {{ week_id|default('current')|tojson }};
     const STORAGE_KEY = 'ig_digest_watched_ids_' + currentWeekId;
     const LAST_WATCHED_KEY = 'ig_digest_last_watched_id_' + currentWeekId;
     const LAST_ACTIVE_KEY = 'ig_digest_last_active_id_' + currentWeekId;
@@ -595,6 +595,7 @@
     });
 
     feed.addEventListener('dblclick', (e) => {
+      if (isTouchSwiping || (performance.now() - lastScrollTime < 500)) return;
       if (e.target.closest('.creator-meta') || e.target.closest('.caption-snippet') || e.target.closest('button') || e.target.closest('.mute-pill')) return;
       handleDoubleAction(e.clientX, window.innerWidth);
     });
@@ -814,6 +815,10 @@
     function prepareCardVideoPaused(card) {
       if (!card || card.dataset.dead) return;
       currentActiveCard = card;
+      document.querySelectorAll('.reel-card.is-active').forEach(c => {
+        if (c !== card) c.classList.remove('is-active');
+      });
+      card.classList.add('is-active');
       document.getElementById('appShell').classList.remove('playback-active');
 
       if (card.dataset.index !== undefined) {
@@ -902,10 +907,17 @@
           matchingCards.push(card);
         } else {
           card.style.display = 'none';
+          card.classList.remove('is-active');
           const video = card.querySelector('video');
-          if (video) { 
-            video.pause(); 
-            video.currentTime = 0; 
+          if (video) {
+            video.pause();
+            video.currentTime = 0;
+            // Release the decoder for hidden cards (was: pause only, src kept).
+            if (video.getAttribute('src')) {
+              video.removeAttribute('src');
+              delete video.dataset.warmed;
+              video.load();
+            }
           }
         }
       });
@@ -1021,6 +1033,10 @@
       if (!card || card.dataset.dead) return;
       navGen++;
       currentActiveCard = card;
+      document.querySelectorAll('.reel-card.is-active').forEach(c => {
+        if (c !== card) c.classList.remove('is-active');
+      });
+      card.classList.add('is-active');
       lastProgressAt = performance.now();
       lastProgressTime = -1;
 

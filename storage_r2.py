@@ -13,11 +13,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import threading
+
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
 import config
+
+# Guards the check-then-add fast path on a shared existing_keys set passed
+# by multi-threaded upload callers (main.run_full_sync / run_expand).
+_R2_KEYS_LOCK = threading.Lock()
 
 logger = logging.getLogger("InstagramDigest.StorageR2")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -149,9 +155,14 @@ def purge_unreferenced_r2_videos() -> list[str]:
     if not s3:
         return []
 
-    # 1. Collect all referenced video keys across known digests
+    # 1. Collect referenced reel IDs across known digests.
+    # Matching is by (week, reel-id suffix), NOT by rank-prefixed key: ranks
+    # are display order and shift on re-rank/expand, while the reel id is
+    # stable. Exact rank-key matching mislabels live objects as orphans.
+    # A digest that fails to parse or holds zero items is NEVER ground truth
+    # for its week (a torn write must not mass-delete live objects).
     known_weeks: set[str] = set()
-    active_keys: set[str] = set()
+    active_ids_by_week: dict[str, set[str]] = {}
 
     digest_files = []
     if config.DIGESTS_DIR.exists():
@@ -162,21 +173,26 @@ def purge_unreferenced_r2_videos() -> list[str]:
     for df in digest_files:
         try:
             data = json.loads(df.read_text(encoding="utf-8"))
-            wk = data.get("run_date") or df.stem
-            if not wk or wk == "top100_digest":
-                continue
-            known_weeks.add(wk)
-            for item in data.get("items", []):
-                rank = item.get("rank", 1)
-                handle = item.get("creator_handle")
-                rid = item.get("id")
-                if handle and rid:
-                    active_keys.add(f"videos/{wk}/{rank:02d}_{handle}_{rid}.mp4")
         except Exception as exc:
-            logger.warning("Error reading digest %s during orphan purge: %s", df, exc)
+            logger.warning("Skipping unreadable digest %s during orphan purge: %s", df, exc)
+            continue
+        wk = data.get("run_date") or df.stem
+        items = data.get("items") or []
+        if not wk or wk == "top100_digest" or not items:
+            continue
+        known_weeks.add(wk)
+        week_ids = active_ids_by_week.setdefault(wk, set())
+        for item in items:
+            rid = item.get("id")
+            if rid:
+                week_ids.add(str(rid))
 
-    if not known_weeks:
+    if not known_weeks or not any(active_ids_by_week.values()):
         return []
+
+    def _is_referenced(key: str, week: str) -> bool:
+        ids = active_ids_by_week.get(week) or set()
+        return any(key.endswith(f"_{rid}.mp4") for rid in ids)
 
     # 2. Find orphan keys in known week prefixes
     orphan_keys: list[str] = []
@@ -186,19 +202,21 @@ def purge_unreferenced_r2_videos() -> list[str]:
             for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix=f"videos/{wk}/"):
                 for obj in page.get("Contents") or []:
                     k = obj.get("Key", "")
-                    if k and k.endswith(".mp4") and k not in active_keys:
+                    if k and k.endswith(".mp4") and not _is_referenced(k, wk):
                         orphan_keys.append(k)
 
-        # Batch delete in chunks of up to 1000 keys
+        # Batch delete in chunks of up to 1000 keys (verbose: surface errors)
         purged: list[str] = []
         for i in range(0, len(orphan_keys), 1000):
             chunk = orphan_keys[i : i + 1000]
             logger.info("Batch deleting %d unreferenced R2 video objects...", len(chunk))
-            s3.delete_objects(
+            resp = s3.delete_objects(
                 Bucket=config.R2_BUCKET_NAME,
-                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": False},
             )
-            purged.extend(chunk)
+            for err in resp.get("Errors") or []:
+                logger.error("Failed deleting orphan %s: %s", err.get("Key"), err.get("Message"))
+            purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []] or chunk)
 
         if purged:
             logger.info("Purged %d unreferenced video objects from Cloudflare R2.", len(purged))
@@ -288,9 +306,10 @@ def upload_reel_to_r2(
 
         # Check if already present on R2 (fast-path via pre-scanned keys or head_object)
         if existing_keys is not None:
-            if r2_key in existing_keys:
-                logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
-                return public_url
+            with _R2_KEYS_LOCK:
+                if r2_key in existing_keys:
+                    logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
+                    return public_url
         else:
             try:
                 s3.head_object(Bucket=config.R2_BUCKET_NAME, Key=r2_key)
@@ -309,7 +328,8 @@ def upload_reel_to_r2(
             )
             logger.info("Uploaded successfully: %s", public_url)
             if existing_keys is not None:
-                existing_keys.add(r2_key)
+                with _R2_KEYS_LOCK:
+                    existing_keys.add(r2_key)
             return public_url
         except Exception as exc:
             logger.error("Failed uploading to R2: %s", exc)

@@ -21,24 +21,59 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// RFC 7233 range handling: single byte-range-spec only (suffix, open-ended,
+// closed). Unsatisfiable or multipart ranges get 416 + `bytes */size` so
+// Safari AVFoundation seeks correctly instead of stalling on a 1-byte 206.
+function rangeNotSatisfiable(total) {
+  return new Response('Range Not Satisfiable', {
+    status: 416,
+    statusText: 'Range Not Satisfiable',
+    headers: {
+      'Content-Range': `bytes */${total}`,
+      'Accept-Ranges': 'bytes',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
 // Helper to construct a synthetic 206 Partial Content response using zero-copy Blob.slice
 function createPartialBlobResponse(blob, rangeHeader, contentType) {
   const total = blob.size;
-  const matches = rangeHeader ? rangeHeader.match(/bytes=(\d+)-(\d+)?/) : null;
-
-  let start = 0;
-  let end = total - 1;
-
-  if (matches) {
-    start = parseInt(matches[1], 10);
-    if (matches[2]) {
-      end = parseInt(matches[2], 10);
-    }
+  if (total === 0) {
+    return rangeNotSatisfiable(0);
   }
 
-  // Bound check
-  start = Math.max(0, Math.min(start, total - 1));
-  end = Math.max(start, Math.min(end, total - 1));
+  // Multipart ranges are not supported: fail per RFC 7233, never clamp.
+  const raw = (rangeHeader || '').trim();
+  if (raw.includes(',')) {
+    return rangeNotSatisfiable(total);
+  }
+
+  const matches = raw.match(/^bytes=(\d*)-(\d*)$/);
+  if (!matches || (matches[1] === '' && matches[2] === '')) {
+    return rangeNotSatisfiable(total);
+  }
+
+  let start;
+  let end;
+  if (matches[1] === '') {
+    // Suffix range: last N bytes.
+    const suffix = parseInt(matches[2], 10);
+    if (!suffix) {
+      return rangeNotSatisfiable(total);
+    }
+    start = Math.max(0, total - suffix);
+    end = total - 1;
+  } else {
+    start = parseInt(matches[1], 10);
+    end = matches[2] === '' ? total - 1 : parseInt(matches[2], 10);
+  }
+
+  // Unsatisfiable: start beyond EOF or inverted range -> 416, never 206.
+  if (start >= total || start > end) {
+    return rangeNotSatisfiable(total);
+  }
+  end = Math.min(end, total - 1);
   const chunk = blob.slice(start, end + 1);
 
   return new Response(chunk, {

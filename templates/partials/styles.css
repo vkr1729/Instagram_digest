@@ -503,6 +503,12 @@
       touch-action: pan-y;
     }
 
+    .reel-card {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 720px;
+      contain: layout style paint;
+    }
+
     .reel-video {
       width: 100%;
       height: 100%;
@@ -511,6 +517,10 @@
       margin: 0 auto;
       background: #000;
       display: block;
+    }
+
+    /* GPU compositing layer only for the actively playing card (was: every card). */
+    .reel-card.is-active .reel-video {
       transform: translateZ(0);
       will-change: transform;
     }

@@ -32,6 +32,48 @@ DEFAULT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# Per-context rotation pool (Chrome engine only: a non-Chrome UA on a
+# Chromium engine is itself a fingerprint mismatch). Keeps the automation
+# signal from being a single static string while staying engine-plausible.
+USER_AGENT_POOL = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+)
+
+VIEWPORT_POOL = ((1280, 800), (1366, 768), (1440, 900), (1536, 864), (1920, 1080))
+LOCALE_POOL = ("en-US", "en-GB")
+TIMEZONE_POOL = ("America/New_York", "Europe/London", "Asia/Kolkata")
+
+# Minimal webdriver-masking init script (hides the most trivial headless
+# signals; not a full stealth framework, but removes the zero-effort tells).
+STEALTH_INIT_SCRIPT = """() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    if (!window.chrome) { window.chrome = { runtime: {} }; }
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+  } catch (e) {}
+}"""
+
+
+def human_pause(mu: float = 3.8, sigma: float = 1.1, floor: float = 1.5) -> float:
+    """Sleep a Gaussian-distributed human-like pause with an occasional long tail.
+
+    Uniform fixed-range jitter is a classifier feature; Gaussian + 10%
+    long-tail pauses mimic real reading dwell time. Returns seconds slept.
+    """
+    pause = max(floor, random.gauss(mu, sigma))
+    if random.random() < 0.10:
+        pause += random.uniform(4.0, 9.0)
+    time.sleep(pause)
+    return pause
+
 
 def get_cookie_args() -> list[str]:
     """Determine best available cookie argument: cookies.txt or browser cookies."""
@@ -185,14 +227,32 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
 
             max_id = None
             page_count = 0
+            api_failures = 0
             while True:
                 url = f"https://www.instagram.com/api/v1/friendships/{user_id}/following/?count=100"
                 if max_id:
                     url += f"&max_id={max_id}"
-                resp = requests.get(url, headers=headers, cookies=cookies_dict, timeout=15)
+                try:
+                    resp = requests.get(url, headers=headers, cookies=cookies_dict, timeout=15)
+                except Exception as req_exc:
+                    api_failures += 1
+                    if api_failures > 3:
+                        logger.warning("Following API unreachable after 3 attempts: %s", req_exc)
+                        break
+                    backoff = min(60.0, 2.0 ** api_failures + random.uniform(0, 1))
+                    logger.warning("Following API error (%s); backing off %.1fs.", req_exc, backoff)
+                    time.sleep(backoff)
+                    continue
                 if resp.status_code != 200:
-                    logger.warning("Following API returned %d: %s", resp.status_code, resp.text[:100])
-                    break
+                    api_failures += 1
+                    if api_failures > 3:
+                        logger.warning("Following API returned %d: %s", resp.status_code, resp.text[:100])
+                        break
+                    backoff = min(60.0, 2.0 ** api_failures + random.uniform(0, 1))
+                    logger.warning("Following API returned %d; backing off %.1fs.", resp.status_code, backoff)
+                    time.sleep(backoff)
+                    continue
+                api_failures = 0
                 data = resp.json()
                 users = data.get("users", [])
                 page_count += 1
@@ -213,6 +273,8 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
                 max_id = data.get("next_max_id")
                 if not max_id:
                     break
+                # Humanized inter-page pacing (was: no delay at all).
+                time.sleep(max(0.8, random.gauss(1.4, 0.5)))
             logger.info("Retrieved %d public channels from user's Instagram following list across %d pages.",
                         len(discovered_accounts), page_count)
         except Exception as exc:
@@ -304,13 +366,71 @@ class CookieExpiredException(RuntimeError):
     """Instagram session cookies are missing or expired (redirected to login)."""
 
 
-_BLOCK_MARKERS = ("/accounts/login", "/challenge/", "/accounts/suspended")
+_BLOCK_MARKERS = (
+    "/accounts/login",
+    "/challenge/",
+    "/accounts/suspended",
+    "/checkpoint/",
+    "checkpoint_required",
+    "rate_limit",
+    "limited_action",
+)
+
+# Soft-block tells served with HTTP 200 (no redirect to catch).
+_SOFT_BLOCK_SNIPPETS = (
+    "challenge_required",
+    "feedback_required",
+    "login_required",
+    "suspicious login attempt",
+    "try again later",
+    "unusual activity",
+    "we limit how often",
+    "temporarily blocked",
+    "log in to continue",
+)
+
+
+def _page_html_indicates_block(html: str) -> bool:
+    return any(s in (html or "").lower() for s in _SOFT_BLOCK_SNIPPETS)
 
 
 def _assert_not_blocked(page, context: str) -> None:
     url = getattr(page, "url", "") or ""
     if any(m in url for m in _BLOCK_MARKERS):
         raise InstagramBlocked(f"{context}: redirected to {url}")
+
+
+_DATE_FORMATS = ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%d %B %Y", "%m/%d/%Y")
+
+
+def _parse_date_flexible(date_str: str) -> int:
+    """Parse reel dates across locales/formats; 0 when unparseable."""
+    s = (date_str or "").strip()
+    if not s:
+        return 0
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return int(datetime.strptime(s, fmt).replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
+_DISCOVERY_SELECTORS = ("a[href*='/reel/']", "a[href*='/reel']")
+
+
+def _extract_shortcode(href: str) -> str:
+    """Pull the reel shortcode from href variants (handles /user/reel/X/,
+    query strings, and missing trailing slash)."""
+    m = re.search(r"reel/([A-Za-z0-9_-]+)", href or "")
+    return m.group(1) if m else ""
 
 
 class InstagramSession:
@@ -347,7 +467,18 @@ class InstagramSession:
                 logger.warning("Could not inject cookies: %s", exc)
 
     def _open_context(self) -> None:
-        self._context = self._browser.new_context(user_agent=DEFAULT_USER_AGENT)
+        width, height = random.choice(VIEWPORT_POOL)
+        self._context = self._browser.new_context(
+            user_agent=random.choice(USER_AGENT_POOL),
+            viewport={"width": width, "height": height},
+            locale=random.choice(LOCALE_POOL),
+            timezone_id=random.choice(TIMEZONE_POOL),
+            device_scale_factor=1,
+        )
+        try:
+            self._context.add_init_script(STEALTH_INIT_SCRIPT)
+        except Exception:
+            pass
         self._inject_cookies()
         self._page = self._context.new_page()
         self._nav_count = 0
@@ -418,16 +549,34 @@ def discover_creator_reel_urls(
         page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
         _assert_not_blocked(page, f"@{clean_handle}")
 
-        try:
-            page.wait_for_selector("a[href*='/reel/']", timeout=5000)
-        except Exception:
-            pass
+        anchors = []
+        for selector in _DISCOVERY_SELECTORS:
+            try:
+                page.wait_for_selector(selector, timeout=4000)
+            except Exception:
+                pass
+            try:
+                anchors = page.locator(selector).all()
+            except Exception:
+                anchors = []
+            if anchors:
+                break
 
-        anchors = page.locator("a[href*='/reel/']").all()
+        if not anchors:
+            # Fail closed: an empty grid may be a soft-block served as 200.
+            try:
+                probe_html = page.content()
+            except Exception:
+                probe_html = ""
+            if _page_html_indicates_block(probe_html):
+                raise InstagramBlocked(f"@{clean_handle}: soft-block markers in empty grid")
+            logger.warning("Empty reel grid for @%s with no block markers; treating as zero reels.", clean_handle)
+            return reels_found
+
         for a in anchors:
             href = a.get_attribute("href") or ""
-            m = re.search(r"/(?:[a-zA-Z0-9._]+/)?reel/([a-zA-Z0-9_-]+)/?", href)
-            if m:
+            shortcode = _extract_shortcode(href)
+            if shortcode:
                 # Check for pinned reel indicators (Instagram pin icon / aria-labels)
                 is_pinned = False
                 try:
@@ -444,7 +593,6 @@ def discover_creator_reel_urls(
                     logger.info("Skipping pinned reel %s for @%s", href, clean_handle)
                     continue
 
-                shortcode = m.group(1)
                 full_url = f"https://www.instagram.com/reel/{shortcode}/"
                 views_text = a.inner_text().strip()
                 view_count = parse_view_count_text(views_text)
@@ -507,6 +655,19 @@ def extract_single_reel_metadata(
             pass
 
         html = page.content()
+        if _page_html_indicates_block(html):
+            logger.warning("Soft-block markers in reel page %s; skipping without fallback.", reel_url)
+            return None
+
+        # Canonical-link fallback recovers the shortcode/handle when OG tags shift.
+        try:
+            canon = page.query_selector("link[rel='canonical']")
+            canon_href = canon.get_attribute("href") if canon else ""
+            canon_code = _extract_shortcode(canon_href or "")
+            if canon_code and not shortcode:
+                shortcode = canon_code
+        except Exception:
+            pass
 
         og_title = page.query_selector('meta[property="og:title"]')
         og_desc = page.query_selector('meta[property="og:description"]')
@@ -544,11 +705,7 @@ def extract_single_reel_metadata(
                 clean_cap = cap.strip(" \"'")
                 if clean_cap:
                     caption = clean_cap
-                try:
-                    dt = datetime.strptime(date_str.strip(), "%B %d, %Y").replace(tzinfo=timezone.utc)
-                    timestamp = int(dt.timestamp())
-                except ValueError:
-                    pass
+                timestamp = _parse_date_flexible(date_str) or timestamp
 
         # 3. Tertiary: Check ld+json uploadDate
         if not timestamp:
@@ -840,6 +997,8 @@ def extract_external_reels_from_feed(
     blacklist = get_blacklisted_creators()
     creator_counts: dict[str, int] = {}
     external_candidates: list[dict[str, Any]] = []
+    # Randomized anti-detection cooldown schedule (was: fixed 12s every 25).
+    next_cooldown_at = random.randint(18, 32)
 
     page = session.get_page()
     logger.info("Opening Instagram Reels feed to discover %d external high-signal reels...", target_count)
@@ -894,7 +1053,7 @@ def extract_external_reels_from_feed(
                 }
                 if (!handle) {
                     const allLinks = Array.from(document.querySelectorAll('a'));
-                    const reserved = ['explore', 'reels', 'direct', 'stories', 'accounts', 'legal', 'about', 'p', 'tags', 'locations'];
+                    const reserved = ['explore', 'reel', 'reels', 'direct', 'stories', 'accounts', 'legal', 'about', 'p', 'tags', 'locations', 'tv'];
                     for (const a of allLinks) {
                         const href = a.getAttribute('href') || '';
                         const parts = href.split('/').filter(Boolean);
@@ -1022,17 +1181,20 @@ def extract_external_reels_from_feed(
                             rid, h, cat, likes, comments, len(external_candidates), target_count
                         )
 
-        # Periodic resting pause to break robotic velocity and satisfy TOS pacing
-        if eval_count % 25 == 0:
-            logger.info("Anti-detection cooldown: resting 12s after %d reel evaluations...", eval_count)
-            time.sleep(12.0)
+        # Randomized resting pause to break robotic velocity and satisfy TOS pacing
+        if eval_count >= next_cooldown_at:
+            cooldown = max(6.0, random.gauss(12.0, 3.0))
+            logger.info("Anti-detection cooldown: resting %.1fs after %d reel evaluations...",
+                        cooldown, eval_count)
+            time.sleep(cooldown)
+            next_cooldown_at = eval_count + random.randint(18, 32)
 
-        # Scroll to next reel with humanized jitter
+        # Scroll to next reel with Gaussian humanized jitter + varied keys
         try:
-            page.keyboard.press("PageDown")
+            page.keyboard.press(random.choice(["PageDown", "PageDown", "PageDown", "ArrowDown"]))
         except Exception:
             pass
-        time.sleep(random.uniform(2.8, 4.8))
+        human_pause()
 
     logger.info("External Reels discovery finished: harvested %d high-signal external reels (evaluated %d).",
                 len(external_candidates), eval_count)

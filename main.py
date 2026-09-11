@@ -51,8 +51,8 @@ def save_last_run_info(week_id: str, timestamp: float | None = None) -> dict[str
         "week_id": week_id,
     }
     try:
-        config.LAST_RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        config.LAST_RUN_FILE.write_text(json.dumps(info, indent=2), encoding="utf-8")
+        import atomic_io
+        atomic_io.durable_write_json(config.LAST_RUN_FILE, info)
         logger.info("Saved last run info: %s (%s)", dt_utc, week_id)
     except Exception as exc:
         logger.warning("Failed saving last_run.json: %s", exc)
@@ -162,7 +162,7 @@ def run_full_sync(
                         empty_streak = 0
 
                     candidates.extend(reels)
-                    time.sleep(random.uniform(1.2, 2.8))
+                    extractor.human_pause(mu=2.0, sigma=0.7, floor=0.8)
             except extractor.InstagramBlocked as exc:
                 logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
                 candidates_cache_file.unlink(missing_ok=True)
@@ -179,7 +179,8 @@ def run_full_sync(
 
             logger.info("Extracted total %d candidate reels across creators.", len(candidates))
             try:
-                candidates_cache_file.write_text(json.dumps(candidates, indent=2), encoding="utf-8")
+                import atomic_io
+                atomic_io.durable_write_json(candidates_cache_file, candidates)
             except Exception:
                 pass
 
@@ -193,26 +194,48 @@ def run_full_sync(
             shuffle=False,
         )
 
-        # Enrich shortlist with real metadata and filter by cutoff date in parallel
+        # Enrich shortlist with real metadata and filter by cutoff date.
+        # Capped at 2 concurrent browsers drawn from a session pool (was: 6
+        # workers each spawning a fresh browser per reel). Sessions are
+        # checked out exclusively, so a page is never shared across threads.
         cutoff_ts = since_timestamp if since_timestamp is not None else int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
         enriched: list[dict[str, Any]] = []
-        logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s, max_workers=6)...", len(shortlist), cutoff_ts)
+        logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s, max_workers=2)...", len(shortlist), cutoff_ts)
+
+        import queue as _queue
+        _session_pool: _queue.Queue = _queue.Queue()
+        _pool_sessions = [extractor.InstagramSession() for _ in range(2)]
+        for _s in _pool_sessions:
+            _s.start()
+            _session_pool.put(_s)
 
         def _enrich_item(r: dict[str, Any]) -> dict[str, Any] | None:
-            m = extractor.extract_single_reel_metadata(r, session=None)
-            if not m or (m.get("timestamp") or 0) < cutoff_ts:
-                return None
-            return m
+            sess = _session_pool.get()
+            try:
+                extractor.human_pause(mu=1.6, sigma=0.6, floor=0.7)
+                m = extractor.extract_single_reel_metadata(r, session=sess)
+                if not m or (m.get("timestamp") or 0) < cutoff_ts:
+                    return None
+                return m
+            finally:
+                _session_pool.put(sess)
 
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            futures = [executor.submit(_enrich_item, r) for r in shortlist]
-            for f in as_completed(futures):
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(_enrich_item, r) for r in shortlist]
+                for f in as_completed(futures):
+                    try:
+                        res = f.result()
+                        if res:
+                            enriched.append(res)
+                    except Exception as exc:
+                        logger.debug("Enrichment error: %s", exc)
+        finally:
+            for _s in _pool_sessions:
                 try:
-                    res = f.result()
-                    if res:
-                        enriched.append(res)
-                except Exception as exc:
-                    logger.debug("Enrichment error: %s", exc)
+                    _s.close()
+                except Exception:
+                    pass
 
         logger.info("Enriched %d valid reels within date window out of %d candidates.", len(enriched), len(shortlist))
 
@@ -432,9 +455,18 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
 
     logger.info("Discovered %d new external reels from feed.", len(external_reels))
 
-    # 2. Download and upload ONLY the newly discovered reels
+    # 2. Download and upload ONLY the newly discovered reels.
+    # Append-only invariance: existing items keep their ranks AND their R2
+    # keys forever. New reels are downloaded to rank-stable temp names first;
+    # final ranks (and hence R2 keys) are assigned only after filtering out
+    # failed downloads, so keys always match the digest manifest.
     week_videos_dir = config.VIDEOS_DIR / week_id
     week_videos_dir.mkdir(parents=True, exist_ok=True)
+    for stale in week_videos_dir.glob("_pending_*.mp4"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
 
     uploaded_url_map: dict[str, str] = {}
@@ -444,40 +476,79 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
             r2_url = item.get("r2_url") or item.get("video_url") or f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_{item.get('creator_handle')}_{rid}.mp4"
             uploaded_url_map[rid] = r2_url
 
-    start_rank = len(existing_items) + 1
-    new_ranked: list[dict[str, Any]] = []
+    def _pending_path(reel: dict[str, Any]) -> Path:
+        return week_videos_dir / f"_pending_{reel['creator_handle']}_{reel['id']}.mp4"
 
-    def process_new_reel(entry: tuple[int, dict[str, Any]]) -> tuple[str, str, dict[str, Any]]:
-        rank_num, reel = entry
-        reel_id = reel["id"]
-        handle = reel["creator_handle"]
-        filename = f"{rank_num:02d}_{handle}_{reel_id}.mp4"
-        local_video_path = week_videos_dir / filename
-
-        reel["rank"] = rank_num
-        reel["rank_display"] = f"#{rank_num:02d}"
-
-        if not local_video_path.exists():
+    def download_new_reel(reel: dict[str, Any]) -> dict[str, Any] | None:
+        tmp_path = _pending_path(reel)
+        if not (tmp_path.exists() and tmp_path.stat().st_size > 0):
             success = extractor.download_reel_video(
                 reel["url"],
-                local_video_path,
+                tmp_path,
                 video_cdn_url=reel.get("video_cdn_url"),
             )
             if not success:
-                logger.warning("Skipping failed download for expanded reel %s", reel_id)
-                return (reel_id, "", reel)
+                logger.warning("Skipping failed download for expanded reel %s", reel["id"])
+                return None
+        return reel
 
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(download_new_reel, r) for r in external_reels]
+        downloaded: list[dict[str, Any]] = []
+        for f in as_completed(futures):
+            try:
+                res = f.result()
+                if res is not None:
+                    downloaded.append(res)
+            except Exception as exc:
+                logger.warning("Error downloading expanded reel: %s", exc)
+
+    # Restore discovery order, then assign contiguous ranks after existing.
+    order = {id(r): i for i, r in enumerate(external_reels)}
+    downloaded.sort(key=lambda r: order.get(id(r), 0))
+    for offset, reel in enumerate(downloaded):
+        rank_num = len(existing_items) + 1 + offset
+        reel["rank"] = rank_num
+        reel["rank_display"] = f"#{rank_num:02d}"
+        filename = f"{rank_num:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
+        final_path = week_videos_dir / filename
+        tmp_path = _pending_path(reel)
+        try:
+            if final_path.exists() and final_path.stat().st_size > 0:
+                tmp_path.unlink(missing_ok=True)
+            else:
+                tmp_path.rename(final_path)
+        except OSError as exc:
+            logger.warning("Skipping expanded reel %s (rename failed): %s", reel["id"], exc)
+            reel["rank"] = 0
+
+    downloadable = [r for r in downloaded if r.get("rank")]
+    # Re-compact ranks in case a rename failed above (keeps numbering gapless).
+    for offset, reel in enumerate(downloadable):
+        rank_num = len(existing_items) + 1 + offset
+        if reel["rank"] != rank_num:
+            old = week_videos_dir / f"{reel['rank']:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
+            new = week_videos_dir / f"{rank_num:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
+            try:
+                old.rename(new)
+            except OSError:
+                pass
+            reel["rank"] = rank_num
+            reel["rank_display"] = f"#{rank_num:02d}"
+
+    def upload_new_reel(reel: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        filename = f"{reel['rank']:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
         public_url = storage_r2.upload_reel_to_r2(
-            local_video_path,
+            week_videos_dir / filename,
             week_id=week_id,
             key_name=filename,
             existing_keys=existing_r2_keys,
         )
-        return (reel_id, public_url, reel)
+        return (reel["id"], public_url, reel)
 
-    entries = [(start_rank + idx, r) for idx, r in enumerate(external_reels)]
+    new_ranked: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(process_new_reel, e) for e in entries]
+        futures = [executor.submit(upload_new_reel, r) for r in downloadable]
         for f in as_completed(futures):
             try:
                 rid, pub_url, reel_obj = f.result()
@@ -486,15 +557,13 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
                     reel_obj["r2_url"] = pub_url
                     reel_obj["video_url"] = pub_url
                     new_ranked.append(reel_obj)
+                else:
+                    logger.warning("Skipping unplayable expanded reel %s", rid)
             except Exception as exc:
-                logger.warning("Error processing expanded reel: %s", exc)
+                logger.warning("Error uploading expanded reel: %s", exc)
 
     new_ranked.sort(key=lambda r: r.get("rank", 9999))
     combined_items = existing_items + new_ranked
-
-    for idx, item in enumerate(combined_items, 1):
-        item["rank"] = idx
-        item["rank_display"] = f"#{idx:02d}"
 
     logger.info("Expansion successfully integrated: %d existing + %d new = %d total reels.",
                 len(existing_items), len(new_ranked), len(combined_items))

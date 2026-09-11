@@ -9,7 +9,7 @@ Replaces endless algorithmic doom-scrolling with a finite, curated media briefin
 ## Key Features
 
 ### 1. Intentional Curation
-* **Configurable Finite Batch:** Curates a finite weekly batch of top reels (configured via `TOP_DIGEST_COUNT`, with an optional on-demand desktop expansion button for high-consumption periods).
+* **Configurable Finite Batch:** Curates a finite weekly batch of top reels (default 300 via `TOP_DIGEST_COUNT`), with on-demand `--expand` for high-consumption periods.
 * **Anti-Doomscroll Watched State:** Automatically tracks completed reels in local storage, remembers your progress, and celebrates when you reach the end with a celebratory *"You're all caught up! 🎉"* screen.
 * **Daily Mindful Check-in:** Soft nudge upon reaching your daily target to encourage conscious media consumption without hard blockers.
 
@@ -29,25 +29,30 @@ Replaces endless algorithmic doom-scrolling with a finite, curated media briefin
   - 🏋️ **Health & Wellness**
   - 🥗 **Food & Recipes**
 * **Instant Resume:** Selecting any category automatically navigates to your first unwatched reel in that topic.
-* **Playback Speed & Gestures:** 
-  - Double-tap left/right edges to skip $\pm 10\text{s}$ with visual ripple feedback.
+* **Playback Speed & Gestures:**
+  - Double-tap left/right edges to skip ±10s with visual ripple feedback.
   - Double-tap center or press `F` for fullscreen immersive mode.
   - Per-reel `2x` speed booster toggle.
   - Full keyboard shortcuts (`J`/`K` navigation, `Space` play/pause, `M` mute/unmute, `G` jump to reel).
 
 ### 4. Zero-Egress Cloudflare R2 Media Delivery
 * **Zero Egress Fees:** All video streaming is offloaded to Cloudflare R2 object storage ($0 egress bandwidth), keeping GitHub Pages ultra-lean (~2 MB static footprint).
-* **Content-Addressed Asset Invariance:** Media files are indexed by immutable entity IDs (`{reel_id}.mp4`), eliminating redundant re-downloads when ranks shift or batches expand.
-* **Rolling Retention & Purge:** Automatically prunes media and weekly site archives older than configured retention days to remain comfortably within storage quotas.
+* **Stable Identity Across Re-ranks:** R2 keys carry rank prefixes, but every match (dedup, orphan pruning) is by immutable reel ID — renumbers never orphan live videos or trigger re-downloads.
+* **Rolling Retention & Purge:** Automatically prunes media and weekly site archives older than configured retention days to remain comfortably within storage quotas. A pre-flight quota guard aborts before exceeding the 5 GB safety cap.
 
 ### 5. Offline PWA & Flight Mode
 * **Permanent Offline Cache Access:** The `#offlineDownloadBtn` in the header allows inspection of local video storage and one-tap downloading of the entire digest.
-* **HTTP 206 Partial Content Slicing:** Dedicated Service Worker (`sw.js`) provides zero-copy range request slicing directly from CacheStorage for smooth offline playback on mobile WebKit.
+* **RFC 7233 Range Slicing:** The Service Worker (`sw.js`) serves cached video as proper HTTP 206 partial content — including suffix ranges and `416` for unsatisfiable seeks — for smooth offline playback on mobile WebKit.
 * **Rolling Video Window:** Automatically keeps a rolling window of adjacent videos cached offline during playback.
 
 ### 6. Local Management Dashboard
 * **Zero-Bandwidth Desktop Server:** Run `python main.py --serve` to launch a local server on port 8080 streaming from local disk.
 * **Channel Manager (`/channels`):** Visual web dashboard to audit followed creators, toggle subscriptions, inspect engagement metrics, and trigger ad-hoc refreshes.
+
+### 7. Durability & Safety Posture
+* Crash-safe state writes (temp + fsync + atomic replace) for every digest and state file; corrupt files are quarantined, never silently reset.
+* Sync and expand pipelines are mutually exclusive; only one digest-mutating run at a time.
+* Deploy gate refuses to publish under 60% of the target playable count; unplayable reels are dropped from manifest and site alike.
 
 ---
 
@@ -60,7 +65,7 @@ The pipeline consists of a modular Python backend and an atomic, single-bundle s
         │
         ├──> extractor.py (Playwright + yt-dlp)
         │       ├── Profile Reels from Tracked Creators
-        │       └── External Discovery (High signal likes filter, humanized jitter & cooldowns)
+        │       └── External Discovery (≥25k-like filter, Gaussian pacing, pooled sessions)
         │
         ├──> ranker.py (Creator-Normalized Viral Scoring & Dynamic Quotas)
         │
@@ -82,6 +87,14 @@ The pipeline consists of a modular Python backend and an atomic, single-bundle s
    (Static Viewer)         (Video Streaming)
 ```
 
+Supporting modules: `atomic_io.py` (crash-safe writes), `cookie_exporter.py`
+(Chrome session reuse), `notifier.py` (email alerts), `local_server.py`
+(local dashboard + byte-range streaming), `main.py` (CLI orchestrator).
+
+Full design rationale: [`ARCHITECTURE.md`](ARCHITECTURE.md) ·
+Change history: [`CHANGELOG.md`](CHANGELOG.md) ·
+Review brief: [`HANDOFF_REVIEW_PROMPT.md`](HANDOFF_REVIEW_PROMPT.md)
+
 ---
 
 ## Quick Start
@@ -94,8 +107,7 @@ The pipeline consists of a modular Python backend and an atomic, single-bundle s
 
 ### Installation
 ```bash
-# Clone the repository
-git clone https://github.com/<your-username>/Instagram_digest.git
+git clone https://github.com/vkr1729/Instagram_digest.git
 cd Instagram_digest
 
 # Create and activate virtual environment
@@ -108,21 +120,22 @@ playwright install chromium
 ```
 
 ### Configuration (`.env`)
-Create a `.env` file in the root directory:
+Copy [`.env.example`](.env.example) to `.env` and fill in your values:
 ```env
 # Cloudflare R2 Configuration
 R2_ACCOUNT_ID=<your-account-id>
 R2_ACCESS_KEY_ID=<your-access-key-id>
 R2_SECRET_ACCESS_KEY=<your-secret-access-key>
-R2_BUCKET_NAME=<your-bucket-name>
-R2_PUBLIC_DOMAIN=https://<your-r2-subdomain>.workers.dev
+R2_BUCKET_NAME=instagram-digest
+R2_PUBLIC_DOMAIN=https://<your-r2-subdomain>.r2.dev
 
 # GitHub Deployment
 GH_PAGES_REPO=https://github.com/<your-username>/<your-repo>.git
 PAGES_BASE_URL=https://<your-username>.github.io/<your-repo>
 
 # Digest Settings
-TOP_DIGEST_COUNT=250 # Configurable target size (e.g. 200, 250, 300)
+TOP_DIGEST_COUNT=300
+MAX_PER_CREATOR=4
 RETENTION_WEEKS=1
 ```
 
@@ -132,7 +145,7 @@ RETENTION_WEEKS=1
   ```bash
   python main.py --sync --deploy
   ```
-* **Run Ad-Hoc Midweek Refresh (Fetch reels since last run):**
+* **Run Ad-Hoc Midweek Refresh (reels since last run):**
   ```bash
   python main.py --ad-hoc --deploy
   ```
@@ -144,24 +157,56 @@ RETENTION_WEEKS=1
   ```bash
   python main.py --serve --port 8080
   ```
-* **Rebuild Static Site from Cache (Zero network calls):**
+* **Rebuild Static Site from Cache (zero network calls):**
   ```bash
   python main.py --build-only
   ```
+* **Automated Friday run (cron-friendly, logs to `logs/`):**
+  ```bash
+  ./run_weekly.sh
+  ```
+
+---
+
+## Operations Notes
+
+* **Cookie expiry:** Instagram sessions expire. The pipeline detects it,
+  emails you via the notifier, and aborts without touching the digest.
+  Refresh by opening Instagram in Chrome, then re-run (or hit `/retrigger`).
+* **Thin digests never ship:** under 60% playable items, the run aborts
+  before deploy or site rebuild — the previous good digest stays live.
+* **Sync vs expand:** only one runs at a time; a second trigger reports
+  `already_running` instead of racing.
+* **Data files** live in `data/` (`top100_digest.json`, `watched.json`,
+  `blacklist.json`, `sources.json`). Corrupt files are quarantined next to
+  the original with a `.corrupt-<timestamp>` suffix — check there before
+  assuming data loss.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Sync aborts, "blocked" in logs | Instagram challenged the session | Re-authenticate in Chrome, re-run |
+| Cookie-expiry email | `sessionid` rotated | Same as above |
+| Deploy refused, thin digest | Too few playable reels | Check `logs/`, re-run; quota gate in R2 dashboard |
+| Videos stall offline on iOS | Stale Service Worker | Hard-refresh once to pick up new `sw.js` |
+| Playwright won't launch in sandbox | Kernel seccomp (SIGTRAP) | Run browser tests on host hardware |
 
 ---
 
 ## Testing
 
-The project maintains an automated test suite covering unit logic, integration flows, and end-to-end Playwright browser simulations:
-
 ```bash
-# Run all unit and integration tests
-pytest
+# Fast suite: unit + integration + Node-executed SW range tests
+.venv/bin/python -m pytest tests/ --ignore=tests/e2e -q
 
-# Run Playwright mobile and desktop E2E verification
-python scratch/test_e2e_verification.py
+# Full suite including Playwright browser tests (needs a real browser;
+# will not launch inside locked-down sandboxes)
+.venv/bin/python -m pytest tests/ -q
 ```
+
+Regression collateral for the hardening pass lives in
+`tests/test_{xss_hardening,durability,sw_range,scraper_hardening,parser_resilience,dom_perf}.py`.
 
 ---
 
