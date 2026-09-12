@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import shutil
+import signal
 import threading
 import time
 from datetime import datetime, timezone
@@ -260,6 +261,26 @@ def refresh_cookies_status() -> dict[str, Any]:
         "has_sessionid": "sessionid" in cookies,
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _schedule_server_shutdown(delay: float = 0.5) -> int:
+    """Terminate this server process after `delay` seconds.
+
+    Backs the dashboard kill switch: the HTTP response is flushed first, then
+    SIGTERM stops the process so the owner can start fresh via launch.sh.
+    Factored as a module-level helper so tests can stub it without killing
+    the test runner.
+    """
+    pid = os.getpid()
+
+    def _kill() -> None:
+        logger.warning("Dashboard kill switch engaged; stopping server process %d.", pid)
+        os.kill(pid, signal.SIGTERM)
+
+    timer = threading.Timer(delay, _kill)
+    timer.daemon = True
+    timer.start()
+    return pid
 
 
 def resume_pipeline_state() -> dict[str, Any]:
@@ -933,6 +954,20 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/server/shutdown", "/api/server/shutdown/"):
+            logger.warning("Dashboard kill switch triggered via API.")
+            pid = _schedule_server_shutdown()
+            resp = {"success": True, "pid": pid,
+                    "message": f"Server process {pid} stopping; relaunch via launch.sh."}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

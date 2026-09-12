@@ -47,6 +47,7 @@
     border: 1px solid rgba(255,255,255,.16); background: #27272a; color: #fff;
     cursor: pointer; text-decoration: none; display: inline-block; }
   button.primary, .btn.primary { background: #f4f4f5; color: #09090b; border-color: transparent; }
+  button.danger { border-color: rgba(248,113,113,.55); color: #f87171; background: transparent; }
   button:disabled { opacity: .45; cursor: default; }
   input.count { width: 76px; font-size: 13px; padding: 8px 10px; border-radius: 8px;
     border: 1px solid rgba(255,255,255,.16); background: #09090b; color: #fff; }
@@ -98,6 +99,11 @@
       <div class="row1"><h2>Cookies</h2><span class="pill idle" id="cookiePill">UNKNOWN</span></div>
       <div class="meta" id="cookieMeta">Press refresh to verify the Chrome login session.</div>
       <div class="actions"><button id="cookieBtn">Refresh cookies</button></div>
+    </div>
+    <div class="card">
+      <div class="row1"><h2>Server</h2><span class="pill idle">LOCAL</span></div>
+      <div class="meta">Kill this server process, then relaunch from the desktop icon for a clean start.</div>
+      <div class="actions"><button class="danger" id="serverKillBtn">Kill server process</button></div>
     </div>
   </div>
   <div class="activity"><h2>Recent activity</h2><div id="activityBody">Loading…</div></div>
@@ -258,9 +264,23 @@
     }
     btn.disabled = false;
   }
+  async function killServer() {
+    if (!window.confirm("Kill the local server process? The dashboard will go dark until you relaunch it from the desktop icon.")) return;
+    const btn = $("serverKillBtn");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/server/shutdown", { method: "POST" });
+      const data = await res.json();
+      toast(data.message || "Server stopping.");
+      $("liveDot").className = "live down";
+      $("liveDot").innerHTML = "<i></i>Server stopping";
+    } catch (e) { toast("Kill request failed."); }
+    btn.disabled = false;
+  }
   $("expandBtn").addEventListener("click", () => startExpand($("expandCount").value, $("expandBtn")));
   $("adhocBtn").addEventListener("click", () => startAdhoc($("adhocBtn")));
   $("cookieBtn").addEventListener("click", refreshCookies);
+  $("serverKillBtn").addEventListener("click", killServer);
   refresh();
   setInterval(refresh, 5000);
 </script>

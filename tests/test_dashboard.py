@@ -78,6 +78,12 @@ class _LiveServer:
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=10) as res:
             return res.status, res.read().decode("utf-8")
 
+    def post(self, path):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}",
+                                     data=b"{}", method="POST")
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return res.status, res.read().decode("utf-8")
+
     def close(self):
         self.server.shutdown()
         self.thread.join(timeout=10)
@@ -93,8 +99,47 @@ def test_dashboard_route_serves_ops_page(tmp_path, monkeypatch):
     assert status == 200
     for marker in ("resumeLane", "expandCount", "cookieBtn", "activityBody",
                    "/api/resume-state", "/api/expand?count=", "/api/cookies/refresh",
-                   "/api/sync-adhoc", "/viewer", "/channels"):
+                   "/api/sync-adhoc", "/api/server/shutdown", "serverKillBtn",
+                   "/viewer", "/channels"):
         assert marker in body, marker
+
+
+def test_server_shutdown_route_schedules_kill(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(local_server, "_schedule_server_shutdown",
+                        lambda delay=0.5: calls.append(delay) or 4321)
+    srv = _LiveServer(tmp_path, monkeypatch)
+    try:
+        status, body = srv.post("/api/server/shutdown")
+    finally:
+        srv.close()
+    assert status == 200
+    data = json.loads(body)
+    assert data["success"] is True
+    assert data["pid"] == 4321
+    assert calls == [0.5]
+
+
+def test_schedule_server_shutdown_signals_self(monkeypatch):
+    import os
+    import signal as sigmod
+    timers = []
+    kills = []
+
+    class _FakeTimer:
+        def __init__(self, delay, fn):
+            timers.append((delay, fn))
+        daemon = False
+        def start(self):
+            pass
+
+    monkeypatch.setattr(local_server.threading, "Timer", _FakeTimer)
+    monkeypatch.setattr(local_server.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    pid = local_server._schedule_server_shutdown(delay=0.5)
+    assert pid == os.getpid()
+    assert len(timers) == 1 and timers[0][0] == 0.5
+    timers[0][1]()  # fire the deferred kill
+    assert kills == [(os.getpid(), sigmod.SIGTERM)]
 
 
 def test_viewer_route_serves_viewer(tmp_path, monkeypatch):
@@ -141,5 +186,13 @@ def test_viewer_js_has_no_ops_triggers():
 
 def test_launcher_opens_dashboard():
     launch = Path(config.ROOT_DIR, "launch.sh").read_text(encoding="utf-8")
-    assert "http://127.0.0.1:8080/dashboard" in launch
+    assert "PORT=8080" in launch
+    assert "/dashboard" in launch
+    assert "xdg-open" in launch
+
+
+def test_launcher_single_instance_guard():
+    launch = Path(config.ROOT_DIR, "launch.sh").read_text(encoding="utf-8")
+    assert "/api/sync-status" in launch  # already-running check
+    assert "flock" in launch  # concurrent-launch serialization
     assert 'xdg-open "http://127.0.0.1:8080/"' not in launch
