@@ -84,20 +84,10 @@ CATEGORY_ALIASES = {
 }
 
 
-def get_category_quotas(top_n: int) -> dict[str, int]:
-    """Calculate reel quotas per category based on configured percentages."""
-    cats = [c for c in getattr(config, "CATEGORIES", []) if c.get("id") != "all" and "target_pct" in c]
-    if cats:
-        return {c["id"]: max(1, round(top_n * c.get("target_pct", 0.10))) for c in cats}
-    # Fallback to standard 6 categories
-    return {
-        "entertainment": max(1, round(top_n * 0.40)),
-        "finance": max(1, round(top_n * 0.15)),
-        "ai_tech": max(1, round(top_n * 0.15)),
-        "niche": max(1, round(top_n * 0.10)),
-        "health": max(1, round(top_n * 0.10)),
-        "food": max(1, round(top_n * 0.10)),
-    }
+def get_category_ceiling(top_n: int) -> int:
+    """Maximum reels any single category may occupy in a digest of top_n."""
+    share = float(getattr(config, "MAX_CATEGORY_SHARE", 0.50))
+    return max(1, int(top_n * share))
 
 
 def rank_top_reels(
@@ -109,15 +99,14 @@ def rank_top_reels(
     shuffle: bool = True,
 ) -> list[dict[str, Any]]:
     """
-    Execute Fair-Share Ranking with Category Quotas & Deterministic Interleaving:
+    Execute Fair-Share Ranking with Category Ceiling & Deterministic Interleaving:
     1. Calculate baseline per creator and viral scores.
-    2. Normalize category assignments across the 6 thematic buckets.
+    2. Normalize category assignments across the thematic buckets.
     3. Guarantee representation (at least 1 top reel for every active creator).
-    4. Fill category quotas (40% Entertainment, 15% Finance, 15% AI & Tech, 10% Niche, 10% Health, 10% Food).
-    5. Cap maximum reels per creator (e.g. max 4).
-    6. Fill remaining slots with highest scoring outliers up to top_n.
-    7. Pseudo-randomly interleave/shuffle the final selected pool (using seed) so categories blend smoothly.
-    8. Assign sequential ranks #01 to #N.
+    4. Fill remaining slots by pure viral score, respecting the per-creator
+       cap and the per-category ceiling (no fixed percentage targets).
+    5. Pseudo-randomly interleave/shuffle the final selected pool (using seed) so categories blend smoothly.
+    6. Assign sequential ranks #01 to #N.
     """
     import random
 
@@ -175,59 +164,36 @@ def rank_top_reels(
 
     logger.info("Guaranteed representation selected %d reels (1 per creator).", len(selected))
 
-    # Step 2: Pool remaining candidate reels by category
-    quotas = get_category_quotas(top_n)
+    # Step 2: Count guaranteed picks per category so the ceiling accounts for them
+    ceiling = get_category_ceiling(top_n)
     category_counts: dict[str, int] = {}
     for s in selected:
         cat = s.get("category", "entertainment")
         category_counts[cat] = category_counts.get(cat, 0) + 1
 
-    # Group remaining reels by category
-    remaining_by_category: dict[str, list[dict[str, Any]]] = {}
+    # Step 3: Fill remaining capacity by pure viral score, skipping reels whose
+    # creator is at cap or whose category is at the ceiling.
+    fill_pool: list[dict[str, Any]] = []
     for q in creator_queues.values():
         for item in q:
-            cat = item.get("category", "entertainment")
-            remaining_by_category.setdefault(cat, []).append(item)
+            if item["id"] not in used_ids:
+                fill_pool.append(item)
+    fill_pool.sort(key=lambda x: x["viral_score"], reverse=True)
 
-    for cat in remaining_by_category:
-        remaining_by_category[cat].sort(key=lambda x: x["viral_score"], reverse=True)
+    for item in fill_pool:
+        if len(selected) >= top_n:
+            break
+        cat = item.get("category", "entertainment")
+        if category_counts.get(cat, 0) >= ceiling:
+            continue
+        h = item["creator_handle"].lower().replace("@", "")
+        if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
+            selected.append(item)
+            creator_counts[h] += 1
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+            used_ids.add(item["id"])
 
-    # Step 3: Fulfill category quotas up to target count respecting creator caps
-    for cat, target in quotas.items():
-        cat_reels = remaining_by_category.get(cat, [])
-        for item in cat_reels:
-            if len(selected) >= top_n:
-                break
-            if category_counts.get(cat, 0) >= target:
-                break
-            h = item["creator_handle"].lower().replace("@", "")
-            effective_cap = (max_per_creator + 2) if cat == "food" else max_per_creator
-            if creator_counts[h] < effective_cap and item["id"] not in used_ids:
-                selected.append(item)
-                creator_counts[h] += 1
-                category_counts[cat] = category_counts.get(cat, 0) + 1
-                used_ids.add(item["id"])
-
-    # Step 4: Fill any remaining capacity up to top_n from the global pool
-    if len(selected) < top_n:
-        overflow_pool: list[dict[str, Any]] = []
-        for cat_reels in remaining_by_category.values():
-            for item in cat_reels:
-                if item["id"] not in used_ids:
-                    overflow_pool.append(item)
-        overflow_pool.sort(key=lambda x: x["viral_score"], reverse=True)
-
-        for item in overflow_pool:
-            if len(selected) >= top_n:
-                break
-            h = item["creator_handle"].lower().replace("@", "")
-            effective_cap = (max_per_creator + 2) if item.get("category") == "food" else max_per_creator
-            if creator_counts[h] < effective_cap and item["id"] not in used_ids:
-                selected.append(item)
-                creator_counts[h] += 1
-                used_ids.add(item["id"])
-
-    # Step 5: Deterministic Interleaving / Shuffling
+    # Step 4: Deterministic Interleaving / Shuffling
     # Mixes categories evenly across the feed so it's not clumped category-by-category
     if shuffle:
         rng_seed = str(seed if seed is not None else "instagram_digest_weekly")
@@ -236,7 +202,7 @@ def rank_top_reels(
     else:
         selected.sort(key=lambda x: x["viral_score"], reverse=True)
 
-    # Step 6: Assign sequential ranks #01 to #N based on feed order
+    # Step 5: Assign sequential ranks #01 to #N based on feed order
     for idx, item in enumerate(selected, 1):
         item["rank"] = idx
         item["rank_display"] = f"#{idx:02d}"

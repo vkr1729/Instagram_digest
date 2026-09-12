@@ -52,6 +52,26 @@ if ! flock -n 200; then
 fi
 
 # Never collide with a live pipeline (local-server thread, cron job, manual CLI).
+# pgrep below only sees separate CLI processes: pipelines run by the dashboard
+# server live in worker threads under `main.py --serve`, so ask the server
+# itself first (quiet when it is not running).
+if command -v /usr/bin/python3 >/dev/null 2>&1; then
+    if http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= /usr/bin/python3 -c "
+import json, urllib.request
+def get(path):
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8080' + path, timeout=3) as r:
+            return json.load(r)
+    except Exception:
+        return {}
+s = get('/api/sync-status')
+e = get('/api/expand/status')
+raise SystemExit(0 if (s.get('is_running') or (e.get('state') or {}).get('is_running')) else 1)
+" 2>/dev/null; then
+        log "Dashboard server reports a running pipeline; skipping auto-resume."
+        exit 0
+    fi
+fi
 # (pgrep patterns are ERE already; it has no -E flag — one would make this
 # guard silently always-false.)
 # pgrep scans full command lines, so exclude this script and its ancestors: a

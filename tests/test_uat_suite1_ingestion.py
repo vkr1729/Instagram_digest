@@ -26,10 +26,15 @@ def test_uat_1_3_and_1_5_private_account_filtering_and_non_destructive_merge(tmp
     sources_file = tmp_path / "sources.json"
     cache_file = tmp_path / "following_cache.json"
     data_export_file = tmp_path / "following.json"
+    blacklist_file = tmp_path / "blacklist.json"
+    blacklist_file.write_text("[]", encoding="utf-8")
 
     monkeypatch.setattr(config, "SOURCES_FILE", sources_file)
     monkeypatch.setattr(config, "FOLLOWING_CACHE_FILE", cache_file)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    # The merge consults the real blacklist file; isolate it so the owner's
+    # channel trimming cannot change this test's outcome.
+    monkeypatch.setattr(config, "BLACKLIST_FILE", blacklist_file)
 
     # Pre-existing sources with custom category and disabled account
     initial_sources = [

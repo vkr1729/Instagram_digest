@@ -116,6 +116,9 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 _SYNC_STATE["is_running"] = False
                 _SYNC_STATE["status"] = "completed" if ret == 0 else "failed"
                 _SYNC_STATE["last_result"] = ret
+            if ret == 0:
+                # A completed run proves the session works; drop the banner.
+                clear_cookie_attention()
         except Exception as exc:
             logger.exception("Ad-hoc sync worker error: %s", exc)
             with _SYNC_LOCK:
@@ -195,6 +198,9 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
                 _EXPAND_STATE["is_running"] = False
                 _EXPAND_STATE["status"] = "completed" if ret == 0 else "failed"
                 _EXPAND_STATE["last_result"] = ret
+            if ret == 0:
+                # A completed run proves the session works; drop the banner.
+                clear_cookie_attention()
         except Exception as exc:
             logger.exception("Expand worker error: %s", exc)
             with _EXPAND_LOCK:
@@ -281,6 +287,215 @@ def _schedule_server_shutdown(delay: float = 0.5) -> int:
     timer.daemon = True
     timer.start()
     return pid
+
+
+_SERVER_BUILD: str | None = None
+
+
+def server_build() -> str:
+    """Short git HEAD of the checkout this server process started from.
+
+    Lets the launcher tell a current server from a stale one holding the
+    port (stale servers predate this field entirely). Cached after the first
+    call; "unknown" when git is unavailable. Uncommitted changes append
+    "-dirty" so the launcher restarts a server running edited code too.
+    """
+    global _SERVER_BUILD
+    if _SERVER_BUILD is None:
+        _SERVER_BUILD = "unknown"
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ["git", "-C", str(config.ROOT_DIR), "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                _SERVER_BUILD = proc.stdout.strip()
+                dirty = subprocess.run(
+                    ["git", "-C", str(config.ROOT_DIR), "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if dirty.returncode == 0 and dirty.stdout.strip():
+                    _SERVER_BUILD += "-dirty"
+        except Exception:
+            pass
+    return _SERVER_BUILD
+
+
+COOKIE_ATTENTION_FILE = config.DATA_DIR / "cookie_attention.json"
+_PUBLIC_PORT = 8080
+_LIVE_PROGRESS_STALE_SECS = 15 * 60
+
+
+def _dashboard_url() -> str:
+    return f"http://127.0.0.1:{_PUBLIC_PORT}/dashboard"
+
+
+def raise_cookie_attention(reason: str, pipeline: str) -> bool:
+    """Flag a cookie death for the dashboard banner and pop a browser tab.
+
+    Called next to the cookie-alert email sites so an owner at the laptop sees
+    it immediately instead of discovering the email later. The popup needs a
+    desktop session (DISPLAY/WAYLAND_DISPLAY); headless runs keep the email
+    plus the persistent banner. Pops at most once per pending flag so repeated
+    runs do not stack tabs. Returns True when a popup was attempted.
+    """
+    if cookie_attention_state() is not None:
+        logger.info("Cookie attention already pending; skipping repeat popup.")
+        return False
+    try:
+        payload = {
+            "version": 1, "pipeline": pipeline, "reason": reason,
+            "raised_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _atomic_write_json(COOKIE_ATTENTION_FILE, payload)
+    except Exception as exc:
+        logger.warning("Failed writing cookie attention flag: %s", exc)
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        logger.info("No desktop session; skipping cookie popup (banner + email remain).")
+        return False
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["xdg-open", _dashboard_url()],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if proc.returncode != 0:
+            logger.warning("Cookie attention popup failed (xdg-open exit %d).", proc.returncode)
+            return False
+        logger.warning("Cookie attention popup opened for %s: %s", pipeline, reason)
+        return True
+    except Exception as exc:
+        logger.warning("Cookie attention popup failed: %s", exc)
+        return False
+
+
+def clear_cookie_attention() -> None:
+    """Drop the cookie banner flag after a verified-good refresh."""
+    try:
+        COOKIE_ATTENTION_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def cookie_attention_state() -> dict[str, Any] | None:
+    """Pending cookie banner, if any. Read-only; cleared only by a good refresh.
+
+    Malformed flags (missing pipeline/reason) read as absent so a corrupt
+    file can never suppress future popups; the next raise overwrites it.
+    """
+    try:
+        data = json.loads(COOKIE_ATTENTION_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(data, dict) and data.get("pipeline") and data.get("reason"):
+        return data
+    return None
+
+
+def _is_local_origin(origin: str | None, referer: str | None) -> bool:
+    """Block CSRF-style cross-origin browser POSTs to mutating endpoints.
+
+    Non-browser clients (curl, tests, local scripts) send no Origin/Referer
+    and are always allowed; the server already binds 127.0.0.1 only, so this
+    just closes the drive-by-web-page hole. The dashboard's own fetch() sends
+    Origin http://127.0.0.1:<port> and passes.
+    """
+    for value in (origin, referer):
+        if not value:
+            continue
+        try:
+            host = urlparse(value).hostname or ""
+        except Exception:
+            return False
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            return False
+    return True
+
+
+def _clamp_expand_count(raw: Any) -> int:
+    """Sanitize the ?count= parameter: integer clamped to 1..500."""
+    try:
+        count = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid expand count: {raw!r}")
+    return min(500, max(1, count))
+
+
+def _file_age_secs(path: Path) -> float | None:
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def live_progress_state() -> dict[str, Any]:
+    """Active pipeline progress for the dashboard bars (expand + weekly sync).
+
+    File-backed so CLI and background runs report too, not just server
+    worker threads. Each entry carries `active`: True while this server runs
+    that pipeline or the file is fresh; stale leftovers from crashes report
+    active False so the dashboard hides them.
+    """
+    out: dict[str, Any] = {"expand": None, "sync": None}
+    expand_files = sorted(config.DATA_DIR.glob("expand_progress_*.json"))
+    if expand_files:
+        path = expand_files[-1]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            age = _file_age_secs(path)
+            with _EXPAND_LOCK:
+                running = bool(_EXPAND_STATE["is_running"])
+            out["expand"] = {
+                "phase": data.get("phase"),
+                "done": data.get("done", 0) or 0,
+                "total": data.get("total", 0) or 0,
+                "target_count": data.get("target_count"),
+                "banked": data.get("banked", 0) or 0,
+                "active": running or (age is not None and age < _LIVE_PROGRESS_STALE_SECS),
+            }
+    sync_files = sorted(config.DATA_DIR.glob("sync_progress_*.json"))
+    if sync_files:
+        path = sync_files[-1]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            age = _file_age_secs(path)
+            with _SYNC_LOCK:
+                running = bool(_SYNC_STATE["is_running"])
+            done_map = data.get("done") or {}
+            candidates = data.get("candidates") or []
+            enriched = data.get("enriched") or []
+            ranked = data.get("ranked") or []
+            total = data.get("total_sources") or 0
+            published = data.get("published") or 0
+            published_total = data.get("published_total") or 0
+            active = running or (age is not None and age < _LIVE_PROGRESS_STALE_SECS)
+            if (not active and data.get("stage") == "cooling_down"
+                    and isinstance(data.get("resumes_in_min"), (int, float))
+                    and age is not None):
+                # Long backoff sleeps outlast the crash-staleness window but the
+                # run is alive: stay visible until the sleep should have ended.
+                active = age < data["resumes_in_min"] * 60 + 600
+            out["sync"] = {
+                "stage": data.get("stage"),
+                "visited": len(done_map) if isinstance(done_map, dict) else 0,
+                "total": total if isinstance(total, int) and total > 0 else None,
+                "candidates": len(candidates) if isinstance(candidates, list) else 0,
+                "enriched": len(enriched) if isinstance(enriched, list) else 0,
+                "ranked": len(ranked) if isinstance(ranked, list) else 0,
+                "published": published if isinstance(published, int) else 0,
+                "published_total": published_total if isinstance(published_total, int) else 0,
+                "blocked_handle": data.get("blocked_handle"),
+                "resumes_in_min": data.get("resumes_in_min"),
+                "active": active,
+            }
+    return out
 
 
 def resume_pipeline_state() -> dict[str, Any]:
@@ -418,7 +633,9 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         # /api/sync-status -> return current sync status
         if clean_path in ("/api/sync-status", "/api/sync-status/"):
             with _SYNC_LOCK:
-                body = json.dumps(dict(_SYNC_STATE)).encode("utf-8")
+                state = dict(_SYNC_STATE)
+            state["server_build"] = server_build()
+            body = json.dumps(state).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -540,9 +757,10 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 self.serve_video_file(video_file)
                 return
 
-        # Static assets from site/
+        # Static assets from site/. API paths never resolve to files: a stray
+        # site/api/* file must not shadow a real endpoint (or fake one).
         site_file = config.SITE_DIR / clean_path.lstrip("/")
-        if site_file.exists() and site_file.is_file():
+        if not clean_path.startswith("/api/") and site_file.exists() and site_file.is_file():
             mime, _ = mimetypes.guess_type(str(site_file))
             content = site_file.read_bytes()
             self.send_response(HTTPStatus.OK)
@@ -643,6 +861,30 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API live-progress route -> /api/live-progress (dashboard bars)
+        if clean_path in ("/api/live-progress", "/api/live-progress/"):
+            resp = {"success": True, **live_progress_state()}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # API cookie-attention route -> /api/cookie-attention (banner flag)
+        if clean_path in ("/api/cookie-attention", "/api/cookie-attention/"):
+            resp = {"success": True, "attention": cookie_attention_state()}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # Web Route: /channels
         if clean_path in ("/channels", "/channels/"):
             channels_template = config.TEMPLATES_DIR / "channels.html"
@@ -729,9 +971,15 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if not _is_local_origin(self.headers.get("Origin"), self.headers.get("Referer")):
+            self.send_error(HTTPStatus.FORBIDDEN, "Cross-origin POST rejected")
+            return
         if parsed.path in ("/api/sync-adhoc", "/api/sync-adhoc/"):
             logger.info("Ad-hoc midweek sync triggered via API.")
-            resp = trigger_adhoc_sync_task()
+            # Deploy like the weekly run so midweek reels reach the mobile PWA;
+            # run_full_sync still refuses to deploy over a healthy digest when
+            # the top-up comes back too small (MIN_DEPLOY_ITEMS gate).
+            resp = trigger_adhoc_sync_task(deploy=True)
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
@@ -743,7 +991,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path in ("/api/expand", "/api/expand/"):
             query = parse_qs(parsed.query)
-            count = int(query.get("count", ["100"])[0])
+            try:
+                count = _clamp_expand_count(query.get("count", ["100"])[0])
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             logger.info("Digest expansion (+%d) triggered via API.", count)
             resp = trigger_expand_task(count=count, deploy=True)
             body = json.dumps(resp).encode("utf-8")
@@ -758,6 +1010,8 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if parsed.path in ("/api/cookies/refresh", "/api/cookies/refresh/"):
             logger.info("Manual cookie refresh triggered via API.")
             resp = refresh_cookies_status()
+            if resp.get("success") and resp.get("has_sessionid"):
+                clear_cookie_attention()
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
@@ -1038,6 +1292,8 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
 def run_local_server(port: int = 8080) -> None:
     """Run multi-threaded local dashboard server on specified port."""
+    global _PUBLIC_PORT
+    _PUBLIC_PORT = port
     server_address = ("127.0.0.1", port)
     httpd = ThreadingHTTPServer(server_address, LocalDigestHandler)
     logger.info("Instagram Digest multi-threaded server running at http://127.0.0.1:%d/", port)

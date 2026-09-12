@@ -83,6 +83,9 @@ RETENTION_WEEKS = int(os.getenv("RETENTION_WEEKS", "1"))
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", str(RETENTION_WEEKS * 7 + 1)))
 TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "300"))
 MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
+# One-sided flood guard: no single category may exceed this share of the digest.
+# (Replaces the old fixed 40/15/15/10/10/10 percentage targets.)
+MAX_CATEGORY_SHARE = float(os.getenv("MAX_CATEGORY_SHARE", "0.50"))
 R2_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024  # Strict 5 GB safety guard (out of 10 GB free)
 
 # Playback & UI Defaults
@@ -90,16 +93,16 @@ DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.0"))
 AUTO_ADVANCE_DELAY_SECONDS = 0.5
 AVAILABLE_SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0]
 
-# Category Buckets & Target Quotas (Scaled dynamically with TOP_DIGEST_COUNT)
-# 40% Entertainment, 15% Finance, 15% AI & Tech, 10% Niche, 10% Health, 10% Food
+# Category Buckets (id/label/emoji drive digest filter chips; ranking no longer
+# uses fixed percentage targets — see MAX_CATEGORY_SHARE)
 CATEGORIES = [
     {"id": "all", "label": f"All Top {TOP_DIGEST_COUNT}", "emoji": "🔥"},
-    {"id": "entertainment", "label": "Entertainment", "emoji": "🎬", "target_pct": 0.40, "target_count": round(TOP_DIGEST_COUNT * 0.40)},
-    {"id": "finance", "label": "Finance", "emoji": "💰", "target_pct": 0.15, "target_count": round(TOP_DIGEST_COUNT * 0.15)},
-    {"id": "ai_tech", "label": "AI & Tech", "emoji": "💻", "target_pct": 0.15, "target_count": round(TOP_DIGEST_COUNT * 0.15)},
-    {"id": "niche", "label": "Niche", "emoji": "🧠", "target_pct": 0.10, "target_count": round(TOP_DIGEST_COUNT * 0.10)},
-    {"id": "health", "label": "Health", "emoji": "🏋️", "target_pct": 0.10, "target_count": round(TOP_DIGEST_COUNT * 0.10)},
-    {"id": "food", "label": "Food & Recipes", "emoji": "🥗", "target_pct": 0.10, "target_count": round(TOP_DIGEST_COUNT * 0.10)},
+    {"id": "entertainment", "label": "Entertainment", "emoji": "🎬"},
+    {"id": "finance", "label": "Finance", "emoji": "💰"},
+    {"id": "ai_tech", "label": "AI & Tech", "emoji": "💻"},
+    {"id": "niche", "label": "Niche", "emoji": "🧠"},
+    {"id": "health", "label": "Health", "emoji": "🏋️"},
+    {"id": "food", "label": "Food & Recipes", "emoji": "🥗"},
 ]
 
 # File Locations

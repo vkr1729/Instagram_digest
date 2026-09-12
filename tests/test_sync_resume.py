@@ -15,9 +15,19 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import config
 import extractor
 import main
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """Pacing/backoff sleeps are real minutes; record instead of waiting."""
+    calls = []
+    monkeypatch.setattr(time, "sleep", lambda s: calls.append(s))
+    return calls
 
 
 class _Crash(BaseException):

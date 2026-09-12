@@ -62,6 +62,12 @@ STEALTH_INIT_SCRIPT = """() => {
 }"""
 
 
+# Feed-discovery pacing (low-profile after the automation warning): rest more
+# often and longer between bursts of reel evaluations.
+FEED_COOLDOWN_EVERY = (8, 14)  # evaluations between rest breaks
+FEED_COOLDOWN_SECS = (35.0, 8.0, 20.0)  # mu, sigma, floor seconds per break
+
+
 def human_pause(mu: float = 3.8, sigma: float = 1.1, floor: float = 1.5) -> float:
     """Sleep a Gaussian-distributed human-like pause with an occasional long tail.
 
@@ -1030,8 +1036,9 @@ def extract_external_reels_from_feed(
     blacklist = get_blacklisted_creators()
     creator_counts: dict[str, int] = {}
     external_candidates: list[dict[str, Any]] = []
-    # Randomized anti-detection cooldown schedule (was: fixed 12s every 25).
-    next_cooldown_at = random.randint(18, 32)
+    # Randomized anti-detection cooldown schedule (low-profile: more often,
+    # longer rests after the automation warning).
+    next_cooldown_at = random.randint(*FEED_COOLDOWN_EVERY)
 
     page = session.get_page()
     logger.info("Opening Instagram Reels feed to discover %d external high-signal reels...", target_count)
@@ -1224,11 +1231,12 @@ def extract_external_reels_from_feed(
 
         # Randomized resting pause to break robotic velocity and satisfy TOS pacing
         if eval_count >= next_cooldown_at:
-            cooldown = max(6.0, random.gauss(12.0, 3.0))
+            mu, sigma, floor = FEED_COOLDOWN_SECS
+            cooldown = max(floor, random.gauss(mu, sigma))
             logger.info("Anti-detection cooldown: resting %.1fs after %d reel evaluations...",
                         cooldown, eval_count)
             time.sleep(cooldown)
-            next_cooldown_at = eval_count + random.randint(18, 32)
+            next_cooldown_at = eval_count + random.randint(*FEED_COOLDOWN_EVERY)
 
         # Scroll to next reel with Gaussian humanized jitter + varied keys
         try:
