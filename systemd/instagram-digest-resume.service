@@ -1,0 +1,14 @@
+[Unit]
+Description=Instagram Digest: resume interrupted sync/expand pipelines at login
+Documentation=file:%h/Instagram_digest/resume_pending.sh
+After=default.target
+
+[Service]
+Type=oneshot
+# Runs resume_pending.sh once per login. The script itself is a quiet no-op
+# when no sync_progress_*.json / expand_checkpoint_*.json files are pending,
+# single-flights with flock, and never starts while another pipeline is alive.
+ExecStart=%h/Instagram_digest/resume_pending.sh
+
+[Install]
+WantedBy=default.target

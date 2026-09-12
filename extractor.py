@@ -16,7 +16,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from playwright.sync_api import sync_playwright
 
@@ -363,7 +363,15 @@ class InstagramBlocked(RuntimeError):
 
 
 class CookieExpiredException(RuntimeError):
-    """Instagram session cookies are missing or expired (redirected to login)."""
+    """Instagram session cookies are missing or expired (redirected to login).
+
+    Carries `partial`: reels already discovered before the session died, so
+    callers can checkpoint them and resume instead of losing the run's work.
+    """
+
+    def __init__(self, message: str = "", partial: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.partial: list[dict[str, Any]] = list(partial or [])
 
 
 _BLOCK_MARKERS = (
@@ -995,6 +1003,7 @@ def extract_external_reels_from_feed(
     existing_ids: set[str] | None = None,
     active_sources: list[dict[str, Any]] | None = None,
     max_evaluations: int | None = None,
+    on_progress: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Crawl Instagram Reels discovery feed (instagram.com/reels/) with Playwright to discover
     high-signal reels from external creators to fill the remaining weekly quota.
@@ -1005,6 +1014,8 @@ def extract_external_reels_from_feed(
       - Classifies topic into the 6 digest categories (ai_tech, finance, health, entertainment, niche, food).
       - Maximum 2 reels per external creator.
       - Raises CookieExpiredException if redirected to login.
+      - on_progress (optional) receives a cumulative snapshot every 10 finds so
+        callers can stream-checkpoint; a failing callback never breaks discovery.
     """
     if target_count <= 0:
         return []
@@ -1043,7 +1054,10 @@ def extract_external_reels_from_feed(
         eval_count += 1
         current_url = getattr(page, "url", "") or ""
         if any(m in current_url for m in _BLOCK_MARKERS):
-            raise CookieExpiredException(f"Instagram session expired during feed scroll: {current_url}")
+            raise CookieExpiredException(
+                f"Instagram session expired during feed scroll: {current_url}",
+                partial=external_candidates,
+            )
 
         try:
             data = page.evaluate("""() => {
@@ -1202,6 +1216,11 @@ def extract_external_reels_from_feed(
                             "Discovered external high-signal reel [%s] by @%s (%s | %d likes, %d comments) [%d/%d]",
                             rid, h, cat, likes, comments, len(external_candidates), target_count
                         )
+                        if on_progress is not None and len(external_candidates) % 10 == 0:
+                            try:
+                                on_progress(list(external_candidates))
+                            except Exception as cb_err:
+                                logger.debug("Discovery progress callback failed: %s", cb_err)
 
         # Randomized resting pause to break robotic velocity and satisfy TOS pacing
         if eval_count >= next_cooldown_at:

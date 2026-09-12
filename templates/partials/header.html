@@ -10,13 +10,10 @@
           <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">
             📥
           </button>
-          <button class="speed-btn desktop-only-btn" id="expand100Btn" onclick="triggerExpand100()" title="Expand digest by +100 reels from Reels feed">
-            +100
-          </button>
           {% if is_local %}
-          <button class="speed-btn" id="adhocSyncViewerBtn" onclick="triggerAdhocSyncViewer()" title="Ad-hoc Refresh: Fetch reels since last run">
-            ⚡ Refresh
-          </button>
+          <a href="/dashboard" class="speed-btn" style="text-decoration:none;" title="Open Ops Dashboard">
+            Ops Dashboard
+          </a>
           <a href="/channels" class="speed-btn" style="text-decoration:none;" title="Manage Channels & Subscriptions">
             👥 Channels
           </a>

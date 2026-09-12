@@ -217,6 +217,108 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
     }
 
 
+def refresh_cookies_status() -> dict[str, Any]:
+    """Refresh Instagram cookies from Chrome and report freshness signals.
+
+    Runs cookie_exporter.py under /usr/bin/python3 (system interpreter, which
+    carries dbus/cryptography — the venv does not), exactly like the expand
+    worker and run_weekly.sh, then reads back data/cookies.json. The expand
+    and retrigger pipelines already auto-refresh before running; this helper
+    backs the manual dashboard button so the owner can confirm a healthy
+    login session (sessionid present) before committing to a long +100 run.
+    """
+    import subprocess
+
+    cookie_exp = config.ROOT_DIR / "cookie_exporter.py"
+    if not cookie_exp.exists():
+        return {"success": False, "error": "cookie_exporter.py not found."}
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/python3", str(cookie_exp)],
+            capture_output=True, text=True, timeout=25,
+        )
+    except Exception as exc:
+        logger.warning("Manual cookie refresh failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+    if proc.returncode != 0:
+        err = ((proc.stderr or "") + (proc.stdout or "")).strip() or "cookie exporter failed"
+        logger.warning("Manual cookie refresh failed: %s", err)
+        return {"success": False, "error": err[-300:]}
+    try:
+        cdata = json.loads((config.DATA_DIR / "cookies.json").read_text(encoding="utf-8"))
+        cookies = cdata.get("cookies_dict", {})
+    except Exception as exc:
+        return {"success": False, "error": f"Refresh ran but cookies.json is unreadable: {exc}"}
+    if not cookies:
+        return {
+            "success": False,
+            "error": "No Instagram cookies found in Chrome. Log into instagram.com in Chrome and retry.",
+        }
+    return {
+        "success": True,
+        "cookie_count": len(cookies),
+        "has_sessionid": "sessionid" in cookies,
+        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def resume_pipeline_state() -> dict[str, Any]:
+    """Read-only inventory of work parked for resume (checkpoints/progress).
+
+    Backs the dashboard's pending-resume lane. Never mutates anything; only
+    the pipelines themselves clear their own checkpoints on completion.
+    """
+    pending_expand: list[dict[str, Any]] = []
+    for ckpt in sorted(config.DATA_DIR.glob("expand_checkpoint_*.json")):
+        try:
+            data = json.loads(ckpt.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        reels = data.get("reels") if isinstance(data, dict) else data
+        if not isinstance(reels, list):
+            continue
+        target = data.get("target_count", 100) if isinstance(data, dict) else 100
+        try:
+            updated = datetime.fromtimestamp(ckpt.stat().st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            continue
+        pending_expand.append({
+            "file": ckpt.name,
+            "target_count": target if isinstance(target, int) else 100,
+            "banked": len([r for r in reels if isinstance(r, dict) and r.get("id")]),
+            "updated_at": updated,
+        })
+    pending_sync: list[dict[str, Any]] = []
+    for prog in sorted(config.DATA_DIR.glob("sync_progress_*.json")):
+        try:
+            data = json.loads(prog.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("stage") not in ("extracting", "enriched", "ranked"):
+            continue
+        try:
+            updated = datetime.fromtimestamp(prog.stat().st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            continue
+        entry: dict[str, Any] = {
+            "file": prog.name,
+            "stage": data["stage"],
+            "updated_at": updated,
+        }
+        if data["stage"] == "ranked":
+            entry["banked"] = len([r for r in data.get("ranked", []) if isinstance(r, dict) and r.get("id")])
+        elif data["stage"] == "enriched":
+            entry["banked"] = len([r for r in data.get("enriched", []) if isinstance(r, dict) and r.get("id")])
+        else:
+            entry["banked"] = len([
+                r for r in data.get("candidates", []) if isinstance(r, dict) and r.get("id")
+            ])
+            done = data.get("done") or {}
+            entry["creators_visited"] = len(done) if isinstance(done, dict) else 0
+        pending_sync.append(entry)
+    return {"expand": pending_expand, "sync": pending_sync}
+
+
 def _atomic_write_json(path: Path, data: Any) -> None:
     """Crash-safe JSON write: temp + flush + fsync + atomic replace + dir fsync."""
     atomic_io.durable_write_json(path, data)
@@ -494,6 +596,18 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API resume-state route -> /api/resume-state (pending checkpoints/progress)
+        if clean_path in ("/api/resume-state", "/api/resume-state/"):
+            resp = {"success": True, **resume_pipeline_state()}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # API Expand status route -> /api/expand/status
         if clean_path in ("/api/expand/status", "/api/expand/status/"):
             with _EXPAND_LOCK:
@@ -513,6 +627,32 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             channels_template = config.TEMPLATES_DIR / "channels.html"
             if channels_template.exists():
                 content = channels_template.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        # Web Route: /dashboard (desktop ops page, raw static template)
+        if clean_path in ("/dashboard", "/dashboard/"):
+            dashboard_template = config.TEMPLATES_DIR / "dashboard.html"
+            if dashboard_template.exists():
+                content = dashboard_template.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
+        # Web Route: /viewer (explicit viewer URL; root serves it too)
+        if clean_path in ("/viewer", "/viewer/"):
+            viewer_file = config.SITE_DIR / "local_index.html"
+            if not viewer_file.exists():
+                viewer_file = config.SITE_DIR / "index.html"
+            if viewer_file.exists():
+                content = viewer_file.read_bytes()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
@@ -585,6 +725,18 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             count = int(query.get("count", ["100"])[0])
             logger.info("Digest expansion (+%d) triggered via API.", count)
             resp = trigger_expand_task(count=count, deploy=True)
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/cookies/refresh", "/api/cookies/refresh/"):
+            logger.info("Manual cookie refresh triggered via API.")
+            resp = refresh_cookies_status()
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

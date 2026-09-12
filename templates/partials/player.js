@@ -1865,87 +1865,9 @@
       });
     }
 
-    async function triggerExpand100() {
-      const btn = document.getElementById('expand100Btn');
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = '⏳ Adding +100...';
-      }
-      showToast('Fetching 100 extra reels from feed...');
-      try {
-        const res = await fetch('/api/expand?count=100', { method: 'POST' });
-        const data = await res.json();
-        showToast(data.message || 'Expansion running in background');
-
-        const poll = setInterval(async () => {
-          try {
-            const stRes = await fetch('/api/expand/status');
-            const stData = await stRes.json();
-            if (stData.state && !stData.state.is_running) {
-              clearInterval(poll);
-              if (btn) {
-                btn.disabled = false;
-                btn.textContent = '+100';
-              }
-              if (stData.state.status === 'completed') {
-                showToast('+100 Expansion complete! Reloading...');
-                setTimeout(() => window.location.reload(), 1500);
-              } else {
-                showToast(stData.state.last_error || 'Expansion completed with warnings');
-              }
-            }
-          } catch (e) {
-            clearInterval(poll);
-            if (btn) { btn.disabled = false; btn.textContent = '+100'; }
-          }
-        }, 3000);
-      } catch (e) {
-        showToast('Failed starting expansion');
-        if (btn) { btn.disabled = false; btn.textContent = '+100'; }
-      }
-    }
-
-    {% if is_local %}
-    async function triggerAdhocSyncViewer() {
-      const btn = document.getElementById('adhocSyncViewerBtn');
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = '⚡ Syncing...';
-      }
-      showToast('Starting ad-hoc midweek sync...');
-      try {
-        const res = await fetch('/api/sync-adhoc', { method: 'POST' });
-        const data = await res.json();
-        showToast(data.message || 'Sync running in background');
-
-        const poll = setInterval(async () => {
-          try {
-            const stRes = await fetch('/api/sync-adhoc');
-            const stData = await stRes.json();
-            if (stData.sync_state && !stData.sync_state.is_running) {
-              clearInterval(poll);
-              if (btn) {
-                btn.disabled = false;
-                btn.textContent = '⚡ Refresh';
-              }
-              if (stData.sync_state.status === 'completed') {
-                showToast('Midweek sync complete! Reloading...');
-                setTimeout(() => window.location.reload(), 1500);
-              } else {
-                showToast('Sync completed with warnings');
-              }
-            }
-          } catch (e) {
-            clearInterval(poll);
-            if (btn) { btn.disabled = false; btn.textContent = '⚡ Refresh'; }
-          }
-        }, 3000);
-      } catch (e) {
-        showToast('Failed starting sync');
-        if (btn) { btn.disabled = false; btn.textContent = '⚡ Refresh'; }
-      }
-    }
-    {% endif %}
+    // Ops controls (+100 expand, cookie refresh, ad-hoc sync) live on the
+    // desktop Ops Dashboard (/dashboard) now; the viewer keeps pure viewing
+    // plus offline download. The /api/* endpoints they used are unchanged.
 
     // Initialize & Resume from Last Active Reel / First Unwatched Reel (or Deep Link ?reel=ID)
     const urlParams = new URLSearchParams(window.location.search);

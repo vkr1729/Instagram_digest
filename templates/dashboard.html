@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Digest Ops — Desktop Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #09090b; color: #f4f4f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 28px 32px 70px; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid rgba(255,255,255,.1); padding-bottom: 14px; margin-bottom: 18px; }
+  h1 { font-size: 19px; font-weight: 700; }
+  h1 span { color: #a1a1aa; font-weight: 400; font-size: 13px; margin-left: 10px; }
+  nav a { color: #a1a1aa; text-decoration: none; font-size: 13px; margin-left: 18px; }
+  nav a:hover { color: #fff; }
+  .live { font-size: 12px; color: #4ade80; }
+  .live i { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #4ade80; margin-right: 6px; }
+  .live.down { color: #f87171; }
+  .live.down i { background: #f87171; }
+  #resumeLane { margin-bottom: 18px; display: grid; gap: 10px; }
+  .banner { border: 1px solid rgba(251,191,36,.4); background: rgba(251,191,36,.07);
+    border-radius: 10px; padding: 12px 16px;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .banner p { font-size: 13.5px; }
+  .banner p b { font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #141419; border: 1px solid rgba(255,255,255,.08);
+    border-radius: 10px; padding: 16px 18px; }
+  .card.wide { grid-column: 1 / -1; }
+  .row1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  h2 { font-size: 14px; font-weight: 650; }
+  .pill { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 3px 10px;
+    border-radius: 20px; white-space: nowrap; }
+  .run { color: #4ade80; border: 1px solid rgba(74,222,128,.45); }
+  .warn { color: #fbbf24; border: 1px solid rgba(251,191,36,.45); }
+  .idle { color: #a1a1aa; border: 1px solid rgba(255,255,255,.18); }
+  .ok { color: #4ade80; border: 1px solid rgba(74,222,128,.45); }
+  .bad { color: #f87171; border: 1px solid rgba(248,113,113,.45); }
+  .meta { font-size: 12.5px; color: #a1a1aa; line-height: 1.65; }
+  .meta b { color: #f4f4f5; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .actions { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button, .btn { font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.16); background: #27272a; color: #fff;
+    cursor: pointer; text-decoration: none; display: inline-block; }
+  button.primary, .btn.primary { background: #f4f4f5; color: #09090b; border-color: transparent; }
+  button:disabled { opacity: .45; cursor: default; }
+  input.count { width: 76px; font-size: 13px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.16); background: #09090b; color: #fff; }
+  .activity { margin-top: 18px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px;
+    background: #0d0d11; padding: 14px 18px; font-size: 12.5px; line-height: 1.9; color: #a1a1aa; }
+  .activity h2 { margin-bottom: 6px; }
+  .activity .t { color: #63636b; font-variant-numeric: tabular-nums; margin-right: 10px; }
+  #toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    background: #27272a; border: 1px solid rgba(255,255,255,.16); color: #fff;
+    font-size: 13px; padding: 10px 20px; border-radius: 10px; display: none; max-width: 90vw; }
+  footer { margin-top: 22px; font-size: 12px; color: #71717a; }
+  footer a { color: #a1a1aa; }
+  @media (max-width: 760px) {
+    body { padding: 18px 14px 70px; }
+    .grid { grid-template-columns: 1fr; }
+    .banner { flex-direction: column; align-items: stretch; }
+    .banner .actions { margin-top: 10px; }
+    .banner button, .card button, .card .btn { width: 100%; text-align: center;
+      padding: 12px 0; font-size: 14px; }
+    input.count { width: 100%; padding: 12px 10px; font-size: 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Digest Ops <span id="srvLine">localhost:8080</span></h1>
+    <nav><span class="live" id="liveDot"><i></i>Server live</span><a href="/viewer">Viewer</a><a href="/channels">Channels</a></nav>
+  </header>
+  <div id="resumeLane"></div>
+  <div class="grid">
+    <div class="card wide">
+      <div class="row1"><h2>Weekly sync</h2><span class="pill idle" id="syncPill">IDLE</span></div>
+      <div class="meta" id="syncMeta">Loading…</div>
+      <div class="actions">
+        <button id="adhocBtn">Run ad-hoc refresh</button>
+        <a class="btn" href="/retrigger">Retrigger full sync</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row1"><h2>Expand digest</h2><span class="pill idle" id="expandPill">IDLE</span></div>
+      <div class="meta" id="expandMeta">Loading…</div>
+      <div class="actions">
+        <input class="count" id="expandCount" type="number" value="100" min="1" max="500" title="Reels to add">
+        <button class="primary" id="expandBtn">Start expand</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row1"><h2>Cookies</h2><span class="pill idle" id="cookiePill">UNKNOWN</span></div>
+      <div class="meta" id="cookieMeta">Press refresh to verify the Chrome login session.</div>
+      <div class="actions"><button id="cookieBtn">Refresh cookies</button></div>
+    </div>
+  </div>
+  <div class="activity"><h2>Recent activity</h2><div id="activityBody">Loading…</div></div>
+  <footer>Auto-resume armed — pending work restarts at next login. · <a href="/retrigger">Retrigger page</a> · <a href="/viewer">Viewer</a></footer>
+</div>
+<div id="toast"></div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let toastTimer = null;
+  function toast(msg) {
+    const el = $("toast");
+    el.textContent = msg;
+    el.style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.style.display = "none"; }, 4200);
+  }
+  async function getJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  }
+  function ago(iso) {
+    if (!iso) return "never";
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 90) return Math.floor(s) + "s ago";
+    if (s < 5400) return Math.floor(s / 60) + "m ago";
+    return Math.floor(s / 3600) + "h ago";
+  }
+  function setPill(el, text, cls) {
+    el.textContent = text;
+    el.className = "pill " + cls;
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+  async function refresh() {
+    try {
+      const [sync, expand, adhoc, resume] = await Promise.all([
+        getJSON("/api/sync-status"), getJSON("/api/expand/status"),
+        getJSON("/api/sync-adhoc"), getJSON("/api/resume-state"),
+      ]);
+      $("liveDot").className = "live";
+      $("liveDot").innerHTML = "<i></i>Server live";
+      renderSync(sync, adhoc);
+      renderExpand(expand, resume);
+      renderResumeLane(resume);
+      renderActivity(sync, expand, adhoc, resume);
+    } catch (e) {
+      $("liveDot").className = "live down";
+      $("liveDot").innerHTML = "<i></i>Server unreachable";
+    }
+  }
+  function renderSync(sync, adhoc) {
+    const running = !!sync.is_running;
+    setPill($("syncPill"), running ? "RUNNING" : String(sync.status || "idle").toUpperCase(), running ? "run" : "idle");
+    const last = adhoc && adhoc.last_run ? adhoc.last_run : null;
+    const lastTxt = last && last.last_run_utc ? "Last success " + ago(last.last_run_utc) + " (" + esc(last.week_id || "") + ")" : "No successful run recorded";
+    $("syncMeta").innerHTML = running
+      ? "Running since <b>" + esc(sync.started_at || "?") + "</b>"
+      : esc(lastTxt) + (sync.last_error ? "<br>Last error: <b>" + esc(sync.last_error) + "</b>" : "");
+  }
+  function renderExpand(expand, resume) {
+    const st = expand.state || {};
+    const running = !!st.is_running;
+    setPill($("expandPill"), running ? "RUNNING" : String(st.status || "idle").toUpperCase(), running ? "run" : "idle");
+    $("expandMeta").innerHTML = running
+      ? "Running since <b>" + esc(st.started_at || "?") + "</b>"
+      : (st.last_error ? "Last error: <b>" + esc(st.last_error) + "</b>"
+        : "Appends fresh reels to the active digest.");
+  }
+  function renderResumeLane(resume) {
+    const lane = $("resumeLane");
+    const items = [];
+    (resume.expand || []).forEach((c) => {
+      items.push('<div class="banner"><p><b>Expand interrupted</b> — <b>' + c.banked + " of " + c.target_count +
+        "</b> banked " + ago(c.updated_at) + '.</p><div class="actions" style="margin:0">' +
+        '<button class="primary" data-resume-expand="' + c.target_count + '">Resume remaining ' +
+        Math.max(0, c.target_count - c.banked) + "</button></div></div>");
+    });
+    (resume.sync || []).forEach((s) => {
+      const what = s.stage === "ranked" ? s.banked + " ranked reels"
+        : s.stage === "enriched" ? s.banked + " enriched reels"
+        : s.banked + " candidates" + (s.creators_visited ? ", " + s.creators_visited + " creators visited" : "");
+      items.push('<div class="banner"><p><b>Weekly sync interrupted</b> (' + esc(s.stage) + ") — " + esc(what) +
+        " banked " + ago(s.updated_at) + '.</p><div class="actions" style="margin:0">' +
+        '<button class="primary" data-resume-sync="1">Resume sync</button></div></div>');
+    });
+    lane.innerHTML = items.join("");
+    lane.querySelectorAll("[data-resume-expand]").forEach((b) => {
+      b.addEventListener("click", () => startExpand(parseInt(b.getAttribute("data-resume-expand"), 10) || 100, b));
+    });
+    lane.querySelectorAll("[data-resume-sync]").forEach((b) => {
+      b.addEventListener("click", () => startAdhoc(b));
+    });
+  }
+  function renderActivity(sync, expand, adhoc, resume) {
+    const rows = [];
+    if (sync.is_running) rows.push(["sync started", sync.started_at, "weekly sync running"]);
+    else if (sync.last_error) rows.push(["sync error", null, sync.last_error]);
+    else if (sync.last_result != null) rows.push(["sync done", null, "exit " + sync.last_result]);
+    const est = expand.state || {};
+    if (est.is_running) rows.push(["expand started", est.started_at, "expansion running"]);
+    else if (est.last_error) rows.push(["expand error", null, est.last_error]);
+    (resume.expand || []).forEach((c) => rows.push(["checkpoint", c.updated_at,
+      "expand " + c.banked + "/" + c.target_count + " banked"]));
+    (resume.sync || []).forEach((s) => rows.push(["checkpoint", s.updated_at,
+      "sync " + s.stage + " banked"]));
+    if (adhoc && adhoc.last_run && adhoc.last_run.last_run_utc)
+      rows.push(["last success", adhoc.last_run.last_run_utc, "digest " + (adhoc.last_run.week_id || "")]);
+    $("activityBody").innerHTML = rows.length
+      ? rows.slice(0, 8).map((r) => "<div><span class='t'>" + esc(r[1] || "—") + "</span>" + esc(r[0]) + " · " + esc(r[2]) + "</div>").join("")
+      : "No activity yet.";
+  }
+  async function startExpand(count, btn) {
+    count = Math.min(500, Math.max(1, parseInt(count, 10) || 100));
+    if (btn) { btn.disabled = true; }
+    toast("Starting +" + count + " expansion…");
+    try {
+      const res = await fetch("/api/expand?count=" + count, { method: "POST" });
+      const data = await res.json();
+      toast(data.message || (data.success ? "Expansion started." : "Expansion refused."));
+    } catch (e) { toast("Failed starting expansion."); }
+    if (btn) { btn.disabled = false; }
+    refresh();
+  }
+  async function startAdhoc(btn) {
+    if (btn) { btn.disabled = true; }
+    toast("Starting ad-hoc refresh…");
+    try {
+      const res = await fetch("/api/sync-adhoc", { method: "POST" });
+      const data = await res.json();
+      toast(data.message || (data.success ? "Ad-hoc refresh started." : "Refresh refused."));
+    } catch (e) { toast("Failed starting refresh."); }
+    if (btn) { btn.disabled = false; }
+    refresh();
+  }
+  async function refreshCookies() {
+    const btn = $("cookieBtn");
+    btn.disabled = true;
+    setPill($("cookiePill"), "WORKING", "idle");
+    try {
+      const res = await fetch("/api/cookies/refresh", { method: "POST" });
+      const data = await res.json();
+      if (data.success && data.has_sessionid) {
+        setPill($("cookiePill"), "SESSION VALID", "ok");
+        $("cookieMeta").innerHTML = "<b>" + data.cookie_count + " cookies</b> · refreshed just now · login session present";
+        toast("Cookies fresh — safe to expand.");
+      } else if (data.success) {
+        setPill($("cookiePill"), "NO SESSION", "warn");
+        $("cookieMeta").textContent = "Refreshed, but no login session — open instagram.com in Chrome first.";
+      } else {
+        setPill($("cookiePill"), "FAILED", "bad");
+        $("cookieMeta").textContent = data.error || "Cookie refresh failed.";
+      }
+    } catch (e) {
+      setPill($("cookiePill"), "FAILED", "bad");
+    }
+    btn.disabled = false;
+  }
+  $("expandBtn").addEventListener("click", () => startExpand($("expandCount").value, $("expandBtn")));
+  $("adhocBtn").addEventListener("click", () => startAdhoc($("adhocBtn")));
+  $("cookieBtn").addEventListener("click", refreshCookies);
+  refresh();
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>

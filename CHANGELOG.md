@@ -1,3 +1,59 @@
+# Changelog — Desktop Ops Dashboard (2026-09-12)
+
+Standalone local-only `/dashboard` page (Mock A + status-strip + responsive
+collapse, per approved grill); viewer header stripped to pure viewing.
+
+- New `templates/dashboard.html` (raw static, `/channels` pattern): run
+  buttons (ad-hoc, expand with count, cookies, retrigger link), live
+  pipeline status (5s poll), pending-resume lane, recent-activity strip.
+- New `GET /api/resume-state` (read-only checkpoint/progress inventory),
+  `GET /dashboard`, `GET /viewer` routes in `local_server.py`. Root still
+  serves the viewer; no UA sniffing.
+- Viewer cleanup: +100/cookie/ad-hoc buttons and their JS removed from the
+  header; offline download kept everywhere; local-only Ops Dashboard link.
+  Deployed Pages build carries no dashboard surface (one JS comment only).
+- `launch.sh` opens `/dashboard` (desktop default landing).
+- Tests: `tests/test_dashboard.py` (8 tests: resume-state, live routes,
+  header/JS contract, launcher URL).
+
+# Changelog — Crash-Safe Resume (2026-09-12)
+
+Interrupted runs no longer lose their work. Both pipelines checkpoint
+"done but not yet in the digest" atomically, and the next run tops up
+instead of restarting. A login-time service finishes leftovers unattended.
+
+## +100 expansion (`run_expand`)
+
+- `extractor.CookieExpiredException` carries its partial finds; mid-scroll
+  cookie death checkpoints them instead of discarding the run.
+- Discovery stream-checkpoints every 10 finds, persists the full list before
+  downloads, and keeps download/upload leftovers for retry.
+- Checkpoints are envelopes (`version`, `target_count`, `reels`) so resume
+  knows the original target; stale weeks pruned, newest week adopted.
+- Tests: `tests/test_expand_resume.py` (8 tests).
+
+## Weekly sync (`run_full_sync`)
+
+- Staged progress (`extracting` → `enriched` → `ranked`) in
+  `data/sync_progress_*.json`, keyed on matching run parameters (anchor
+  window + per-creator limit). Aborts bank progress instead of deleting the
+  candidates cache; viability-gate failure and hopeless runs clear it.
+- Extraction skips visited creators (streaming writes every 5), enrichment
+  reuses banked metadata by id (writes every 25), ranked stage jumps
+  straight to downloads. Dry runs never touch progress.
+- Tests: `tests/test_sync_resume.py` (4 tests).
+
+## Auto-resume at login
+
+- New `resume_pending.sh`: reruns `--sync --deploy` for pending sync
+  progress, then `--expand <target> --deploy` per checkpoint (target from
+  the envelope). Single-flights with flock, skips while any pipeline is
+  alive (ancestor-aware pgrep guard), quiet no-op when nothing is pending,
+  desktop notification on start/finish. Only a pipeline that integrates the
+  work clears its checkpoint, so failed resumes stay retryable.
+- New `systemd/instagram-digest-resume.service` (user unit, runs at login).
+  Install: copy to `~/.config/systemd/user/`, `daemon-reload`, `enable`.
+
 # Changelog — Post-Review Hardening (2026-09-11)
 
 All items below close findings from the adversarial review

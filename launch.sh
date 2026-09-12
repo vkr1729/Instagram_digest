@@ -14,9 +14,9 @@ fi
 (
     sleep 1
     if command -v xdg-open >/dev/null 2>&1; then
-        xdg-open "http://127.0.0.1:8080/"
+        xdg-open "http://127.0.0.1:8080/dashboard"
     elif command -v google-chrome >/dev/null 2>&1; then
-        google-chrome "http://127.0.0.1:8080/"
+        google-chrome "http://127.0.0.1:8080/dashboard"
     fi
 ) &
 
