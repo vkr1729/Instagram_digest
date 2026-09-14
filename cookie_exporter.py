@@ -52,25 +52,21 @@ def get_chrome_secret_service_password() -> bytes:
 
 
 def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
-    """Decrypt v10 or v11 encrypted cookie blob."""
+    """Decrypt a v10/v11 Chrome cookie blob with the supplied Safe Storage key."""
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-    if enc_bytes.startswith(b"v11"):
-        ciphertext = enc_bytes[3:]
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        dec = cipher.decryptor().update(ciphertext) + cipher.decryptor().finalize()
-        pad_len = dec[-1]
-        unpadded = dec[:-pad_len]
-        return unpadded[32:].decode("utf-8", errors="replace")
-    elif enc_bytes.startswith(b"v10"):
-        k10 = hashlib.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1, 16)
-        cipher = Cipher(algorithms.AES(k10), modes.CBC(iv), backend=default_backend())
-        dec = cipher.decryptor().update(enc_bytes[3:]) + cipher.decryptor().finalize()
-        pad_len = dec[-1]
-        unpadded = dec[:-pad_len]
-        return unpadded[32:].decode("utf-8", errors="replace")
-    return ""
+    if not enc_bytes.startswith((b"v10", b"v11")):
+        return ""
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    dec = cipher.decryptor()
+    padded = dec.update(enc_bytes[3:]) + dec.finalize()
+    if not padded:
+        return ""
+    pad_len = padded[-1]
+    unpadded = padded[:-pad_len]
+    # Linux Chrome prefixes the SHA256(host_key) to the plaintext.
+    return unpadded[32:].decode("utf-8", errors="replace")
 
 
 def _secure_write_text(path: Path, content: str) -> None:

@@ -626,42 +626,52 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         clean_path = parsed.path
 
-        if clean_path in ("/", "/index.html"):
+        def _head(path: Path, content_type: str, extra: dict[str, str] | None = None) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(path.stat().st_size))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+
+        if clean_path in ("/", "/index.html", "/viewer", "/viewer/"):
             local_index = config.SITE_DIR / "local_index.html"
             if not local_index.exists():
                 local_index = config.SITE_DIR / "index.html"
             if local_index.exists():
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(local_index.stat().st_size))
-                self.end_headers()
-                return
+                _head(local_index, "text/html; charset=utf-8")
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
-                return
-
-        if clean_path.startswith("/videos/"):
-            video_rel = clean_path.replace("/videos/", "")
-            video_path = config.VIDEOS_DIR / video_rel
-            if video_path.exists() and video_path.is_file():
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "video/mp4")
-                self.send_header("Content-Length", str(video_path.stat().st_size))
-                self.send_header("Accept-Ranges", "bytes")
-                self.end_headers()
-                return
-
-        file_path = config.SITE_DIR / clean_path.lstrip("/")
-        if file_path.exists() and file_path.is_file():
-            content_type = self.guess_type(str(file_path))
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(file_path.stat().st_size))
-            self.end_headers()
             return
 
-        self.send_response(HTTPStatus.OK)
-        self.end_headers()
+        if clean_path.startswith("/videos/"):
+            video_path = config.VIDEOS_DIR / clean_path[len("/videos/"):]
+            try:
+                inside = video_path.resolve().is_relative_to(config.VIDEOS_DIR.resolve())
+            except Exception:
+                inside = False
+            if inside and video_path.is_file():
+                _head(video_path, "video/mp4", {"Accept-Ranges": "bytes"})
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        file_path = config.SITE_DIR / clean_path.lstrip("/")
+        try:
+            inside = file_path.resolve().is_relative_to(config.SITE_DIR.resolve())
+        except Exception:
+            inside = False
+        if inside and not clean_path.startswith("/api/") and file_path.is_file():
+            _head(file_path, self.guess_type(str(file_path)))
+            return
+
+        # API GET routes and the three HTML routes answer HEAD with a bare 200; everything else is 404.
+        if clean_path.startswith("/api/") or clean_path.rstrip("/") in ("/retrigger", "/channels", "/dashboard"):
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -675,7 +685,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(state).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -885,7 +894,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -897,7 +905,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -911,7 +918,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -923,7 +929,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -935,7 +940,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1079,11 +1083,15 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/sync-following":
             logger.info("On-demand following sync triggered via dashboard API.")
-            try:
-                sources = extractor.sync_following_accounts(force=True)
-                resp = {"success": True, "sources_count": len(sources)}
-            except Exception as e:
-                resp = {"success": False, "error": str(e)}
+
+            def _run_following_sync():
+                try:
+                    extractor.sync_following_accounts(force=True)
+                except Exception as exc:
+                    logger.exception("Following sync worker error: %s", exc)
+
+            threading.Thread(target=_run_following_sync, daemon=True).start()
+            resp = {"success": True, "message": "Following sync started in background."}
 
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -1330,13 +1338,34 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         range_str = range_header[len(bytes_prefix):].strip()
-        parts = range_str.split("-")
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-
-        if start >= file_size or end >= file_size or start > end:
+        if "," in range_str:  # multipart ranges unsupported
             self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
             self.send_header("Content-Range", f"bytes */{file_size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        parts = range_str.split("-", 1)
+        try:
+            if parts[0] == "":
+                suffix = int(parts[1])
+                if suffix <= 0:
+                    raise ValueError("zero suffix")
+                start, end = max(0, file_size - suffix), file_size - 1
+            else:
+                start = int(parts[0])
+                end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+        except ValueError:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{file_size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        end = min(end, file_size - 1)  # RFC 7233: clamp end, never reject it
+
+        if start >= file_size or start > end:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{file_size}")
+            self.send_header("Content-Length", "0")
             self.end_headers()
             return
 
