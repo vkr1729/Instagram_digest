@@ -5,6 +5,7 @@
 // waitUntil was terminated silently part-way through.
 
 const CACHE_NAME = 'ig-digest-media-v1';
+const IMAGE_CACHE_NAME = 'ig-digest-images-v1';
 const PRECACHE_CONCURRENCY = 2;
 const BLOB_MEMO_MAX = 2;
 
@@ -13,11 +14,12 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
+  const allowedCaches = new Set([CACHE_NAME, IMAGE_CACHE_NAME]);
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
         keys.map((k) => {
-          if (k !== CACHE_NAME) {
+          if (!allowedCaches.has(k)) {
             return caches.delete(k);
           }
         })
@@ -111,9 +113,35 @@ function memoDrop(key) { blobMemo.delete(key); }
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   const isVideo = url.pathname.endsWith('.mp4') || event.request.destination === 'video';
+  const isImage = event.request.destination === 'image' ||
+                  url.pathname.includes('/thumbnails/') ||
+                  /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(url.pathname);
+
+  if (isImage) {
+    // Cache-First strategy for thumbnails and images:
+    // 1. Instant 0ms load from CacheStorage for grid view and feed posters
+    // 2. Full offline support for all images
+    // 3. Network fallback with automatic cache population
+    event.respondWith(
+      caches.open(IMAGE_CACHE_NAME).then(async (cache) => {
+        const cached = await cache.match(event.request);
+        if (cached) return cached;
+        try {
+          const networkResponse = await fetch(event.request);
+          if (networkResponse && (networkResponse.ok || networkResponse.type === 'opaque')) {
+            cache.put(event.request, networkResponse.clone());
+          }
+          return networkResponse;
+        } catch (err) {
+          return cached || new Response('', { status: 404, statusText: 'Not Found' });
+        }
+      })
+    );
+    return;
+  }
 
   if (!isVideo) {
-    return; // Pass through non-video requests normally
+    return; // Pass through non-video/non-image requests normally
   }
 
   // Key the cache by URL without query params

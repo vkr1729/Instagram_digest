@@ -469,6 +469,12 @@
       const shareUrl = `${basePath}/share/${reelId}.html?v=3`;
       const shareText = `Watch @${creatorHandle || 'reel'} on Instagram Digest: ${shareUrl}`;
 
+      // Extract caption from active card snippet (capped at 1,000 chars matching Telegram bookmarking)
+      const card = document.querySelector(`.reel-card[data-id="${reelId}"]`);
+      const captionEl = card ? card.querySelector('.caption-snippet') : null;
+      const rawCaption = captionEl ? (captionEl.innerText || captionEl.textContent || '').trim() : '';
+      const shareCaption = rawCaption ? rawCaption.slice(0, 1000) : `Reel by @${creatorHandle || 'creator'}`;
+
       window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(shareText)}`;
 
       // 1. Try native Web Share synchronously to retain transient activation.
@@ -479,7 +485,7 @@
           navigator.share({
             files: [activeShareFile],
             title: `Reel by @${creatorHandle || 'creator'}`,
-            text: shareText
+            text: shareCaption
           }).catch(err => {
             if (err && err.name === 'AbortError') return;
             fallbackShare(shareText);
