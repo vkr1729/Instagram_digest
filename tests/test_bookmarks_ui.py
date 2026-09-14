@@ -23,16 +23,7 @@ IPHONE_15_PRO = {
 
 @pytest.fixture(scope="module")
 def built_site():
-    import os as _os
-    prev = _os.environ.get("VIEWING_PIN")
-    _os.environ["VIEWING_PIN"] = ""   # fixtures must never inherit the live PIN
-    try:
-        site_builder.build_site()
-    finally:
-        if prev is None:
-            _os.environ.pop("VIEWING_PIN", None)
-        else:
-            _os.environ["VIEWING_PIN"] = prev
+    site_builder.build_site()
     assert SITE_INDEX.exists()
     return SITE_INDEX
 
@@ -68,6 +59,7 @@ def test_bookmark_button_is_visible_on_cards(page: Page):
     """Verify bookmark button is visible and displays '🔖 Save'."""
     active_card = page.locator(".reel-card.is-active").first
     btn = active_card.locator(".bookmark-btn")
+    btn.wait_for(state="visible", timeout=3000)
     assert btn.is_visible()
     assert "Save" in btn.text_content()
 

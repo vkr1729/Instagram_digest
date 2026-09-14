@@ -52,3 +52,5 @@ logs/
 # Debug and troubleshooting uploads
 debug/
 .user_uploaded/
+FINAL_*.md
+*HANDOFF_PROMPT*.md

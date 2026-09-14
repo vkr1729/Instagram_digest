@@ -662,49 +662,37 @@ def _run_full_sync(
 
             newly_enriched = 0
             if todo:
-                import queue as _queue
-                _session_pool: _queue.Queue = _queue.Queue()
-                _pool_sessions = [extractor.InstagramSession() for _ in range(ENRICH_WORKERS)]
-                for _s in _pool_sessions:
-                    _s.start()
-                    _session_pool.put(_s)
-
+                # Serial enrichment contract (max_workers=ENRICH_WORKERS == 1):
+                # Reuse the existing authenticated `session` directly on the main thread.
+                # Spawning separate processes or threads with Playwright's sync API triggers
+                # greenlet thread-switch conflicts or duplicate asyncio loop collisions.
                 def _enrich_item(r: dict[str, Any]) -> dict[str, Any] | None:
-                    sess = _session_pool.get()
                     try:
                         mu, sigma, floor = ENRICH_PAUSE
                         extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
-                        m = extractor.extract_single_reel_metadata(r, session=sess)
+                        m = extractor.extract_single_reel_metadata(r, session=session)
                         if not m or (m.get("timestamp") or 0) < cutoff_ts:
                             return None
                         return m
-                    finally:
-                        _session_pool.put(sess)
+                    except Exception as exc:
+                        logger.debug("Enrichment error on reel %s: %s", r.get("id"), exc)
+                        return None
 
-                try:
-                    with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as executor:
-                        futures = [executor.submit(_enrich_item, r) for r in todo]
-                        for f in as_completed(futures):
-                            try:
-                                res = f.result()
-                                if res and res.get("id"):
-                                    enriched_by_id[res["id"]] = res
-                                    newly_enriched += 1
-                                    if newly_enriched % 25 == 0:
-                                        _write_sync_progress("enriched", {
-                                            "candidates": candidates,
-                                            "shortlist": shortlist,
-                                            "enriched": list(enriched_by_id.values()),
-                                            "extraction_complete": True,
-                                        })
-                            except Exception as exc:
-                                logger.debug("Enrichment error: %s", exc)
-                finally:
-                    for _s in _pool_sessions:
-                        try:
-                            _s.close()
-                        except Exception:
-                            pass
+                for r in todo:
+                    try:
+                        res = _enrich_item(r)
+                        if res and res.get("id"):
+                            enriched_by_id[res["id"]] = res
+                            newly_enriched += 1
+                            if newly_enriched % 25 == 0:
+                                _write_sync_progress("enriched", {
+                                    "candidates": candidates,
+                                    "shortlist": shortlist,
+                                    "enriched": list(enriched_by_id.values()),
+                                    "extraction_complete": True,
+                                })
+                    except Exception as exc:
+                        logger.debug("Enrichment iteration error: %s", exc)
 
             enriched = [enriched_by_id[rid] for rid in shortlist_ids if rid in enriched_by_id]
             logger.info("Enriched %d valid reels within date window out of %d candidates.", len(enriched), len(shortlist))
