@@ -17,3 +17,10 @@ bucket_name = "instagram-digest"
 
 [vars]
 R2_PUBLIC_BASE_URL = "https://instagram-digest-media.kedarvreddy.workers.dev"
+# Only thumbnails under this prefix may be fetched into R2 (bounded to 2 MB).
+THUMB_BASE_URL = "https://vkr1729.github.io/Instagram_digest/thumbnails"
+# Extra CORS origins, comma-separated (github.io + localhost:8080 are built in).
+ALLOWED_ORIGINS = ""
+
+[triggers]
+crons = ["17 4 * * *"]
