@@ -360,3 +360,65 @@ def test_discovery_selectors_are_disjoint():
     first, second = extractor._DISCOVERY_SELECTORS
     assert first != second
     assert second not in first and first not in second
+
+
+# P0-2: resumed sync retires the older-day checkpoint ---------------------------
+def test_resumed_sync_retires_older_day_checkpoint(tmp_path, monkeypatch):
+    _iso(tmp_path, monkeypatch)
+    monkeypatch.setattr(site_builder, "build_site", lambda **kw: (tmp_path, tmp_path))
+    monkeypatch.setattr(main, "_alert_sync_abort", lambda *a, **k: None)
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 1)
+    stale = config.DATA_DIR / f"sync_progress_{YESTERDAY}.json"
+    stale.write_text(json.dumps({
+        "version": 1, "week_id": YESTERDAY, "days_back": 7, "limit_per_creator": 15,
+        "since_timestamp": None, "stage": "publishing",
+        "ranked": [{"id": "OLD", "creator_handle": "h", "rank": 1, "rank_display": "#01",
+                    "url": "https://www.instagram.com/reel/OLD/"}]}))
+    assert main.run_full_sync(dry_run=False, deploy=False) == 0
+    assert not stale.exists()
+    assert list(config.DATA_DIR.glob("sync_progress_*.json")) == []
+
+
+def test_stale_banked_ranking_is_never_republished(tmp_path, monkeypatch):
+    _iso(tmp_path, monkeypatch)
+    old_week = (datetime.now(timezone.utc) - timedelta(days=9)).strftime("%Y-%m-%d")
+    stale = config.DATA_DIR / f"sync_progress_{old_week}.json"
+    stale.write_text(json.dumps({"version": 1, "week_id": old_week, "days_back": 7,
+        "limit_per_creator": 15, "since_timestamp": None, "stage": "ranked",
+        "ranked": [{"id": "OLD", "creator_handle": "h", "rank": 1, "url": "u"}]}))
+    opened = []
+    class Sess:
+        def __enter__(self): opened.append(1); raise RuntimeError("stop before scraping")
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(extractor, "InstagramSession", Sess)
+    import pytest
+    with pytest.raises(RuntimeError):
+        main.run_full_sync(dry_run=False, deploy=False)
+    assert opened == [1]                      # extraction was attempted, not skipped
+    assert not stale.exists()                 # retired, not re-resumable
+    assert list(config.DATA_DIR.glob("sync_progress_*.json.retired-*"))
+
+
+# P1-4: hostile handle cannot escape the week dir -------------------------------
+def test_hostile_handle_cannot_escape_week_dir(tmp_path, monkeypatch):
+    _iso(tmp_path, monkeypatch)
+    paths, keys = [], []
+    def _dl(url, out_path, video_cdn_url=None):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"x"); paths.append(Path(out_path).resolve()); return True
+    monkeypatch.setattr(extractor, "download_reel_video", _dl)
+    monkeypatch.setattr(storage_r2, "upload_reel_to_r2",
+        lambda local_file, week_id, key_name=None, existing_keys=None:
+            keys.append(key_name) or f"https://r2.example/videos/{week_id}/{key_name}")
+    monkeypatch.setattr(site_builder, "build_site", lambda **kw: (tmp_path, tmp_path))
+    monkeypatch.setattr(main, "_alert_sync_abort", lambda *a, **k: None)
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 1)
+    (config.DATA_DIR / f"sync_progress_{TODAY}.json").write_text(json.dumps({
+        "version": 1, "week_id": TODAY, "days_back": 7, "limit_per_creator": 15,
+        "since_timestamp": None, "stage": "ranked",
+        "ranked": [{"id": "EVIL1", "creator_handle": "../../../../escaped", "rank": 1,
+                    "rank_display": "#01", "url": "u", "is_external": True}]}))
+    assert main.run_full_sync(dry_run=False, deploy=False) == 0
+    week_dir = (config.VIDEOS_DIR / TODAY).resolve()
+    assert all(week_dir in p.parents for p in paths)
+    assert keys == ["01_escaped_EVIL1.mp4"]

@@ -29,6 +29,19 @@ def _evil_digest():
     }
 
 
+def test_overlay_meta_has_no_innerhtml_sink():
+    js = (config.ROOT_DIR / "templates" / "partials" / "player.js").read_text()
+    body = js[js.index("function paintOverlay"):js.index("function stepOverlay")]
+    assert "innerHTML" not in body
+
+
+def test_clean_handle_rejects_markup_and_paths():
+    import extractor
+    assert extractor.clean_handle("<img/src=x/onerror=alert(1)>") == ""
+    assert extractor.clean_handle("../../etc") == ""
+    assert extractor.clean_handle("@Good.Name_1") == "good.name_1"
+
+
 def test_feed_handlers_use_dataset_not_js_string_interpolation(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SITE_DIR", tmp_path)
     digest = _evil_digest()

@@ -23,9 +23,27 @@ IPHONE_15_PRO = {
 
 @pytest.fixture(scope="module")
 def built_site():
-    site_builder.build_site()
+    import os as _os
+    prev = _os.environ.get("VIEWING_PIN")
+    _os.environ["VIEWING_PIN"] = ""   # fixtures must never inherit the live PIN
+    try:
+        site_builder.build_site()
+    finally:
+        if prev is None:
+            _os.environ.pop("VIEWING_PIN", None)
+        else:
+            _os.environ["VIEWING_PIN"] = prev
     assert SITE_INDEX.exists()
     return SITE_INDEX
+
+
+def test_api_base_is_never_taken_from_url():
+    import config
+    auth = (config.ROOT_DIR / "templates" / "partials" / "auth.html").read_text()
+    assert "localStorage.setItem('digest_api_base'" not in auth
+    js = (config.ROOT_DIR / "templates" / "partials" / "player.js").read_text()
+    body = js[js.index("function bookmarkApiBase"):js.index("function bookmarkAuthHeaders")]
+    assert "h === 'localhost' || h === '127.0.0.1'" in body
 
 
 @pytest.fixture

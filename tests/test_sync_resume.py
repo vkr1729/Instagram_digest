@@ -231,6 +231,37 @@ def test_params_mismatch_starts_new_operation(tmp_path):
     assert sorted(took_over["done"]) == ["alice", "bob", "cara"]
 
 
+def test_dry_run_never_saves_digest(tmp_path):
+    """F1: a dry run must not persist -- save_digest_batch is never called and
+    the live digest file is byte-identical afterwards."""
+    live_items = [
+        {**_cand(f"live{i}", "alice"), "rank": i + 1, "rank_display": f"#{i + 1:02d}"}
+        for i in range(300)
+    ]
+    with _sync_env(tmp_path):
+        batch = config.DIGEST_BATCH_FILE
+        batch.write_text(json.dumps({"run_date": "2026-09-12", "items": live_items}), encoding="utf-8")
+        before = batch.read_bytes()
+        calls = []
+
+        def _boom(*a, **k):
+            calls.append(1)
+            raise AssertionError("dry-run must not persist the digest")
+
+        def _extract(handle, **kw):
+            return [_cand(f"{handle}-{n}", handle) for n in range(5)]
+
+        with (
+            patch.object(extractor, "extract_creator_reels", side_effect=_extract),
+            patch.object(extractor, "extract_single_reel_metadata", return_value=None),
+            patch.object(extractor, "download_reel_video", side_effect=_fake_download_ok),
+            patch.object(main.ranker, "save_digest_batch", side_effect=_boom),
+        ):
+            main.run_full_sync(deploy=False, dry_run=True)
+    assert calls == []
+    assert batch.read_bytes() == before
+
+
 def test_dry_run_leaves_progress_untouched(tmp_path):
     staged = {
         "version": 1, "week_id": _real_week_id(), "days_back": 7,

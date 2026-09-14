@@ -66,13 +66,16 @@ def test_pill_unmute_drops_stale_play():
 def test_dead_cards_marked_without_hijack():
     # P1-7: offscreen errors mark dead without navigating; position is
     # snapshotted before the card leaves the visible list.
+    # P2-4: first strike is transient (card kept for retry); only a repeated
+    # decode/unsupported error while online hides it permanently.
     js = _js()
     start = js.index("function skipDeadCard")
-    block = js[start:start + 1600]
+    block = js[start:start + 2200]
     assert "wasCurrent" in block
     assert block.index("const cards = visibleCards()") < block.index("card.dataset.dead = '1'")
-    err = js[js.index("media error listener"):js.index("media error listener") + 500]
-    assert "skipDeadCard(card, 'media error')" in err
+    assert "strikesOf(card)" in block
+    err = js[js.index("media error listener"):js.index("media error listener") + 700]
+    assert "skipDeadCard(card, 'media error', permanent)" in err
     assert "if (card ===" not in err
 
 

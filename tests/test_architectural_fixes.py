@@ -286,8 +286,24 @@ def test_c3_two_pass_cutoff_drops_old_and_unknown_dates(tmp_path, monkeypatch):
         return m
 
     monkeypatch.setattr(extractor, "extract_single_reel_metadata", _fake_meta)
+    # Non-dry-run: dry runs never persist (F1), so the cutoff result is read
+    # from the saved digest with R2/site/email stubbed out.
+    monkeypatch.setattr(config, "R2_ACCOUNT_ID", "")
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    monkeypatch.setattr(config, "LAST_RUN_FILE", tmp_path / "last_run.json")
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 1)
+    monkeypatch.setattr(main, "_alert_sync_abort", lambda *a, **k: None)
+    monkeypatch.setattr(extractor, "download_reel_video",
+                        lambda url, out, video_cdn_url=None: (pathlib.Path(out).parent.mkdir(parents=True, exist_ok=True), pathlib.Path(out).write_bytes(b"x"), True)[2])
+    monkeypatch.setattr(storage_r2, "upload_reel_to_r2",
+                        lambda local_file, week_id, key_name=None, existing_keys=None:
+                        f"https://r2.example/videos/{week_id}/{key_name}")
+    monkeypatch.setattr(storage_r2, "get_existing_r2_keys", lambda prefix="videos/": set())
+    monkeypatch.setattr(site_builder, "build_site", lambda **kw: (tmp_path, tmp_path))
+    import notifier
+    monkeypatch.setattr(notifier, "send_digest_email", lambda **kw: True)
 
-    rc = main.run_full_sync(dry_run=True, deploy=False, days_back=7, limit_per_creator=15)
+    rc = main.run_full_sync(dry_run=False, deploy=False, days_back=7, limit_per_creator=15)
     assert rc == 0
     payload = json.loads((tmp_path / "top100_digest.json").read_text())
     assert [i["id"] for i in payload["items"]] == ["r0"]

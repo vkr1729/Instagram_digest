@@ -40,6 +40,13 @@ def test_filter_hide_detaches_video_src():
     assert "video.load()" in hide_block
 
 
+def test_download_all_runs_on_page_and_counts_failures():
+    js = (Path(__file__).resolve().parent.parent / "templates" / "partials" / "player.js").read_text()
+    sw = (Path(__file__).resolve().parent.parent / "templates" / "sw.js").read_text()
+    assert "DOWNLOAD_ALL" not in sw and "downloadAllVideos" not in sw
+    assert "could not be downloaded" in js and "const complete = total > 0 && done === total" in js
+
+
 def test_dblclick_guarded_by_scroll_suppression():
     js = _read("partials/player.js")
     dbl = js[js.index("feed.addEventListener('dblclick'"):]

@@ -3,6 +3,7 @@ test_ui_interactions.py — Playwright browser E2E automated test suite for Suit
 """
 
 import json
+import os
 import pytest
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -62,7 +63,8 @@ def setup_test_site(tmp_path_factory):
         }
     ]
     test_dir = tmp_path_factory.mktemp("test_site")
-    with mock.patch.object(config, "SITE_DIR", test_dir):
+    with mock.patch.object(config, "SITE_DIR", test_dir), \
+         mock.patch.dict(os.environ, {"VIEWING_PIN": ""}):
         _, local_index = build_site({"run_date": "2026-09-06", "items": mock_items})
     return local_index
 
