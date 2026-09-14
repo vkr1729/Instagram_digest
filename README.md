@@ -14,6 +14,17 @@
 
 ---
 
+## 📌 About
+
+**Instagram Digest** transforms the chaotic, algorithmically manipulated Instagram Reels experience into a finite, mindful weekly publication. Instead of opening Instagram and losing hours to unpredictable recommendations, Instagram Digest extracts high-signal reels from your chosen creators, ranks them with creator-normalized viral scoring, offloads high-definition media to Cloudflare R2 ($0 egress bandwidth), and compiles a standalone, installable Progressive Web App (PWA) hosted on GitHub Pages.
+
+When you find a reel worth keeping, tap **`🔖 Save`**: a serverless Cloudflare Worker records the metadata in Cloudflare D1 and streams the raw MP4 video directly into your private Telegram chat, creating a permanent, searchable, unlimited cloud video archive without consuming your phone's storage.
+
+### 🏷️ Tags & Topics
+`instagram` • `instagram-reels` • `pwa` • `progressive-web-app` • `digital-wellbeing` • `anti-doomscrolling` • `mindful-tech` • `cloudflare-r2` • `cloudflare-workers` • `cloudflare-d1` • `telegram-bot` • `github-pages` • `zero-cost` • `offline-first` • `python` • `playwright` • `video-streaming`
+
+---
+
 ## 📸 Visual Tour
 
 <p align="center">
