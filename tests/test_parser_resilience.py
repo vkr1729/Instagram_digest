@@ -103,7 +103,7 @@ def _discovery_session(html, anchors_by_selector):
 def test_discovery_falls_back_to_secondary_selector():
     sess = _discovery_session(
         "<div>grid</div>",
-        {"a[href*='/reel']": [_fake_anchor("/reel/AAA111/")]},
+        {"a[href*='/reels/']": [_fake_anchor("/reel/AAA111/")]},
     )
     found = extractor.discover_creator_reel_urls("somehandle", max_reels=5, session=sess)
     assert [r["id"] for r in found] == ["AAA111"]

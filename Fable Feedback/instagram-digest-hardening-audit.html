@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instagram Digest: post-hardening adversarial audit</title>
+<style>
+:root{--fg:#1f2328;--muted:#59636e;--bg:#fff;--line:#d1d9e0;--code:#f6f8fa;--add:#dafbe1;--del:#ffebe9;--hunk:#ddf4ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+main{max-width:960px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:26px;line-height:1.25;margin:0 0 18px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2{font-size:20px;margin:40px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:16px;margin:26px 0 8px}
+p{margin:10px 0}
+ul,ol{margin:8px 0 12px;padding-left:24px}
+li{margin:4px 0}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:12px 0}
+pre code{background:none;padding:0;font-size:12.5px;white-space:pre}
+pre.diff .d-add{display:block;background:var(--add)}
+pre.diff .d-del{display:block;background:var(--del)}
+pre.diff .d-hunk{display:block;background:var(--hunk);color:#0550ae}
+pre.diff .d-file{display:block;font-weight:600}
+table{border-collapse:collapse;width:100%;margin:12px 0 16px;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 10px;vertical-align:top;text-align:left}
+th{background:var(--code)}
+td:first-child{white-space:nowrap}
+.v{display:inline-block;font-weight:700;font-size:12px;letter-spacing:.3px;padding:2px 8px;border-radius:999px;color:#fff}
+.v-holds{background:#1a7f37}.v-weak{background:#bf8700}.v-broken{background:#cf222e}
+.sev{display:inline-block;font-weight:700;font-size:11.5px;padding:1px 6px;border-radius:4px;color:#fff}
+.sev-P0{background:#cf222e}.sev-P1{background:#bc4c00}.sev-P2{background:#59636e}
+h1 .sev,h2 .sev,h3 .sev,code .sev{all:unset}
+a{color:#0969da}
+@media print{main{padding:0}pre{white-space:pre-wrap}}
+</style>
+</head>
+<body>
+<main>
+<h1 id="instagram-digest-post-hardening-adversarial-audit">Instagram Digest: post-hardening adversarial audit</h1>
+<table>
+<tbody>
+<tr><td><strong>Repository</strong></td><td><a href="https://github.com/vkr1729/Instagram_digest">https://github.com/vkr1729/Instagram_digest</a></td></tr>
+<tr><td><strong>Audited revision</strong></td><td><code>6bcdb92</code> (HEAD, 2026-09-12), six commits after the hardening commit <code>805bae4</code></td></tr>
+<tr><td><strong>Claim under test</strong></td><td><code>CHANGELOG.md</code> / <code>ARCHITECTURE.md</code>: seven <span class="sev sev-P0">P0</span> findings closed, score F/39 → B+/87</td></tr>
+<tr><td><strong>Audit date</strong></td><td>2026-09-12</td></tr>
+<tr><td><strong>Method</strong></td><td>Source review of every claimed fix against the code at HEAD; full non-browser test run; 13 executable adversarial probes (attached as <code>test_audit_probes.py</code>, each PASS reproduces a defect)</td></tr>
+</tbody></table>
+<h2 id="summary">Summary</h2>
+<p>Three of the eight hardening claims hold, four are weaker than documented, and one is broken. The pass did real work: the PWA XSS sinks, the service-worker range logic, the fsync-backed atomic writer and the id-keyed pruner are correct and were verified by execution. However two <span class="sev sev-P0">P0</span>-class defects remain in the most routine operator flow, and the hardening's own regression test for one of them seeds a data shape the pipeline never produces, so the suite is green while the invariant it names is false.</p>
+<p><strong>Revised score: C+ / 68</strong> (from the claimed B+ / 87).</p>
+<table>
+<thead><tr><th>#</th><th>Claim</th><th>Verdict</th><th>One-line reason</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Stored XSS closed</td><td><span class="v v-weak">WEAK</span></td><td>PWA sinks fixed; the local ops page <code>channels.html</code> still injects Instagram display names into <code>innerHTML</code> unescaped</td></tr>
+<tr><td>2</td><td>Durability / locking / quarantine</td><td><span class="v v-weak">WEAK</span></td><td>Atomic writer is correct; the pipeline lock is per-process only, several state writes bypass it, one corrupt-file path deletes instead of quarantining</td></tr>
+<tr><td>3</td><td>Pruner safety</td><td><span class="v v-holds">HOLDS</span></td><td>Id-suffix matching can spare wrongly but never delete wrongly; torn digests skipped</td></tr>
+<tr><td>4</td><td>Expand coherence</td><td><span class="v v-broken">BROKEN</span></td><td>Any +100 on a later UTC day than the sync re-points every existing reel at a non-existent key; duplicate ids on resume; rank collisions</td></tr>
+<tr><td>5</td><td>SW RFC 7233 ranges</td><td><span class="v v-holds">HOLDS</span></td><td>Passes the shipped matrix plus extra edge cases; two pedantic RFC nits AVFoundation never triggers</td></tr>
+<tr><td>6</td><td>Scraper anti-bot posture</td><td><span class="v v-weak">WEAK</span></td><td>Fingerprint self-contradictions; per-account timezone rotation; no pool self-heal; docs drift</td></tr>
+<tr><td>7</td><td>Parser resilience</td><td><span class="v v-weak">WEAK</span></td><td>Soft-block detector scans the whole page including captions; false positives silently drop reels</td></tr>
+<tr><td>8</td><td>DOM / memory scaling</td><td><span class="v v-holds">HOLDS</span></td><td><code>src</code> lifecycle is closed; containment scoped correctly; tests are marker greps only</td></tr>
+</tbody></table>
+<p>Test run at HEAD: <strong>182 passed</strong>; 5 failed and 13 errored, all environmental (Playwright not launchable, ffmpeg absent, and <code>tests/test_uat_suite7_server_launcher.py:14</code> asserts a <code>.desktop</code> file in the maintainer's home directory). All six hardening test files pass. All 13 audit probes reproduce their defect.</p>
+<h2 id="1-verdicts-with-evidence">1. Verdicts with evidence</h2>
+<h3 id="claim-1-xss-weak">Claim 1: XSS. WEAK</h3>
+<p>What holds:</p>
+<ul><li><code>templates/partials/feed.html:30,34</code>: share/unselect buttons pass values through <code>data-id</code> / <code>data-handle</code> and read <code>this.dataset</code>.</li><li><code>site_builder.py:274-280</code>: share pages escape handle, rank, caption, thumb, poster and reel id with <code>html.escape(..., quote=True)</code>.</li><li><code>templates/partials/player.js:74</code>: <code>currentWeekId</code> rendered with <code>|tojson</code>. The only other Jinja expressions in the JS partial are <code>player.js:11</code> (a float) and <code>player.js:147</code> (<code>|tojson</code>).</li><li>Note for future changes: <code>site_builder.py:72</code> uses <code>select_autoescape(["html", "xml"])</code>, so autoescape is <strong>off</strong> inside <code>player.js</code> and <code>styles.css</code>. Any new <code>{{ }}</code> in those partials renders raw.</li></ul>
+<p>What does not hold: stored XSS on the local ops origin.</p>
+<ul><li>Data path A: Instagram <code>full_name</code> → <code>extractor.py:270</code> (<code>name = u.get("full_name")</code>) → <code>save_sources</code> at <code>extractor.py:335</code> → <code>GET /api/channels</code> returns it raw at <code>local_server.py:943</code> → <code>templates/channels.html:553-576</code> builds <code>innerHTML</code> with <code>${c.name}</code>, <code>${c.handle}</code>, <code>${c.category}</code> and <code>onclick="singleAction('${c.handle}', ...)"</code> with no escaping (<code>grep -c "esc(" channels.html</code> = 0).</li><li>Data path B: for external reels the "handle" is derived from link <code>innerText</code> (<code>extractor.py:1087-1096</code>, any token without spaces). Pressing B in the viewer posts that string to <code>/api/blacklist</code> (<code>local_server.py:1117</code>), and blacklisted handles are rendered by the same sink via <code>local_server.py:948-955</code>.</li><li>Impact: the payload runs same-origin on <code>127.0.0.1:8080</code>, so <code>_is_local_origin</code> (<code>local_server.py:396-413</code>) passes. It can POST <code>/api/server/shutdown</code> (1216), <code>/api/expand</code> (992) and <code>/api/channels/bulk-unselect</code> (1155), which rewrites <code>sources.json</code>.</li><li>Probe J reproduces the raw round-trip and the unescaped sink.</li></ul>
+<h3 id="claim-2-durability-locking-quarantine-weak">Claim 2: Durability, locking, quarantine. WEAK</h3>
+<p>What holds:</p>
+<ul><li><code>atomic_io.py:19-47</code>: <code>mkstemp</code> in the target directory → write → <code>flush</code> → <code>fsync</code> → <code>os.replace</code> → directory <code>fsync</code>, temp cleanup on failure only. Correct.</li><li><code>ranker.py:227,233</code>, <code>local_server.py:558-581</code>: adopted as claimed; <code>_load_json_tolerant</code> copies corrupt files to <code>*.corrupt-&lt;ts&gt;</code> at the 11 call sites in <code>local_server.py</code>.</li></ul>
+<p>What does not hold:</p>
+<ul><li><strong>The pipeline lock is per-process.</strong> <code>_PIPELINE_LOCK</code> at <code>local_server.py:34</code> is a <code>threading.Lock</code>. <code>run_weekly.sh:30</code> (Friday cron) and <code>resume_pending.sh:115,129</code> (login resume) run <code>main.py</code> as separate processes, while dashboard-triggered runs execute in server threads (<code>local_server.py:109,196</code>). There is no <code>flock</code>/<code>fcntl</code> anywhere in the Python sources. Probe F: two processes both acquire the lock. <code>ARCHITECTURE.md:139</code> ("Sync and expand collide → second caller gets already_running") is false for the deployed topology. Collision effects: last <code>os.replace</code> of the digest wins; both <code>deploy_to_gh_pages</code> calls <code>rmtree(site/.git)</code> and <code>git init</code> in the same directory (<code>site_builder.py:401-432</code>); <code>run_expand</code> ignores the deploy return value (<code>main.py:1148</code>).</li><li><strong>State writes that bypass <code>durable_write_json</code></strong>: <code>extractor.py:120</code> (<code>save_sources</code>, plain <code>write_text</code>, called from <code>POST /api/sync-following</code> at <code>local_server.py:1027</code> outside <code>_STATE_LOCK</code> and racing the atomic <code>sources.json</code> writes at 1141/1196); <code>extractor.py:342</code> (following cache); <code>site_builder.py:246,258,337</code> (<code>index.html</code>, <code>local_index.html</code>, <code>data.json</code>). <code>ARCHITECTURE.md:42</code> calls <code>index.html</code> atomic; it is not. Probe G.</li><li><strong>Reads that still treat corrupt as empty, or worse</strong>: <code>main.py:863-885</code> reads an unparseable expand checkpoint as <code>[]</code> and then <strong>unlinks it</strong> at line 883 (probe E), the opposite of quarantine; <code>main.py:34-41</code> returns <code>None</code> for a corrupt <code>last_run.json</code>, silently losing the ad-hoc anchor at <code>main.py:1210-1215</code>; <code>extractor.py:92-100</code> and <code>ranker.py:69-77</code> return an empty blacklist, so muted creators reappear.</li></ul>
+<h3 id="claim-3-pruner-safety-holds">Claim 3: Pruner safety. HOLDS</h3>
+<ul><li><code>storage_r2.py:193-195</code>: <code>_is_referenced</code> matches <code>key.endswith(f"_{rid}.mp4")</code>. Because every live key ends with its own <code>_{id}.mp4</code> by construction (<code>main.py:666</code>, <code>main.py:1054</code>), suffix matching can only spare an unrelated object, never delete a live one. Handle underscores sit before the id and cannot affect the match.</li><li><code>storage_r2.py:173-181</code>: unparseable digests are skipped and empty item lists are never ground truth. Verified by the shipped test and by inspection.</li><li>Week keying: ids are grouped by <code>run_date</code> (line 179). After the run_date drift described under claim 4, the archive <code>digests/&lt;sync-day&gt;.json</code> still anchors the sync week's ids, and nothing in the codebase deletes files under <code>DIGESTS_DIR</code>, so no wrong deletion follows.</li><li>Nit: line 219 <code>purged.extend([...Deleted...] or chunk)</code> reports keys as purged when every delete in the chunk failed (probe M). Errors are logged and orphans are retried on the next run, so this is a reporting defect only.</li></ul>
+<h3 id="claim-4-expand-coherence-broken">Claim 4: Expand coherence. BROKEN</h3>
+<p>The two-phase flow inside one run (<code>main.py:1017-1110</code>) is correct, and that is exactly what the shipped test proves. The invariant fails across runs.</p>
+<ul><li><strong>Week drift (<span class="sev sev-P0">P0</span>).</strong> <code>run_full_sync</code> never persists the uploaded URL on the reel: uploads only populate <code>uploaded_url_map</code> (<code>main.py:662-698</code>), <code>save_digest_batch</code> runs at line 736, and the <code>r2_url</code> mutation happens later inside <code>build_site</code> (<code>site_builder.py:100-102</code>) on dict objects whose digest is already on disk. Probe A confirms the saved digest has no <code>r2_url</code>/<code>video_url</code>. <code>run_expand</code> sets <code>week_id = today</code> at line 791 and falls back to <code>videos/{week_id}/…</code> for existing items at line 1014; <code>site_builder.py:89-90</code> derives <code>local_url</code> the same way. Therefore any +100 on a later UTC day than the sync (Friday 22:00 cron followed by a weekend click, or the <code>resume_pending.sh</code> chain at next login) re-points <strong>every</strong> existing reel at a key that does not exist, on both R2 and the local server. Probe B: 3 of 3 existing URLs wrong. <code>run_expand</code> has no <code>MIN_DEPLOY_ITEMS</code> gate (line 1147), so <code>--deploy</code> force-pushes the dead site. The regression test masks this by seeding existing items with <code>r2_url</code> (<code>tests/test_durability.py:116,120</code>, <code>tests/test_expand_resume.py:44</code>), a shape the sync never produces.</li><li><strong>Duplicate ids on resume (<span class="sev sev-P1">P1</span>).</strong> <code>main.py:903-904</code> unions checkpoint ids into <code>existing_ids</code> but never filters <code>resumed</code> against the digest (line 919). <code>resume_pending.sh:113-131</code> runs sync then expand in that order; if the sync's own discovery pass integrated a banked reel, the resumed expand appends it again. Probe C: manifest ids <code>["X", "X"]</code>.</li><li><strong>Rank collisions (<span class="sev sev-P2">P2</span>).</strong> The sync drops unplayables without renumbering (<code>main.py:719-722</code>); expand assigns <code>len(existing_items) + 1</code> (line 1051). Probe D: ranks <code>[1, 2, 4, 4]</code>.</li><li>The <code>_pending_</code> reuse branch at line 1022 is unreachable: lines 1003-1007 delete every pending file first.</li></ul>
+<h3 id="claim-5-sw-ranges-holds">Claim 5: SW ranges. HOLDS</h3>
+<ul><li><code>templates/sw.js:40-90</code> passes the shipped 12-case Node matrix. Additional cases run through the same harness: <code>bytes=-5000</code> on a 1000-byte blob → <code>206 bytes 0-999/1000</code>; <code>bytes=-1</code> → <code>206 bytes 999-999/1000</code>; <code>bytes=0-1</code> → <code>206</code>; <code>bytes=999-</code> → <code>206</code>; empty blob → <code>416 bytes */0</code>; <code>bytes=-</code> → <code>416</code>.</li><li>Two pedantic gaps that AVFoundation does not exercise: the range unit is case-insensitive per RFC 9110 §14.1 (<code>Bytes=0-99</code> gets 416), and a syntactically invalid <code>Range</code> should be ignored with a 200 rather than answered 416 (<code>sw.js:53-55</code>).</li><li>Full-blob materialization per request at <code>sw.js:110</code> is the documented known limit.</li></ul>
+<h3 id="claim-6-scraper-weak">Claim 6: Scraper. WEAK</h3>
+<ul><li>Pools and pacing exist as described (<code>extractor.py:38-51,71-81</code>). The enrichment session queue's <code>get</code> / <code>finally: put</code> (<code>main.py:520-529</code>) is exception-safe.</li><li><code>ENRICH_WORKERS = 1</code> at <code>main.py:86</code>; <code>CHANGELOG.md:110</code> and <code>ARCHITECTURE.md:61</code> say 2.</li><li>Fingerprint self-contradictions (probe L): <code>LOCALE_POOL</code> includes <code>en-GB</code> (line 50) while the stealth script hardcodes <code>navigator.languages = ['en-US', 'en']</code> (line 60); the <code>webdriver</code> getter returns <code>undefined</code> (line 57) where real Chrome returns <code>false</code>; <code>plugins</code> is a plain Array (line 59), not a <code>PluginArray</code>; the UA pool pins Chrome 130/131 (lines 38-47) while Playwright's bundled Chromium reports its real version in <code>Sec-CH-UA</code>, which a UA override does not rewrite.</li><li>Rotating timezone across New York / London / Kolkata per context (lines 484-491, every 40 navigations via <code>RECYCLE_EVERY</code>) on a single authenticated account is an account-linking anomaly rather than camouflage.</li><li>No pool self-heal: a crashed browser is returned to the queue (<code>main.py:529</code>), <code>get_page()</code> (<code>extractor.py:547-560</code>) keeps handing out the dead page, every enrichment fails at debug level (<code>extractor.py:784-785</code>), and the run aborts with "no qualifying reels".</li><li>Following-API backoff (<code>extractor.py:243-260</code>) gives up after 2/4/8 seconds; Instagram 429 windows last minutes. The merge is non-destructive, so the damage is a partial following list.</li></ul>
+<h3 id="claim-7-parsers-weak">Claim 7: Parsers. WEAK</h3>
+<ul><li><code>_page_html_indicates_block</code> (<code>extractor.py:407-408</code>) lowercases the <strong>entire</strong> page, including captions, comments and inline JavaScript, and is applied per reel page at lines 693-696 with no fallback. Probe K: a caption containing "try again later" makes a fully valid reel return <code>None</code>. <code>login_required</code> and <code>challenge_required</code> are genuine Instagram API error codes; if either appears as a string constant in the inline bundle, every enrichment returns <code>None</code> and the run aborts. The test corpus (<code>tests/test_parser_resilience.py:31-36</code>) contains no false-positive case.</li><li><code>_DISCOVERY_SELECTORS</code> (line 440): the second selector <code>a[href*='/reel']</code> is a superset of the first, so the "fallback chain" cannot match anything the first did not.</li><li><code>_extract_shortcode</code> (443-447) and <code>_parse_date_flexible</code> (417-437) behave as documented; naive dates pinned to UTC carry up to ±14 h of error at the window boundary.</li></ul>
+<h3 id="claim-8-dom-performance-holds">Claim 8: DOM performance. HOLDS</h3>
+<ul><li><code>templates/partials/styles.css:508-512</code> (containment) and <code>527-530</code> (single <code>will-change</code>, scoped to <code>.is-active</code>).</li><li><code>src</code> lifecycle is closed: set at <code>player.js:938</code>, <code>1109</code>, <code>1186</code>; removed at <code>969</code>, <code>1021-1026</code>, <code>1127-1133</code>. The only play path that bypasses <code>updateSlidingWindow</code> is the Space key (line 1639), which acts on an already-loaded active video.</li><li>Cards have explicit heights (<code>styles.css:492-506</code>), so <code>content-visibility: auto</code> does not disturb snap geometry, and <code>scrollIntoView</code> (line 895) forces rendering per spec.</li><li>Cosmetic: the "#N" display uses <code>data-index</code> (lines 921-925, 1171-1175), so after <code>unselectCreator</code> removes cards (1572-1576) it shows a DOM index, not a rank; <code>handleJumpSubmit</code> indexes all cards including dead ones (1476, 1499), so a jump can land on a hidden card and show nothing.</li><li><code>tests/test_dom_perf.py</code> is four static string greps; none of the above was verified by a test.</li></ul>
+<h2 id="2-test-suite-audit">2. Test-suite audit</h2>
+<table>
+<thead><tr><th>File</th><th>Behavior or markers?</th><th>Highest-risk behavior it does not cover</th></tr></thead>
+<tbody>
+<tr><td><code>test_xss_hardening.py</code></td><td>Behavior for the PWA (renders the real template), one payload</td><td>The ops-origin sink in <code>channels.html</code>; the notifier; the autoescape-off JS partial</td></tr>
+<tr><td><code>test_durability.py</code></td><td>Mixed. Pruner tests are real. <code>test_r2_keys_fast_path_is_thread_safe</code> (185-200) locks its own closure, not <code>upload_reel_to_r2</code>. The atomic-write test has no fault injection. The expand test seeds <code>r2_url</code> the sync never writes</td><td>Sync on day N, expand on day N+1; cross-process collision; corrupt-checkpoint handling</td></tr>
+<tr><td><code>test_sw_range.py</code></td><td>Behavior: executes the shipped JS in Node (the strongest file). <code>test_sw_source_has_no_clamping_fallback</code> is a marker</td><td>The fetch handler's cache-miss + Range passthrough</td></tr>
+<tr><td><code>test_scraper_hardening.py</code></td><td><code>human_pause</code> distribution is real; the context test asserts <code>"webdriver" in script</code>; API backoff is real</td><td><code>extract_external_reels_from_feed</code> has no test at all (partial salvage, cooldown schedule, <code>on_progress</code>); pool self-heal</td></tr>
+<tr><td><code>test_parser_resilience.py</code></td><td>Behavior with fakes</td><td>Any false-positive case for the soft-block detector; locale date variants</td></tr>
+<tr><td><code>test_dom_perf.py</code></td><td>Markers only (all four tests)</td><td><code>src</code> detachment outside the window; jump onto a dead card</td></tr>
+</tbody></table>
+<h2 id="3-new-findings-ranked">3. New findings, ranked</h2>
+<table>
+<thead><tr><th>Sev</th><th>Finding</th><th>Evidence</th><th>Probe</th></tr></thead>
+<tbody>
+<tr><td><span class="sev sev-P0">P0</span></td><td>Expand on a later UTC day re-points every existing reel to <code>videos/&lt;today&gt;/</code>; <code>--deploy</code> publishes the dead site</td><td><code>main.py:791,1014</code>; <code>site_builder.py:89-90</code>; <code>main.py:736</code> vs <code>site_builder.py:100-102</code></td><td>A, B</td></tr>
+<tr><td><span class="sev sev-P0">P0</span></td><td>No cross-process mutual exclusion between cron / resume CLI runs and dashboard threads</td><td><code>local_server.py:34</code>; <code>run_weekly.sh:30</code>; <code>resume_pending.sh:115</code>; <code>site_builder.py:401-432</code></td><td>F</td></tr>
+<tr><td><span class="sev sev-P1">P1</span></td><td>Stored XSS on the ops origin via Instagram display name or external-reel handle</td><td><code>channels.html:553-576</code>; <code>extractor.py:270</code>; <code>local_server.py:943</code></td><td>J</td></tr>
+<tr><td><span class="sev sev-P1">P1</span></td><td>Checkpoint resume re-appends ids an intervening sync already integrated</td><td><code>main.py:903-919</code>; <code>resume_pending.sh:113-131</code></td><td>C</td></tr>
+<tr><td><span class="sev sev-P1">P1</span></td><td><code>GET /retrigger</code> starts sync + deploy with no origin check; an <code>&lt;img src&gt;</code> on any web page fires it</td><td><code>local_server.py:648-649</code> vs the POST guard at 974</td><td>H</td></tr>
+<tr><td><span class="sev sev-P1">P1</span></td><td>Soft-block detector false-positives on captions or inline JS; drops reels or aborts runs</td><td><code>extractor.py:394-408,693-696</code></td><td>K</td></tr>
+<tr><td><span class="sev sev-P2">P2</span></td><td>Corrupt expand checkpoint is deleted, not quarantined</td><td><code>main.py:881-885</code></td><td>E</td></tr>
+<tr><td><span class="sev sev-P2">P2</span></td><td>Rank collisions after sync-time drops</td><td><code>main.py:719-722,1051</code></td><td>D</td></tr>
+<tr><td><span class="sev sev-P2">P2</span></td><td>Dot-segment traversal on <code>/videos/</code> and static routes (raw clients only; browsers normalize). Separately, the no-Range branch of <code>serve_video_file</code> never calls <code>end_headers()</code>, so a plain GET returns the body with no status line. Pre-existing since 2026-09-06. The SW's <code>precacheUrls</code> fetch (<code>sw.js:164</code>) against the local server can therefore never succeed</td><td><code>local_server.py:754-763,1239-1249</code></td><td>I</td></tr>
+<tr><td><span class="sev sev-P2">P2</span></td><td><code>sources.json</code> written non-atomically and outside <code>_STATE_LOCK</code></td><td><code>extractor.py:120</code>; <code>local_server.py:1027</code> vs 1141</td><td>G</td></tr>
+<tr><td><span class="sev sev-P2">P2</span></td><td>Pruner reports failed deletes as purged</td><td><code>storage_r2.py:219</code></td><td>M</td></tr>
+<tr><td><span class="sev sev-P2">P2</span></td><td>Fingerprint contradictions and per-account timezone rotation</td><td><code>extractor.py:50,57,59,60,484-491</code></td><td>L</td></tr>
+</tbody></table>
+<p>Failure mechanisms for the two P0s:</p>
+<ol><li><strong>Week drift.</strong> Friday 22:00 cron runs <code>main.py --sync --deploy</code>; <code>week_id = 2026-09-11</code>; objects land in <code>videos/2026-09-11/</code>; the digest is saved without <code>r2_url</code>. Saturday the owner clicks +100 (or <code>resume_pending.sh</code> fires at login). <code>run_expand</code> sets <code>week_id = 2026-09-12</code>, builds <code>uploaded_url_map</code> for the 300 existing items from the fallback <code>videos/2026-09-12/&lt;rank&gt;_&lt;handle&gt;_&lt;id&gt;.mp4</code>, uploads the new 100 under the same prefix, saves the digest with <code>run_date = 2026-09-12</code>, rebuilds the site with 300 dead cards and 100 live ones, and force-pushes it. In the PWA each dead card fires a media error and <code>skipDeadCard</code> shows "Reel unavailable, skipping" 300 times.</li><li><strong>Cross-process collision.</strong> The Friday cron sync is mid-download. The owner opens the dashboard and clicks +100; the server process's <code>_PIPELINE_LOCK</code> is free, so <code>run_expand</code> starts against last week's digest. Both processes write <code>top100_digest.json</code> via <code>os.replace</code> (last writer wins), both run <code>purge_unreferenced_r2_videos</code> against whichever digest is on disk at that moment, and both run <code>deploy_to_gh_pages</code>, which deletes and re-creates <code>site/.git</code> under the other's feet. <code>run_expand</code> returns 0 regardless of the deploy result.</li></ol>
+<h2 id="4-score-revision">4. Score revision</h2>
+<p>B+/87 assumed all seven P0s closed. The verified improvements are real: PWA XSS sinks, service-worker ranges, the atomic writer and the id-based pruner are correct, and the first three are proven by executing code rather than reading it. Against that, two <span class="sev sev-P0">P0</span>-class defects sit in the most routine operator flow, one of them hidden by a regression test that encodes a digest shape the sync never writes. Half of the new tests are marker greps, <code>CHANGELOG.md</code> and <code>ARCHITECTURE.md</code> assert properties the code does not have (atomic <code>index.html</code>, cross-pipeline exclusion, 2-browser enrichment), and the ops surface was left out of the XSS scope. <strong>Revised: C+ / 68.</strong></p>
+<h2 id="5-minimal-diffs-for-the-top-three-issues">5. Minimal diffs for the top three issues</h2>
+<h3 id="diff-1-week-drift-p0">Diff 1: week drift (<span class="sev sev-P0">P0</span>)</h3>
+<p>Persist the real object URL at sync time, and make an expansion belong to the digest's week rather than the calendar day it runs on.</p>
+<pre class="diff"><code><span class="d-file">--- a/main.py</span>
+<span class="d-file">+++ b/main.py</span>
+<span class="d-hunk">@@ def run_full_sync(</span>
+         dropped = [r[&quot;id&quot;] for r in ranked_reels if r[&quot;id&quot;] not in uploaded_url_map]
+         if dropped:
+             logger.warning(&quot;Dropping %d unplayable reels: %s&quot;, len(dropped), &quot;, &quot;.join(dropped))
+             ranked_reels = [r for r in ranked_reels if r[&quot;id&quot;] in uploaded_url_map]
+<span class="d-add">+        # Persist the real object URL so later expansions never derive keys from today&#x27;s date.</span>
+<span class="d-add">+        for r in ranked_reels:</span>
+<span class="d-add">+            r[&quot;r2_url&quot;] = r[&quot;video_url&quot;] = uploaded_url_map[r[&quot;id&quot;]]</span>
+ 
+<span class="d-hunk">@@ def run_expand(target_count: int = 100, deploy: bool = False) -&gt; int:</span>
+<span class="d-del">-    week_id = datetime.now(timezone.utc).strftime(&quot;%Y-%m-%d&quot;)</span>
+<span class="d-del">-    logger.info(&quot;Starting +%d reel expansion for week %s (deploy=%s)...&quot;, target_count, week_id, deploy)</span>
+<span class="d-del">-</span>
+     if not config.DIGEST_BATCH_FILE.exists():
+         logger.error(&quot;No active digest found (%s). Run full sync first.&quot;, config.DIGEST_BATCH_FILE)
+         return 1
+<span class="d-hunk">@@</span>
+     existing_items: list[dict[str, Any]] = digest_data.get(&quot;items&quot;, [])
+     if not existing_items:
+         logger.error(&quot;Active digest has 0 items. Run full sync first.&quot;)
+         return 1
+<span class="d-add">+    # An expansion belongs to the digest&#x27;s week, not the calendar day it runs on:</span>
+<span class="d-add">+    # R2 keys, local files, checkpoints and the pruner are all keyed on run_date.</span>
+<span class="d-add">+    week_id = digest_data.get(&quot;run_date&quot;) or datetime.now(timezone.utc).strftime(&quot;%Y-%m-%d&quot;)</span>
+<span class="d-add">+    logger.info(&quot;Starting +%d reel expansion for week %s (deploy=%s)...&quot;, target_count, week_id, deploy)</span></code></pre>
+<h3 id="diff-2-cross-process-pipeline-lock-p0">Diff 2: cross-process pipeline lock (<span class="sev sev-P0">P0</span>)</h3>
+<pre class="diff"><code><span class="d-file">--- a/main.py</span>
+<span class="d-file">+++ b/main.py</span>
+<span class="d-hunk">@@</span>
+ import argparse
+<span class="d-add">+import fcntl</span>
+ import json
+ import logging
+ import math
+<span class="d-add">+import os</span>
+ import random
+ import sys
+ import time
+<span class="d-add">+from contextlib import contextmanager</span>
+<span class="d-hunk">@@</span>
+<span class="d-add">+@contextmanager</span>
+<span class="d-add">+def _pipeline_file_lock():</span>
+<span class="d-add">+    &quot;&quot;&quot;Cross-process exclusion for digest-mutating pipelines. local_server&#x27;s</span>
+<span class="d-add">+    threading.Lock cannot see cron / resume_pending.sh / manual CLI runs.&quot;&quot;&quot;</span>
+<span class="d-add">+    fd = os.open(config.DATA_DIR / &quot;.pipeline.lock&quot;, os.O_RDWR | os.O_CREAT, 0o600)</span>
+<span class="d-add">+    try:</span>
+<span class="d-add">+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)</span>
+<span class="d-add">+    except BlockingIOError:</span>
+<span class="d-add">+        os.close(fd)</span>
+<span class="d-add">+        raise RuntimeError(&quot;another pipeline (sync/expand) holds data/.pipeline.lock&quot;)</span>
+<span class="d-add">+    try:</span>
+<span class="d-add">+        yield</span>
+<span class="d-add">+    finally:</span>
+<span class="d-add">+        fcntl.flock(fd, fcntl.LOCK_UN)</span>
+<span class="d-add">+        os.close(fd)</span>
+<span class="d-add">+</span>
+<span class="d-add">+</span>
+ def run_full_sync(
+     dry_run: bool = False,
+     deploy: bool = False,
+     days_back: int = 7,
+     limit_per_creator: int = 15,
+     since_timestamp: int | None = None,
+ ) -&gt; int:
+<span class="d-add">+    try:</span>
+<span class="d-add">+        with _pipeline_file_lock():</span>
+<span class="d-add">+            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp)</span>
+<span class="d-add">+    except RuntimeError as exc:</span>
+<span class="d-add">+        logger.error(&quot;%s; refusing to start.&quot;, exc)</span>
+<span class="d-add">+        return 3</span>
+<span class="d-add">+</span>
+<span class="d-add">+</span>
+<span class="d-add">+def _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp) -&gt; int:</span>
+     &quot;&quot;&quot;Execute complete end-to-end extraction, ranking, upload, and deployment pipeline.&quot;&quot;&quot;
+<span class="d-hunk">@@</span>
+ def run_expand(target_count: int = 100, deploy: bool = False) -&gt; int:
+<span class="d-add">+    try:</span>
+<span class="d-add">+        with _pipeline_file_lock():</span>
+<span class="d-add">+            return _run_expand(target_count, deploy)</span>
+<span class="d-add">+    except RuntimeError as exc:</span>
+<span class="d-add">+        logger.error(&quot;%s; refusing to start.&quot;, exc)</span>
+<span class="d-add">+        return 3</span>
+<span class="d-add">+</span>
+<span class="d-add">+</span>
+<span class="d-add">+def _run_expand(target_count: int, deploy: bool) -&gt; int:</span>
+     &quot;&quot;&quot;
+     Expand active digest by discovering N extra reels from the Reels feed.</code></pre>
+<p><code>run_weekly.sh</code> treats exit 3 as a failure and emails the alert, which is the correct outcome for a refused start.</p>
+<h3 id="diff-3-ops-origin-stored-xss-p1-plus-the-get-side-effect-it-would-ride">Diff 3: ops-origin stored XSS (<span class="sev sev-P1">P1</span>), plus the GET side effect it would ride</h3>
+<pre class="diff"><code><span class="d-file">--- a/templates/channels.html</span>
+<span class="d-file">+++ b/templates/channels.html</span>
+<span class="d-hunk">@@</span>
+     let currentCategoryFilter = &#x27;all&#x27;;
+ 
+<span class="d-add">+    function esc(s) {</span>
+<span class="d-add">+      return String(s == null ? &#x27;&#x27; : s).replace(/[&amp;&lt;&gt;&quot;&#x27;]/g, c =&gt; (</span>
+<span class="d-add">+        { &#x27;&amp;&#x27;: &#x27;&amp;amp;&#x27;, &#x27;&lt;&#x27;: &#x27;&amp;lt;&#x27;, &#x27;&gt;&#x27;: &#x27;&amp;gt;&#x27;, &#x27;&quot;&#x27;: &#x27;&amp;quot;&#x27;, &quot;&#x27;&quot;: &#x27;&amp;#39;&#x27; }[c]));</span>
+<span class="d-add">+    }</span>
+<span class="d-add">+</span>
+<span class="d-hunk">@@</span>
+       listEl.innerHTML = filtered.map(c =&gt; {
+<span class="d-add">+        const h = esc(c.handle);</span>
+<span class="d-add">+        const name = esc(c.name || &#x27;@&#x27; + c.handle);</span>
+<span class="d-add">+        const cat = esc(c.category || &#x27;entertainment&#x27;);</span>
+         const isChecked = selectedHandles.has(c.handle);
+<span class="d-del">-        const initial = (c.handle[0] || &#x27;?&#x27;).toUpperCase();</span>
+<span class="d-add">+        const initial = esc((c.handle[0] || &#x27;?&#x27;).toUpperCase());</span>
+         return `
+<span class="d-del">-          &lt;div class=&quot;channel-row ${c.is_blacklisted ? &#x27;is-blacklisted&#x27; : &#x27;&#x27;}&quot; data-handle=&quot;${c.handle}&quot;&gt;</span>
+<span class="d-del">-            &lt;input type=&quot;checkbox&quot; class=&quot;row-checkbox&quot; value=&quot;${c.handle}&quot; ${isChecked ? &#x27;checked&#x27; : &#x27;&#x27;} onchange=&quot;toggleRowSelect(&#x27;${c.handle}&#x27;, this.checked)&quot;&gt;</span>
+<span class="d-add">+          &lt;div class=&quot;channel-row ${c.is_blacklisted ? &#x27;is-blacklisted&#x27; : &#x27;&#x27;}&quot; data-handle=&quot;${h}&quot;&gt;</span>
+<span class="d-add">+            &lt;input type=&quot;checkbox&quot; class=&quot;row-checkbox&quot; value=&quot;${h}&quot; ${isChecked ? &#x27;checked&#x27; : &#x27;&#x27;} onchange=&quot;toggleRowSelect(this.value, this.checked)&quot;&gt;</span>
+             &lt;div class=&quot;avatar-initial&quot;&gt;${initial}&lt;/div&gt;
+             &lt;div class=&quot;channel-info&quot;&gt;
+               &lt;div class=&quot;channel-handle-row&quot;&gt;
+<span class="d-del">-                &lt;a href=&quot;https://instagram.com/${c.handle}&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot; class=&quot;channel-handle&quot;&gt;@${c.handle}&lt;/a&gt;</span>
+<span class="d-del">-                &lt;span class=&quot;cat-pill ${c.category || &#x27;entertainment&#x27;}&quot;&gt;${c.category || &#x27;entertainment&#x27;}&lt;/span&gt;</span>
+<span class="d-add">+                &lt;a href=&quot;https://instagram.com/${encodeURIComponent(c.handle)}&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot; class=&quot;channel-handle&quot;&gt;@${h}&lt;/a&gt;</span>
+<span class="d-add">+                &lt;span class=&quot;cat-pill ${cat}&quot;&gt;${cat}&lt;/span&gt;</span>
+               &lt;/div&gt;
+<span class="d-del">-              &lt;div class=&quot;channel-name&quot;&gt;${c.name || &#x27;@&#x27; + c.handle}&lt;/div&gt;</span>
+<span class="d-add">+              &lt;div class=&quot;channel-name&quot;&gt;${name}&lt;/div&gt;</span>
+             &lt;/div&gt;
+<span class="d-hunk">@@</span>
+             ${c.is_blacklisted
+<span class="d-del">-              ? `&lt;button class=&quot;btn-row-action restore&quot; onclick=&quot;singleAction(&#x27;${c.handle}&#x27;, &#x27;remove&#x27;)&quot;&gt;↺ Restore&lt;/button&gt;`</span>
+<span class="d-del">-              : `&lt;button class=&quot;btn-row-action danger&quot; onclick=&quot;singleAction(&#x27;${c.handle}&#x27;, &#x27;add&#x27;)&quot;&gt;🚫 Mute&lt;/button&gt;`</span>
+<span class="d-add">+              ? `&lt;button class=&quot;btn-row-action restore&quot; onclick=&quot;singleAction(this.closest(&#x27;.channel-row&#x27;).dataset.handle, &#x27;remove&#x27;)&quot;&gt;↺ Restore&lt;/button&gt;`</span>
+<span class="d-add">+              : `&lt;button class=&quot;btn-row-action danger&quot; onclick=&quot;singleAction(this.closest(&#x27;.channel-row&#x27;).dataset.handle, &#x27;add&#x27;)&quot;&gt;🚫 Mute&lt;/button&gt;`</span>
+             }
+<span class="d-file">--- a/local_server.py</span>
+<span class="d-file">+++ b/local_server.py</span>
+<span class="d-hunk">@@ def do_GET(self):</span>
+         if clean_path in (&quot;/retrigger&quot;, &quot;/retrigger/&quot;):
+<span class="d-del">-            trigger_adhoc_sync_task(deploy=True)</span>
+<span class="d-add">+            # GET only renders the page; the page POSTs, which carries a same-origin</span>
+<span class="d-add">+            # Origin header and passes _is_local_origin. Referer checks on GET are</span>
+<span class="d-add">+            # bypassable with Referrer-Policy: no-referrer, so do not rely on them.</span>
+             html_content = &quot;&quot;&quot;&lt;!DOCTYPE html&gt;
+<span class="d-hunk">@@</span>
+   &lt;script&gt;
+<span class="d-add">+    fetch(&#x27;/api/sync-adhoc&#x27;, { method: &#x27;POST&#x27; }).catch(() =&gt; {});</span>
+     async function checkStatus() {</code></pre>
+<p>Two one-line follow-ups outside the top three: add <code>self.end_headers()</code> after the last <code>send_header</code> in the no-Range branch of <code>serve_video_file</code> (<code>local_server.py:1243</code>), and add <code>resumed = [r for r in resumed if r["id"] not in existing_ids]</code> before <code>main.py:903</code>.</p>
+<h2 id="appendix-reproduction">Appendix: reproduction</h2>
+<p>Environment used for this audit: Python 3.13; <code>jinja2</code> 3.1.4 and <code>pytest</code> 8.3.4 vendored from GitHub tags (PyPI was unreachable on the audit network); <code>boto3</code>, <code>botocore</code>, <code>playwright</code> and <code>requests</code> replaced by minimal stubs, which is safe because every test that touches them already mocks them. Node 24 for the service-worker harness.</p>
+<p>To rerun the probes in the maintainer's environment:</p>
+<pre><code class="lang-bash">cp test_audit_probes.py tests/
+.venv/bin/python -m pytest tests/test_audit_probes.py -v</code></pre>
+<p>Every probe that passes reproduces the defect named in its function name. Probe F spawns a subprocess with the same interpreter; probes H, I and J start a throwaway <code>LocalDigestHandler</code> on an ephemeral port. Nothing writes outside pytest's <code>tmp_path</code>.</p>
+<p>Suite result at <code>6bcdb92</code> in the audit environment:</p>
+<table>
+<thead><tr><th>Result</th><th>Count</th><th>Cause</th></tr></thead>
+<tbody>
+<tr><td>passed</td><td>182</td><td></td></tr>
+<tr><td>failed</td><td>5</td><td>Playwright not launchable (3), ffmpeg absent (1), host-specific <code>.desktop</code> file assertion (1)</td></tr>
+<tr><td>error</td><td>13</td><td>Playwright fixture in <code>tests/test_mobile_pwa_uat.py</code></td></tr>
+</tbody></table>
+</main>
+</body>
+</html>

@@ -72,8 +72,17 @@ def get_blacklisted_creators() -> set[str]:
         try:
             data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
             return set(h.lower().replace("@", "") for h in data.get("creators", []))
-        except Exception:
-            pass
+        except Exception as exc:
+            # Quarantine for forensics; fail open rather than silently
+            # discarding bytes.
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+                backup = config.BLACKLIST_FILE.with_name(
+                    f"{config.BLACKLIST_FILE.name}.corrupt-{ts}")
+                backup.write_bytes(config.BLACKLIST_FILE.read_bytes())
+            except Exception:
+                pass
     return set()
 
 

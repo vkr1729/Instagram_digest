@@ -1,0 +1,28 @@
+    <!-- Digest Grid View: 3-column visual grid for browsing all 300 reels -->
+    <section id="gridContainer" class="digest-grid-view" style="display:none">
+      <div class="digest-grid-top-bar">
+        <button type="button" class="back-to-feed-btn" onclick="toggleGridView(false)">← Feed</button>
+        <div class="digest-grid-title-group">
+          <span class="digest-grid-title">⊞ All Reels</span>
+          <span class="digest-grid-subtitle" id="gridWatchedCounter">0/{{ items|length }} watched</span>
+        </div>
+        <button type="button" class="grid-jump-shortcut-btn" onclick="openJumpModal(); toggleGridView(false);" title="Jump by number"># Jump</button>
+      </div>
+
+      <div class="digest-grid-controls">
+        <input type="search" class="digest-grid-search" id="digestGridSearchInput"
+          placeholder="Search 300 reels by creator or caption..." oninput="filterDigestGrid(this.value)" autocomplete="off">
+        
+        <div class="digest-grid-categories" id="gridCategoryChips">
+          <button type="button" class="grid-cat-chip active" data-cat="all" onclick="selectGridCategory('all', this)">All ({{ items|length }})</button>
+          <button type="button" class="grid-cat-chip" data-cat="entertainment" onclick="selectGridCategory('entertainment', this)">🎬 Entertain</button>
+          <button type="button" class="grid-cat-chip" data-cat="finance" onclick="selectGridCategory('finance', this)">💰 Finance</button>
+          <button type="button" class="grid-cat-chip" data-cat="ai_tech" onclick="selectGridCategory('ai_tech', this)">💻 Tech</button>
+          <button type="button" class="grid-cat-chip" data-cat="niche" onclick="selectGridCategory('niche', this)">🧠 Niche</button>
+          <button type="button" class="grid-cat-chip" data-cat="health" onclick="selectGridCategory('health', this)">🏋️ Health</button>
+          <button type="button" class="grid-cat-chip" data-cat="food" onclick="selectGridCategory('food', this)">🥗 Food</button>
+        </div>
+      </div>
+
+      <div class="digest-grid" id="digestGrid"></div>
+    </section>

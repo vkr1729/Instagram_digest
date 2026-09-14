@@ -4,6 +4,7 @@ site_builder.py — Compiles static HTML5/CSS/JS viewer and deploys to GitHub Pa
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import logging
@@ -17,6 +18,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+import atomic_io
 import config
 import storage_r2
 
@@ -233,6 +235,10 @@ def build_site(
     weeks_r2 = build_weeks_metadata(is_local=False)
     weeks_local = build_weeks_metadata(is_local=True)
 
+    # Two-tier gate: only the SHA-256 hash of VIEWING_PIN ships to the bundle.
+    _view_pin = os.getenv("VIEWING_PIN", "").strip()
+    pin_sha256 = hashlib.sha256(_view_pin.encode()).hexdigest() if _view_pin else ""
+
     # 1. Render site/index.html (GitHub Pages version)
     rendered_r2 = template.render(
         items=r2_items,
@@ -241,9 +247,11 @@ def build_site(
         is_local=False,
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
         pages_base_url=config.PAGES_BASE_URL,
+        pin_sha256=pin_sha256,
+        bookmark_api_base=config.BOOKMARK_API_BASE,
     )
     r2_index_path = config.SITE_DIR / "index.html"
-    r2_index_path.write_text(rendered_r2, encoding="utf-8")
+    atomic_io.durable_write_text(r2_index_path, rendered_r2)
 
     # 2. Render site/local_index.html (Local dashboard version)
     rendered_local = template.render(
@@ -253,9 +261,11 @@ def build_site(
         is_local=True,
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
         pages_base_url="http://localhost:8080",
+        pin_sha256=pin_sha256,
+        bookmark_api_base=config.BOOKMARK_API_BASE,
     )
     local_index_path = config.SITE_DIR / "local_index.html"
-    local_index_path.write_text(rendered_local, encoding="utf-8")
+    atomic_io.durable_write_text(local_index_path, rendered_local)
 
     # 3. Generate Standalone WhatsApp & Social Open Graph Share Pages
     for item in r2_items:
@@ -334,9 +344,7 @@ def build_site(
     if r2_uploaded_urls is not None:
         data_payload["items"] = [i for i in raw_items if i.get("id") in current_ids]
         data_payload["count"] = len(data_payload["items"])
-    (config.SITE_DIR / "data.json").write_text(
-        json.dumps(data_payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    atomic_io.durable_write_json(config.SITE_DIR / "data.json", data_payload)
 
     # 5. Write .nojekyll for GitHub Pages
     (config.SITE_DIR / ".nojekyll").write_text("", encoding="utf-8")

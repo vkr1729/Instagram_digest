@@ -16,11 +16,10 @@ from pathlib import Path
 from typing import Any
 
 
-def durable_write_json(path: str | Path, data: Any) -> None:
-    """Atomically write JSON to *path* with fsync durability."""
+def durable_write_bytes(path: str | Path, payload: bytes) -> None:
+    """Atomically write raw bytes to *path* with fsync durability."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
 
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=f".{target.name}.tmp-"
@@ -45,3 +44,14 @@ def durable_write_json(path: str | Path, data: Any) -> None:
         except OSError:
             pass
         raise
+
+
+def durable_write_json(path: str | Path, data: Any) -> None:
+    """Atomically write JSON to *path* with fsync durability."""
+    payload = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    durable_write_bytes(path, payload)
+
+
+def durable_write_text(path: str | Path, text: str, encoding: str = "utf-8") -> None:
+    """Atomically write text to *path* with fsync durability."""
+    durable_write_bytes(path, text.encode(encoding))

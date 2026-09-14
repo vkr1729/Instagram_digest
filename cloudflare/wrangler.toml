@@ -1,0 +1,19 @@
+# wrangler.toml — Instagram Digest Bookmarks API.
+# Secrets (OWNER_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) are set via
+# `wrangler secret put` and NEVER committed here.
+
+name = "ig-digest-api"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ig-digest-bookmarks"
+database_id = "fcde2249-3ccd-412f-bc6d-ffd341720a54"
+
+[[r2_buckets]]
+binding = "MY_BUCKET"
+bucket_name = "instagram-digest"
+
+[vars]
+R2_PUBLIC_BASE_URL = "https://instagram-digest-media.kedarvreddy.workers.dev"

@@ -104,8 +104,8 @@ def test_cookie_abort_checkpoints_partials_and_sends_alert(tmp_path):
 
 def test_retry_tops_up_from_checkpoint_and_clears_it(tmp_path):
     resumed = [_reel(f"new{i:02d}") for i in range(2)]
-    real_today = main.datetime.now(main.timezone.utc).strftime("%Y-%m-%d")
-    (tmp_path / f"expand_checkpoint_{real_today}.json").write_text(
+    week_id = "2026-09-12"
+    (tmp_path / f"expand_checkpoint_{week_id}.json").write_text(
         json.dumps({"version": 1, "target_count": 5, "reels": resumed}), encoding="utf-8")
     (tmp_path / "expand_checkpoint_2099-01-01.json").write_text(
         json.dumps({"version": 1, "target_count": 5, "reels": [_reel("stale")]}), encoding="utf-8")
@@ -131,7 +131,7 @@ def test_retry_tops_up_from_checkpoint_and_clears_it(tmp_path):
     assert {"new00", "new01"} <= seen["existing_ids"]
     # Stale week checkpoint pruned; fulfilled checkpoint cleared.
     assert list(tmp_path.glob("expand_checkpoint_*.json")) == []
-    assert (tmp_path / f"expand_checkpoint_{real_today}.json").exists() is False
+    assert (tmp_path / f"expand_checkpoint_{week_id}.json").exists() is False
     saved_ids = [r["id"] for r in saved["items"]]
     assert saved_ids[0] == "old1"
     assert sorted(saved_ids[1:]) == ["new00", "new01", "top00", "top01", "top02"]

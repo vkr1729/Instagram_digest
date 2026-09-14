@@ -57,10 +57,11 @@ the pipeline never challenge-loops.
 ### 3.2 Anti-bot pacing (post-fix)
 
 Choice: Gaussian `human_pause()` (10% long tail) everywhere; randomized
-cooldowns (every 18–32 evals, N(12,3)s); per-context UA/viewport/locale/
-timezone rotation from a Chrome-only pool; webdriver-mask init script;
-enrichment capped at 2 pooled browsers with exclusive checkout; API
-pagination with truncated exponential backoff.
+cooldowns (every 18–32 evals, N(12,3)s); per-context UA/viewport rotation
+from a Chrome-only pool with locale/timezone pinned per authenticated
+session; locale-matched webdriver-mask init script; serial enrichment
+(`ENRICH_WORKERS = 1`) with exclusive checkout; API pagination with
+truncated exponential backoff.
 
 Trade-off stated plainly: uniform jitter was a classifier feature, so it
 had to go. What remains is probabilistic defense, not proof — expect to
@@ -136,7 +137,9 @@ complexity risk.
   abort without touching digest/site; viability gate catches silent zeros.
 - Upload fails → reel dropped from manifest AND site (never a dead card).
 - Digest corrupt → quarantined; pruner skips that week entirely.
-- Sync and expand collide → second caller gets `already_running`.
+- Sync and expand collide → dashboard callers get `already_running`
+  (threading lock); cron / resume / CLI processes are excluded by the
+  `data/.pipeline.lock` flock (second process exits 3 and alerts).
 - Deploy threshold: refuses to publish under 60% of target playable items.
 
 ## 5. Verification (what "done" meant)

@@ -66,8 +66,10 @@ def test_send_failure_alert_email_handles_exception(monkeypatch):
 
 
 def test_sync_abort_alerts_on_all_exit2_sites(monkeypatch):
-    # Every `return 2` inside run_full_sync must be preceded by an abort alert.
-    src = inspect.getsource(main.run_full_sync)
+    # Every `return 2` inside the sync pipeline must be preceded by an abort
+    # alert. run_full_sync is a file-lock wrapper; the pipeline body lives in
+    # _run_full_sync (the wrapper itself has no exit-2 sites).
+    src = inspect.getsource(main._run_full_sync)
     assert src.count("_alert_sync_abort(") >= 3
     assert src.count("return 2") <= src.count("_alert_sync_abort(")
 

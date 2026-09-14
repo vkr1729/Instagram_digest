@@ -1,0 +1,108 @@
+    <!-- Two-Tier Gate: lock screen renders before feed; hidden when no PIN configured -->
+    <div class="lock-screen" id="lockScreen"{% if not pin_sha256 %} style="display:none"{% endif %}>
+      <div class="lock-card">
+        <div class="lock-brand">Instagram Digest</div>
+        <div class="lock-dots" id="lockDots" aria-label="PIN progress">○ ○ ○ ○</div>
+        <div class="lock-keypad" id="lockKeypad">
+          <button type="button" onclick="enterPin('1')">1</button>
+          <button type="button" onclick="enterPin('2')">2</button>
+          <button type="button" onclick="enterPin('3')">3</button>
+          <button type="button" onclick="enterPin('4')">4</button>
+          <button type="button" onclick="enterPin('5')">5</button>
+          <button type="button" onclick="enterPin('6')">6</button>
+          <button type="button" onclick="enterPin('7')">7</button>
+          <button type="button" onclick="enterPin('8')">8</button>
+          <button type="button" onclick="enterPin('9')">9</button>
+          <button type="button" onclick="clearPin()">C</button>
+          <button type="button" onclick="enterPin('0')">0</button>
+          <button type="button" onclick="backPin()">⌫</button>
+        </div>
+        <div class="lock-msg" id="lockMsg"></div>
+      </div>
+    </div>
+    <script>
+    // One-time link keys (?pin= / ?owner_key=) are consumed BEFORE any fetch
+    // and stripped from the URL (referer hygiene). Owner link is single-use:
+    // never forward it; rotate OWNER_KEY server-side if leaked.
+    window.__PIN_SHA256 = {{ pin_sha256|default('')|tojson }};
+    window.__BOOKMARK_API_BASE = {{ bookmark_api_base|default('')|tojson }};
+    window.__FEED_HIDDEN_BY_LOCK = Boolean(window.__PIN_SHA256);
+    (function authBoot() {
+      try {
+        const q = new URLSearchParams(location.search);
+        let touched = false;
+        if (q.has('owner_key') && q.get('owner_key')) {
+          localStorage.setItem('digest_owner_key', q.get('owner_key'));
+          touched = true;
+        }
+        if (q.has('api_base') && q.get('api_base')) {
+          localStorage.setItem('digest_api_base', q.get('api_base'));
+          touched = true;
+        }
+        if (q.has('pin')) { touched = true; } // validated against hash below, never stored
+        if (touched) window.history.replaceState(null, '', location.pathname);
+        if (!window.__PIN_SHA256) {
+          document.getElementById('lockScreen').style.display = 'none';
+        } else if (localStorage.getItem('digest_pin_ok') === '1') {
+          unlockScreen();
+        } else if (q.has('pin')) {
+          submitPin(q.get('pin') || '');
+        }
+      } catch (e) {}
+    })();
+    let _pinBuf = '', _pinFails = 0, _lockUntil = 0;
+    async function sha256hex(s) {
+      if (!window.crypto || !crypto.subtle) return null;
+      const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+      return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    function paintDots() {
+      const el = document.getElementById('lockDots');
+      if (el) el.textContent = '● '.repeat(_pinBuf.length) + '○ '.repeat(4 - _pinBuf.length);
+    }
+    async function enterPin(d) {
+      if (performance.now() < _lockUntil) return;
+      if (_pinBuf.length >= 4) return;
+      _pinBuf += d;
+      paintDots();
+      if (_pinBuf.length === 4) await submitPin(_pinBuf);
+    }
+    function backPin() { _pinBuf = _pinBuf.slice(0, -1); paintDots(); }
+    function clearPin() { _pinBuf = ''; paintDots(); }
+    async function submitPin(pin) {
+      const msg = document.getElementById('lockMsg');
+      const hex = await sha256hex(pin);
+      if (hex && hex === window.__PIN_SHA256) {
+        try { localStorage.setItem('digest_pin_ok', '1'); } catch (e) {}
+        _pinFails = 0;
+        unlockScreen();
+      } else {
+        _pinFails++;
+        _pinBuf = ''; paintDots();
+        if (_pinFails >= 5) {
+          _lockUntil = performance.now() + 30000;
+          if (msg) msg.textContent = 'Too many attempts — try again in 30s.';
+        } else if (msg) {
+          msg.textContent = hex === null ? 'Secure crypto unavailable on this browser.' : 'Wrong PIN.';
+        }
+      }
+    }
+    function unlockScreen() {
+      document.getElementById('lockScreen').style.display = 'none';
+      const feed = document.getElementById('feedContainer');
+      if (feed) feed.style.display = '';
+      window.__FEED_HIDDEN_BY_LOCK = false;
+      document.body.classList.toggle('readonly', !isOwnerDevice());
+      if (typeof resumeInitialPosition === 'function') resumeInitialPosition();
+      if (typeof flushBookmarkOutbox === 'function') flushBookmarkOutbox();
+    }
+    function isOwnerDevice() {
+      try { return Boolean(localStorage.getItem('digest_owner_key')); } catch (e) { return false; }
+    }
+    // auth.html parses before #feedContainer exists: re-apply once DOM is ready.
+    document.addEventListener('DOMContentLoaded', () => {
+      try {
+        if (!window.__PIN_SHA256 || localStorage.getItem('digest_pin_ok') === '1') unlockScreen();
+      } catch (e) {}
+    });
+    </script>

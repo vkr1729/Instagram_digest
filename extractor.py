@@ -52,14 +52,37 @@ TIMEZONE_POOL = ("America/New_York", "Europe/London", "Asia/Kolkata")
 
 # Minimal webdriver-masking init script (hides the most trivial headless
 # signals; not a full stealth framework, but removes the zero-effort tells).
-STEALTH_INIT_SCRIPT = """() => {
+# NOTE (known limit): the UA override below does not rewrite the
+# Sec-CH-UA client-hint headers Playwright's bundled Chromium sends, so a
+# pinned Chrome 130/131 UA can still mismatch the real engine version. The
+# pool stays Chrome-only to avoid the worse mismatch of a non-Chrome UA on
+# a Chromium engine.
+def _stealth_script_for_locale(locale: str) -> str:
+    """Build the masking snippet with languages matching the context locale."""
+    base = (locale or "en-US").strip() or "en-US"
+    short = base.split("-")[0]
+    langs = [base] if base == short else [base, short]
+    langs_js = "[" + ", ".join(f"'{l}'" for l in langs) + "]"
+    return """() => {
   try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
     if (!window.chrome) { window.chrome = { runtime: {} }; }
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    const _fakePlugins = {
+      length: 3,
+      item(i) { return this[i] || null; },
+      namedItem(n) { return this[n] || null; },
+      refresh() {},
+      0: { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+      1: { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+      2: { name: 'Native Client', filename: 'internal-nacl-plugin' },
+    };
+    Object.defineProperty(navigator, 'plugins', { get: () => _fakePlugins });
+    Object.defineProperty(navigator, 'languages', { get: () => LANGS });
   } catch (e) {}
-}"""
+}""".replace("LANGS", langs_js)
+
+
+STEALTH_INIT_SCRIPT = _stealth_script_for_locale("en-US")
 
 
 # Feed-discovery pacing (low-profile after the automation warning): rest more
@@ -95,8 +118,20 @@ def get_blacklisted_creators() -> set[str]:
         try:
             data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
             return set(h.lower().replace("@", "") for h in data.get("creators", []))
-        except Exception:
-            pass
+        except Exception as exc:
+            # Quarantine for forensics; fail open (muted creators reappear)
+            # rather than failing closed, and never silently discard bytes.
+            try:
+                from datetime import timezone as _tz, datetime as _dt
+                ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+                backup = config.BLACKLIST_FILE.with_name(
+                    f"{config.BLACKLIST_FILE.name}.corrupt-{ts}")
+                backup.write_bytes(config.BLACKLIST_FILE.read_bytes())
+                logger.warning("Quarantined corrupt %s to %s: %s",
+                               config.BLACKLIST_FILE, backup, exc)
+            except Exception:
+                logger.warning("Unreadable %s; treating blacklist as empty: %s",
+                               config.BLACKLIST_FILE, exc)
     return set()
 
 
@@ -116,10 +151,9 @@ def load_sources() -> list[dict[str, Any]]:
 
 
 def save_sources(sources: list[dict[str, Any]]) -> None:
-    """Save updated creators list to sources.json."""
-    config.SOURCES_FILE.write_text(
-        json.dumps(sources, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    """Save updated creators list to sources.json (crash-safe)."""
+    import atomic_io
+    atomic_io.durable_write_json(config.SOURCES_FILE, sources)
 
 
 def categorize_creator(handle: str, name: str) -> str:
@@ -339,7 +373,8 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "accounts": current_sources
     }
-    cache_file.write_text(json.dumps(cache_payload, indent=2), encoding="utf-8")
+    import atomic_io
+    atomic_io.durable_write_json(cache_file, cache_payload)
     logger.info("Following sync complete. Tracking %d active sources.", len(current_sources))
     return current_sources
 
@@ -403,9 +438,23 @@ _SOFT_BLOCK_SNIPPETS = (
     "log in to continue",
 )
 
+# Regions whose text must never count as a block signal: JS bundles (which
+# embed API error-code enums such as login_required as plain strings),
+# styles, HTML comments, and paragraph-level user content (reel captions and
+# comments, e.g. a recipe reading "try again later with less heat").
+_NONBLOCK_CONTENT_RE = re.compile(
+    r"<!--.*?-->"
+    r"|<script\b.*?</script\s*>"
+    r"|<style\b.*?</style\s*>"
+    r"|<p\b.*?</p\s*>"
+    r"|<figcaption\b.*?</figcaption\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _page_html_indicates_block(html: str) -> bool:
-    return any(s in (html or "").lower() for s in _SOFT_BLOCK_SNIPPETS)
+    text = _NONBLOCK_CONTENT_RE.sub(" ", html or "")
+    return any(s in text.lower() for s in _SOFT_BLOCK_SNIPPETS)
 
 
 def _assert_not_blocked(page, context: str) -> None:
@@ -437,7 +486,10 @@ def _parse_date_flexible(date_str: str) -> int:
     return 0
 
 
-_DISCOVERY_SELECTORS = ("a[href*='/reel/']", "a[href*='/reel']")
+# Ordered fallback chain: the entries must be disjoint. (A previous revision
+# used "a[href*='/reel']" second, a pure superset of the first, so the
+# fallback could never match anything new.)
+_DISCOVERY_SELECTORS = ("a[href*='/reel/']", "a[href*='/reels/']")
 
 
 def _extract_shortcode(href: str) -> str:
@@ -458,6 +510,11 @@ class InstagramSession:
         self._context = None
         self._page = None
         self._nav_count = 0
+        # Pinned per authenticated session: rotating the timezone (or the
+        # locale independently of navigator.languages) across contexts on a
+        # single account is an account-linking anomaly, not camouflage.
+        self._locale: str | None = None
+        self._timezone_id: str | None = None
 
     def __enter__(self) -> InstagramSession:
         self.start()
@@ -482,15 +539,19 @@ class InstagramSession:
 
     def _open_context(self) -> None:
         width, height = random.choice(VIEWPORT_POOL)
+        if self._locale is None:
+            self._locale = random.choice(LOCALE_POOL)
+        if self._timezone_id is None:
+            self._timezone_id = random.choice(TIMEZONE_POOL)
         self._context = self._browser.new_context(
             user_agent=random.choice(USER_AGENT_POOL),
             viewport={"width": width, "height": height},
-            locale=random.choice(LOCALE_POOL),
-            timezone_id=random.choice(TIMEZONE_POOL),
+            locale=self._locale,
+            timezone_id=self._timezone_id,
             device_scale_factor=1,
         )
         try:
-            self._context.add_init_script(STEALTH_INIT_SCRIPT)
+            self._context.add_init_script(_stealth_script_for_locale(self._locale))
         except Exception:
             pass
         self._inject_cookies()
@@ -691,9 +752,7 @@ def extract_single_reel_metadata(
             pass
 
         html = page.content()
-        if _page_html_indicates_block(html):
-            logger.warning("Soft-block markers in reel page %s; skipping without fallback.", reel_url)
-            return None
+        blocked = _page_html_indicates_block(html)
 
         # Canonical-link fallback recovers the shortcode/handle when OG tags shift.
         try:
@@ -703,7 +762,7 @@ def extract_single_reel_metadata(
             if canon_code and not shortcode:
                 shortcode = canon_code
         except Exception:
-            pass
+            canon_code = ""
 
         og_title = page.query_selector('meta[property="og:title"]')
         og_desc = page.query_selector('meta[property="og:description"]')
@@ -712,6 +771,20 @@ def extract_single_reel_metadata(
         title_text = og_title.get_attribute("content") if og_title else ""
         desc_text = og_desc.get_attribute("content") if og_desc else ""
         thumb_url = og_image.get_attribute("content") if og_image else reel_info.get("thumbnail", "")
+
+        if blocked and not (title_text or canon_code or '<time' in (html or '')):
+            # No reel-validity signals (OG title, canonical shortcode, or a
+            # <time> element): treat the markers as a genuine soft block.
+            # Marker strings alone are not enough — they also occur in reel
+            # captions ("try again later") and in JS bundle enums — so a page
+            # carrying real reel metadata is never dropped on this signal.
+            logger.warning("Soft-block markers in reel page %s; skipping without fallback.", reel_url)
+            return None
+        if blocked:
+            logger.warning(
+                "Soft-block markers present but reel metadata found on %s; continuing.",
+                reel_url,
+            )
 
         metrics_estimated = True
         like_count = 0

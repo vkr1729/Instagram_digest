@@ -396,6 +396,33 @@
     const THUMB_CACHE_MAX = 6;
     const cachedThumbnailFiles = new Map();
 
+    // Feature 1: 1-slot bounded mp4 File for gesture-safe Web Share Level 2.
+    // Resolved at card activation (never inside the tap handler) so that
+    // navigator.share() fires synchronously within transient activation.
+    let activeShareFile = null;
+    let activeShareReelId = null;
+
+    async function resolveShareFile(card) {
+      const reelId = card && card.dataset.id;
+      activeShareFile = null;
+      activeShareReelId = null;
+      if (!reelId) return;
+      try {
+        const video = card.querySelector('.reel-video');
+        const src = video && (video.dataset.src || video.currentSrc || video.src);
+        if (!src || !('caches' in window)) return;
+        const cache = await caches.open('ig-digest-media-v1');
+        const res = await cache.match(src.split('?')[0]);
+        if (!res) return;
+        const blob = await res.blob();
+        if (currentActiveCard !== card) return; // swiped away mid-resolve
+        if (blob && blob.size) {
+          activeShareFile = new File([blob], `${reelId}.mp4`, { type: 'video/mp4' });
+          activeShareReelId = reelId;
+        }
+      } catch (err) {}
+    }
+
     async function preloadReelThumbnail(reelId) {
       if (!reelId || cachedThumbnailFiles.has(reelId)) return;
       try {
@@ -434,8 +461,21 @@
 
       window.__dispatchedShareUrl = `whatsapp://send?text=${encodeURIComponent(shareText)}`;
 
-      // 1. Try native Web Share synchronously to retain transient activation
+      // 1. Try native Web Share synchronously to retain transient activation.
+      // Hot path: mp4 File pre-resolved at card activation (gesture-safe).
       if (navigator.share) {
+        if (reelId && reelId === activeShareReelId && activeShareFile &&
+            navigator.canShare && navigator.canShare({ files: [activeShareFile] })) {
+          navigator.share({
+            files: [activeShareFile],
+            title: `Reel by @${creatorHandle || 'creator'}`,
+            text: shareText
+          }).catch(err => {
+            if (err && err.name === 'AbortError') return;
+            fallbackShare(shareText);
+          });
+          return;
+        }
         const fileToShare = cachedThumbnailFiles.get(reelId);
         if (fileToShare && navigator.canShare && navigator.canShare({ files: [fileToShare] })) {
           navigator.share({
@@ -1059,7 +1099,7 @@
 
       const shouldPlay = (options.play !== undefined) ? options.play : (!isInitialLaunch);
       if (targetCard) {
-        if (isInitialLaunch) {
+        if (isInitialLaunch && feed.style.display !== 'none') {
           // WebKit snap-scroll lock fix on initial load: unlock snap, set scrollTop, prepare paused, restore snap
           feed.style.setProperty('scroll-snap-type', 'none');
           feed.scrollTop = targetCard.offsetTop;
@@ -1067,14 +1107,17 @@
           setTimeout(() => {
             feed.style.setProperty('scroll-snap-type', 'y mandatory');
           }, 120);
-        } else {
+          isInitialLaunch = false;
+        } else if (!isInitialLaunch) {
           goToCard(targetCard, { play: allWatched ? false : shouldPlay });
+        } else {
+          // Feed is hidden behind lock screen; prepare card state, defer scroll to resumeInitialPosition
+          prepareCardVideoPaused(targetCard);
         }
         if (isAllCaughtUp) {
           showToast("You're all caught up! Scroll up to rewatch.");
         }
       }
-      isInitialLaunch = false;
     }
 
     // P3 & P8: High-Performance Sliding Window Loader (Max 5 posters, prefetch & warmup)
@@ -1138,6 +1181,8 @@
     // Video Playback, Resilient iOS Fast-Scrolling & Fullscreen State (Requirements 3 & 4)
     function playCardVideo(card, isManual = false) {
       if (!card || card.dataset.dead) return;
+      const feedEl = document.getElementById('feedContainer');
+      if (feedEl && feedEl.style.display === 'none') return; // bookmarks view owns playback
       // Manual-pause cooldown blocks auto paths (observer, settle, advance);
       // explicit tap resume passes isManual and always goes through.
       if (!isManual && manualPause.card === card &&
@@ -1164,6 +1209,7 @@
 
       if (card.dataset.id) {
         preloadReelThumbnail(card.dataset.id);
+        resolveShareFile(card);
         localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id);
         recordDailyView(card.dataset.id);
       }
@@ -1603,10 +1649,19 @@
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         closeModal('jumpModal');
+        const grid = document.getElementById('gridContainer');
+        if (grid && grid.style.display !== 'none') toggleGridView(false);
         return;
       }
 
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+
+      if (e.key === 'v' || e.key === 'V') {
+        e.preventDefault();
+        const grid = document.getElementById('gridContainer');
+        toggleGridView(grid && grid.style.display !== 'none' ? false : true);
+        return;
+      }
 
       if (e.key === 'b' || e.key === 'B') {
         e.preventDefault();
@@ -1870,9 +1925,654 @@
     // plus offline download. The /api/* endpoints they used are unchanged.
 
     // Initialize & Resume from Last Active Reel / First Unwatched Reel (or Deep Link ?reel=ID)
+    function resumeInitialPosition(forceTargetId) {
+      const feed = document.getElementById('feedContainer');
+      if (!feed || feed.style.display === 'none') return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const targetReelId = forceTargetId || urlParams.get('reel') || localStorage.getItem(LAST_ACTIVE_KEY);
+      const watched = getWatchedIds();
+
+      const vCards = visibleCards();
+      if (!vCards.length) return;
+
+      let targetCard = null;
+      if (targetReelId) {
+        targetCard = vCards.find(c => c.dataset.id === targetReelId);
+      }
+      if (!targetCard) {
+        targetCard = vCards.find(c => !watched.has(c.dataset.id));
+      }
+      if (!targetCard) {
+        targetCard = vCards[vCards.length - 1]; // All watched -> last card
+      }
+
+      if (targetCard) {
+        feed.style.setProperty('scroll-snap-type', 'none');
+        feed.scrollTop = targetCard.offsetTop;
+        prepareCardVideoPaused(targetCard);
+        requestAnimationFrame(() => {
+          if (targetCard.offsetTop > 0) feed.scrollTop = targetCard.offsetTop;
+          setTimeout(() => {
+            if (targetCard.offsetTop > 0) feed.scrollTop = targetCard.offsetTop;
+            feed.style.setProperty('scroll-snap-type', 'y mandatory');
+            updateSlidingWindow(targetCard);
+          }, 80);
+        });
+      }
+      isInitialLaunch = false;
+    }
+    window.resumeInitialPosition = resumeInitialPosition;
+
     const urlParams = new URLSearchParams(window.location.search);
     const targetReelId = urlParams.get('reel');
     const lastActiveId = localStorage.getItem(LAST_ACTIVE_KEY);
     const initialTargetId = targetReelId || lastActiveId;
 
     filterCategory('all', { play: false, initialTargetId: initialTargetId });
+    resumeInitialPosition();
+
+    // ---- Hybrid Bookmarks: API, snapshot, IndexedDB outbox, sync ----
+    function bookmarkApiBase() {
+      try {
+        const override = localStorage.getItem('digest_api_base');
+        if (override) return override.replace(/\/$/, '');
+      } catch (e) {}
+      return (window.__BOOKMARK_API_BASE || '').replace(/\/$/, '');
+    }
+
+    function bookmarkAuthHeaders() {
+      const h = { 'Content-Type': 'application/json' };
+      try {
+        const k = localStorage.getItem('digest_owner_key');
+        if (k) h['Authorization'] = 'Bearer ' + k;
+      } catch (e) {}
+      return h;
+    }
+
+    const SNAPSHOT_KEY = 'ig_digest_bookmarks_snapshot';
+    function getBookmarkSnapshot() {
+      try {
+        const raw = localStorage.getItem(SNAPSHOT_KEY);
+        const arr = JSON.parse(raw || '[]');
+        return Array.isArray(arr) ? arr : [];
+      } catch (e) { return []; }
+    }
+    function setBookmarkSnapshot(rows) {
+      try { localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(rows || [])); } catch (e) {}
+      paintBookmarkButtons();
+      updateBookmarkBadge(0);
+    }
+    function snapshotIds() {
+      return new Set(getBookmarkSnapshot().map(r => r.id));
+    }
+
+    function openIdb() {
+      return new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) { reject(new Error('no-indexeddb')); return; }
+        const req = indexedDB.open('ig-digest-store', 1);
+        req.onupgradeneeded = () => {
+          req.result.createObjectStore('pending-bookmark-ops', { keyPath: 'opId', autoIncrement: true });
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    function idbAll(db) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('pending-bookmark-ops', 'readonly');
+        const rq = tx.objectStore('pending-bookmark-ops').getAll();
+        rq.onsuccess = () => resolve(rq.result || []);
+        rq.onerror = () => reject(rq.error);
+      });
+    }
+    function idbAdd(db, op) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('pending-bookmark-ops', 'readwrite');
+        tx.objectStore('pending-bookmark-ops').add(op);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    function idbDelete(db, opId) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('pending-bookmark-ops', 'readwrite');
+        tx.objectStore('pending-bookmark-ops').delete(opId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    function idbPut(db, op) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('pending-bookmark-ops', 'readwrite');
+        tx.objectStore('pending-bookmark-ops').put(op);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+    function pendingOpCount() {
+      return openIdb().then(db => idbAll(db).then(ops => ops.length)).catch(() => 0);
+    }
+
+    function reelMetaFromCard(card) {
+      const v = card ? card.querySelector('.reel-video') : null;
+      const badge = card ? card.querySelector('.creator-badge') : null;
+      const cap = card ? card.querySelector('.caption-snippet') : null;
+      return {
+        id: card ? card.dataset.id : '',
+        creator_handle: badge ? badge.textContent.replace(/^@/, '').trim() : '',
+        caption: cap ? cap.textContent.trim().slice(0, 500) : '',
+        category: card ? (card.dataset.category || '') : '',
+        video_url: v ? (v.dataset.src || v.currentSrc || v.src || '') : '',
+        thumbnail_url: v ? (v.dataset.poster || '') : '',
+      };
+    }
+
+    async function toggleBookmark(reelId, e) {
+      if (e) { e.stopPropagation(); e.preventDefault(); }
+      if (!reelId) return;
+      if (typeof isOwnerDevice === 'function' && !isOwnerDevice()) {
+        const entered = window.prompt('Enter your Owner Key to enable bookmarking on this device:');
+        if (entered && entered.trim()) {
+          localStorage.setItem('digest_owner_key', entered.trim());
+          document.body.classList.remove('readonly');
+          updateOwnerKeyStatus();
+          showToast('Owner key linked! Saving bookmark...');
+        } else {
+          return;
+        }
+      }
+      const card = (e && e.target && e.target.closest) ? e.target.closest('.reel-card') : null;
+      const meta = card ? reelMetaFromCard(card) : { id: reelId };
+      const ids = snapshotIds();
+      const adding = !ids.has(reelId);
+      // Optimistic toggle.
+      const snap = getBookmarkSnapshot().filter(r => r.id !== reelId);
+      if (adding) snap.push({ ...meta, bookmarked_at: new Date().toISOString() });
+      setBookmarkSnapshot(snap);
+      // Queue op; private-mode (no IDB) falls back to direct fetch.
+      try {
+        const db = await openIdb();
+        await idbAdd(db, { op: adding ? 'POST' : 'DELETE', id: reelId, payload: meta, ts: Date.now(), attempts: 0 });
+        flushBookmarkOutbox();
+      } catch (err) {
+        sendBookmarkOp(adding ? 'POST' : 'DELETE', reelId, meta)
+          .then(() => syncBookmarksFromServer()).catch(() => {});
+      }
+    }
+
+    async function sendBookmarkOp(op, id, payload) {
+      const base = bookmarkApiBase();
+      if (!base) throw new Error('no-api-base');
+      const init = { method: op === 'POST' ? 'POST' : 'DELETE', headers: bookmarkAuthHeaders() };
+      if (op === 'POST') init.body = JSON.stringify(payload);
+      const url = op === 'POST' ? `${base}/api/bookmark` : `${base}/api/bookmark/${encodeURIComponent(id)}`;
+      return fetch(url, init);
+    }
+
+    const OUTBOX_BACKOFF = [1000, 5000, 30000, 300000];
+    let outboxFlushing = false;
+    async function flushBookmarkOutbox() {
+      if (outboxFlushing) return;
+      const base = bookmarkApiBase();
+      if (!base) return;
+      let db;
+      try { db = await openIdb(); } catch (e) { return; }
+      outboxFlushing = true;
+      try {
+        const ops = (await idbAll(db)).sort((a, b) => (a.ts - b.ts) || (a.opId - b.opId));
+        for (const op of ops) {
+          let res;
+          try {
+            res = await sendBookmarkOp(op.op, op.id, op.payload);
+          } catch (err) {
+            break; // network down: preserve order, retry on next trigger
+          }
+          if (res.ok) {
+            await idbDelete(db, op.opId);
+            continue;
+          }
+          if (res.status === 403) {
+            await idbDelete(db, op.opId);
+            document.body.classList.add('readonly');
+            updateOwnerKeyStatus();
+            showToast('Owner key invalid — re-link this device.');
+            continue;
+          }
+          if (res.status === 400 || res.status === 404 || res.status === 409 || res.status === 413) {
+            await idbDelete(db, op.opId); // permanent: poison-pill drop
+            if (res.status === 404) {
+              setBookmarkSnapshot(getBookmarkSnapshot().filter(r => r.id !== op.id));
+              showToast('That reel expired from the weekly digest.');
+            }
+            continue;
+          }
+          // 5xx / other: backoff, park after 5 attempts.
+          op.attempts = (op.attempts || 0) + 1;
+          if (op.attempts >= 5) break; // parked; badge shows pending, retry next trigger
+          await idbPut(db, op);
+          await new Promise(r => setTimeout(r, OUTBOX_BACKOFF[Math.min(op.attempts - 1, 3)]));
+          break;
+        }
+        await syncBookmarksFromServer();
+        updateBookmarkBadge(await pendingOpCount());
+      } finally {
+        outboxFlushing = false;
+      }
+    }
+
+    async function syncBookmarksFromServer() {
+      const base = bookmarkApiBase();
+      if (!base) return;
+      if (typeof isOwnerDevice === 'function' && !isOwnerDevice()) return;
+      try {
+        const res = await fetch(`${base}/api/bookmarks`, { headers: bookmarkAuthHeaders() });
+        if (!res.ok) return;
+        setBookmarkSnapshot(await res.json());
+      } catch (e) {}
+    }
+
+    function paintBookmarkButtons() {
+      const ids = snapshotIds();
+      document.querySelectorAll('.bookmark-btn[data-id]').forEach(b => {
+        const isBm = ids.has(b.dataset.id);
+        b.classList.toggle('bookmarked', isBm);
+        b.textContent = isBm ? '🔖 Saved' : '🔖 Save';
+      });
+    }
+
+    async function updateBookmarkBadge(pending) {
+      const badge = document.getElementById('bookmarkBadge');
+      if (!badge) return;
+      const n = getBookmarkSnapshot().length;
+      let p = pending;
+      if (p === undefined) p = await pendingOpCount();
+      badge.textContent = p > 0 ? `${n} (⚠${p})` : String(n);
+    }
+
+    window.addEventListener('online', () => { flushBookmarkOutbox(); });
+
+    function updateOwnerKeyStatus() {
+      const btn = document.getElementById('ownerKeyStatusBtn');
+      if (!btn) return;
+      const isOwner = typeof isOwnerDevice === 'function' ? isOwnerDevice() : Boolean(localStorage.getItem('digest_owner_key'));
+      if (isOwner) {
+        btn.textContent = '🔑 Linked';
+        btn.classList.add('linked');
+        btn.title = 'Owner key is active on this device (tap to manage)';
+      } else {
+        btn.textContent = '🔑 Link Key';
+        btn.classList.remove('linked');
+        btn.title = 'Link Owner Key to save and sync bookmarks';
+      }
+    }
+
+    async function promptOwnerKey() {
+      const existing = localStorage.getItem('digest_owner_key') || '';
+      const promptText = existing
+        ? 'Owner key is active on this device.\nEnter a new Owner Key to update, or leave blank to keep:'
+        : 'Enter your 32-character Owner Key to enable saving and syncing bookmarks:';
+      const entered = window.prompt(promptText, existing);
+      if (entered === null) return;
+      const trimmed = entered.trim();
+      if (trimmed) {
+        localStorage.setItem('digest_owner_key', trimmed);
+        document.body.classList.remove('readonly');
+        updateOwnerKeyStatus();
+        showToast('Owner key linked! Syncing bookmarks...');
+        paintBookmarkButtons();
+        await syncBookmarksFromServer();
+        renderBookmarksGrid(document.getElementById('bookmarkSearchInput')?.value || '');
+        flushBookmarkOutbox();
+      } else if (existing && entered === '') {
+        if (window.confirm('Do you want to unlink the Owner Key from this device?')) {
+          localStorage.removeItem('digest_owner_key');
+          document.body.classList.add('readonly');
+          updateOwnerKeyStatus();
+          paintBookmarkButtons();
+          showToast('Owner key unlinked.');
+        }
+      }
+    }
+
+    // ---- Bookmarks grid, overlay, view-switch ----
+    let savedFeedScroll = 0, savedGridScroll = 0, overlayList = [], overlayIdx = 0;
+    let searchDebounce = null;
+
+    function toggleBookmarksView(open) {
+      const feed = document.getElementById('feedContainer');
+      const bm = document.getElementById('bookmarksContainer');
+      const chrome = document.getElementById('topChrome');
+      if (!feed || !bm) return;
+      if (open) {
+        const grid = document.getElementById('gridContainer');
+        if (grid && grid.style.display !== 'none') toggleGridView(false);
+        savedFeedScroll = feed.scrollTop;
+        if (currentActiveCard) {
+          const v = currentActiveCard.querySelector('.reel-video');
+          if (v) v.pause();
+        }
+        feed.style.display = 'none';
+        if (chrome) chrome.style.display = 'none';
+        document.body.style.overflow = 'hidden';
+        updateOwnerKeyStatus();
+        renderBookmarksGrid(document.getElementById('bookmarkSearchInput')?.value || '');
+        bm.style.display = 'flex';
+        flushBookmarkOutbox();
+      } else {
+        closeBookmarkOverlay();
+        bm.style.display = 'none';
+        if (chrome) chrome.style.display = '';
+        document.body.style.overflow = '';
+        feed.style.display = '';
+        feed.scrollTop = savedFeedScroll;
+        // Never autoplay on return (respects manual-pause contract).
+      }
+    }
+
+    function renderBookmarksGrid(filter) {
+      const grid = document.getElementById('bookmarksGrid');
+      if (!grid) return;
+      const q = (filter || '').toLowerCase();
+      overlayList = getBookmarkSnapshot().slice().reverse().filter(r => {
+        if (!q) return true;
+        return ((r.creator_handle || '') + ' ' + (r.caption || '')).toLowerCase().includes(q);
+      });
+      grid.textContent = '';
+      if (!overlayList.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#a1a1aa;text-align:center;padding:48px 16px;grid-column:1/-1;display:flex;flex-direction:column;align-items:center;';
+        if (q) {
+          empty.innerHTML = `
+            <div style="font-size:32px;margin-bottom:8px;">🔍</div>
+            <div style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px;">No matching bookmarks</div>
+            <div style="color:#8e8e93;font-size:13px;">Try searching for a different handle or keyword.</div>
+          `;
+        } else {
+          empty.innerHTML = `
+            <div style="font-size:40px;margin-bottom:12px;">🔖</div>
+            <div style="font-size:17px;font-weight:700;color:#fff;margin-bottom:6px;">No Bookmarks Yet</div>
+            <div style="color:#8e8e93;font-size:13px;max-width:280px;line-height:1.4;margin-bottom:20px;">Tap the <strong>🔖 Save</strong> button on any reel to save it to your permanent library.</div>
+            <button type="button" class="back-to-feed-btn" onclick="toggleBookmarksView(false)">Browse Reels</button>
+          `;
+        }
+        grid.appendChild(empty);
+        return;
+      }
+      overlayList.forEach((r, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'bookmark-card';
+        btn.setAttribute('aria-label', `Open bookmark ${r.creator_handle || r.id}`);
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.src = r.thumbnail_url || r.video_url || '';
+        img.alt = '';
+        img.onerror = () => { img.style.visibility = 'hidden'; };
+        const handle = document.createElement('div');
+        handle.className = 'bm-handle';
+        handle.textContent = '@' + (r.creator_handle || 'reel');
+        btn.appendChild(img);
+        btn.appendChild(handle);
+        btn.addEventListener('click', () => openBookmarkOverlay(i));
+        grid.appendChild(btn);
+      });
+    }
+
+    function filterBookmarksGrid(value) {
+      if (searchDebounce) clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => renderBookmarksGrid(value || ''), 120);
+    }
+
+    function openBookmarkOverlay(i) {
+      const ov = document.getElementById('bookmarkOverlay');
+      const video = document.getElementById('bookmarkOverlayVideo');
+      if (!ov || !video || !overlayList.length) return;
+      savedGridScroll = document.getElementById('bookmarksContainer')?.scrollTop || 0;
+      overlayIdx = Math.max(0, Math.min(i, overlayList.length - 1));
+      paintOverlay();
+      ov.style.display = '';
+      document.body.style.overflow = 'hidden';
+    }
+
+    function paintOverlay() {
+      const r = overlayList[overlayIdx];
+      const video = document.getElementById('bookmarkOverlayVideo');
+      const meta = document.getElementById('bookmarkOverlayMeta');
+      const unbm = document.getElementById('bookmarkOverlayUnbookmark');
+      if (!r || !video) return;
+      video.pause();
+      video.src = r.video_url || '';
+      video.poster = r.thumbnail_url || '';
+      const pp = video.play();
+      if (pp && pp.catch) pp.catch(() => {});
+      if (meta) {
+        meta.innerHTML = `<span class="meta-handle">@${r.creator_handle || 'reel'}</span><span class="meta-dot">•</span><span class="meta-count">${overlayIdx + 1}/${overlayList.length}</span>`;
+      }
+      if (unbm) unbm.textContent = '🔖 Saved';
+    }
+
+    function stepOverlay(d) {
+      if (!overlayList.length) return;
+      overlayIdx = (overlayIdx + d + overlayList.length) % overlayList.length;
+      paintOverlay();
+    }
+
+    function closeBookmarkOverlay() {
+      const ov = document.getElementById('bookmarkOverlay');
+      const video = document.getElementById('bookmarkOverlayVideo');
+      if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
+      if (ov) ov.style.display = 'none';
+      const grid = document.getElementById('bookmarksContainer');
+      if (grid) grid.scrollTop = savedGridScroll;
+    }
+
+    function overlayUnbookmark() {
+      const r = overlayList[overlayIdx];
+      if (!r) return;
+      toggleBookmark(r.id, null).then(() => {
+        overlayList = overlayList.filter(x => x.id !== r.id);
+        if (!overlayList.length) { closeBookmarkOverlay(); renderBookmarksGrid(''); return; }
+        overlayIdx = Math.min(overlayIdx, overlayList.length - 1);
+        paintOverlay();
+        renderBookmarksGrid(document.getElementById('bookmarkSearchInput')?.value || '');
+      });
+    }
+
+    // Overlay swipe (vertical) + Esc wiring, attached once.
+    (function initOverlayGestures() {
+      const ov = document.getElementById('bookmarkOverlay');
+      if (!ov || ov.dataset.wired) return;
+      ov.dataset.wired = '1';
+      let y0 = null;
+      ov.addEventListener('touchstart', (t) => { y0 = t.changedTouches[0].clientY; }, { passive: true });
+      ov.addEventListener('touchend', (t) => {
+        if (y0 === null) return;
+        const dy = t.changedTouches[0].clientY - y0;
+        y0 = null;
+        if (Math.abs(dy) > 48) stepOverlay(dy < 0 ? 1 : -1);
+      }, { passive: true });
+      document.addEventListener('keydown', (k) => {
+        if (k.key === 'Escape' && ov.style.display !== 'none') closeBookmarkOverlay();
+      });
+    })();
+
+    // ==========================================================================
+    // Digest Grid View: 3-Column Visual Grid for 300 Reels (ui-ux-pro-max)
+    // ==========================================================================
+    let gridCategory = 'all';
+    let gridSearchDebounce = null;
+    let savedFeedScrollBeforeGrid = 0;
+
+    function toggleGridView(open) {
+      const feed = document.getElementById('feedContainer');
+      const grid = document.getElementById('gridContainer');
+      const chrome = document.getElementById('topChrome');
+      if (!feed || !grid) return;
+      if (open) {
+        if (typeof toggleBookmarksView === 'function') {
+          const bm = document.getElementById('bookmarksContainer');
+          if (bm && bm.style.display !== 'none') toggleBookmarksView(false);
+        }
+        savedFeedScrollBeforeGrid = feed.scrollTop;
+        if (currentActiveCard) {
+          const v = currentActiveCard.querySelector('.reel-video');
+          if (v) v.pause();
+        }
+        feed.style.display = 'none';
+        if (chrome) chrome.style.display = 'none';
+        document.body.style.overflow = 'hidden';
+        renderDigestGrid(document.getElementById('digestGridSearchInput')?.value || '', gridCategory);
+        grid.style.display = 'flex';
+        // Auto-scroll to current active reel in grid
+        requestAnimationFrame(() => {
+          const activeEl = grid.querySelector('.digest-grid-card.active-reel');
+          if (activeEl) {
+            activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        });
+      } else {
+        grid.style.display = 'none';
+        if (chrome) chrome.style.display = '';
+        document.body.style.overflow = '';
+        feed.style.display = '';
+        feed.scrollTop = savedFeedScrollBeforeGrid;
+      }
+    }
+
+    function selectGridCategory(cat, btn) {
+      gridCategory = cat || 'all';
+      const chips = document.querySelectorAll('#gridCategoryChips .grid-cat-chip');
+      chips.forEach(c => c.classList.remove('active'));
+      if (btn) {
+        btn.classList.add('active');
+      } else {
+        const target = document.querySelector(`#gridCategoryChips .grid-cat-chip[data-cat="${gridCategory}"]`);
+        if (target) target.classList.add('active');
+      }
+      renderDigestGrid(document.getElementById('digestGridSearchInput')?.value || '', gridCategory);
+    }
+
+    function filterDigestGrid(val) {
+      if (gridSearchDebounce) clearTimeout(gridSearchDebounce);
+      gridSearchDebounce = setTimeout(() => {
+        renderDigestGrid(val || '', gridCategory);
+      }, 120);
+    }
+
+    function renderDigestGrid(filter, cat) {
+      const container = document.getElementById('digestGrid');
+      if (!container) return;
+      const q = (filter || '').trim().toLowerCase();
+      const selectedCat = cat || 'all';
+      const allCards = Array.from(document.querySelectorAll('#feedContainer .reel-card'));
+      const watchedSet = (typeof getWatchedIds === 'function') ? getWatchedIds() : new Set();
+
+      let watchedCount = 0;
+      allCards.forEach(c => {
+        if (watchedSet.has(c.dataset.id)) watchedCount++;
+      });
+      const counter = document.getElementById('gridWatchedCounter');
+      if (counter) {
+        counter.textContent = `${watchedCount}/${allCards.length} watched`;
+      }
+
+      const filteredCards = allCards.filter(c => {
+        if (selectedCat !== 'all' && c.dataset.category !== selectedCat) return false;
+        if (!q) return true;
+        const handle = (c.querySelector('.creator-badge')?.textContent || '').toLowerCase();
+        const caption = (c.querySelector('.caption-snippet')?.textContent || '').toLowerCase();
+        const rank = (c.querySelector('.rank-pill')?.textContent || '').toLowerCase();
+        return handle.includes(q) || caption.includes(q) || rank.includes(q);
+      });
+
+      container.textContent = '';
+      if (!filteredCards.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#a1a1aa;text-align:center;padding:48px 16px;grid-column:1/-1;display:flex;flex-direction:column;align-items:center;';
+        empty.innerHTML = `
+          <div style="font-size:32px;margin-bottom:8px;">🔍</div>
+          <div style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px;">No matching reels</div>
+          <div style="color:#8e8e93;font-size:13px;">Try adjusting your search or category filter.</div>
+        `;
+        container.appendChild(empty);
+        return;
+      }
+
+      filteredCards.forEach(card => {
+        const reelId = card.dataset.id;
+        const isActive = (currentActiveCard === card);
+        const isWatched = watchedSet.has(reelId);
+        const rankText = card.querySelector('.rank-pill')?.textContent || `#${parseInt(card.dataset.index || 0, 10) + 1}`;
+        const handleText = card.querySelector('.creator-badge')?.textContent || '@reel';
+        const videoEl = card.querySelector('.reel-video');
+        const posterSrc = videoEl?.dataset?.poster || videoEl?.getAttribute('poster') || '';
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'digest-grid-card' + (isActive ? ' active-reel' : '') + (isWatched ? ' is-watched' : '');
+        btn.setAttribute('aria-label', `Play ${rankText} by ${handleText}`);
+        btn.dataset.id = reelId;
+
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.src = posterSrc;
+        img.alt = '';
+        img.onerror = () => { img.style.opacity = '0.2'; };
+
+        const rankBadge = document.createElement('div');
+        rankBadge.className = 'grid-card-rank';
+        rankBadge.textContent = rankText;
+
+        const watchedBadge = document.createElement('div');
+        watchedBadge.className = 'grid-card-watched-badge';
+        watchedBadge.textContent = '✓';
+        watchedBadge.title = 'Watched';
+
+        if (isActive) {
+          const activeTag = document.createElement('div');
+          activeTag.className = 'grid-card-active-tag';
+          activeTag.textContent = 'Active';
+          btn.appendChild(activeTag);
+        }
+
+        const handleDiv = document.createElement('div');
+        handleDiv.className = 'grid-card-handle';
+        handleDiv.textContent = handleText;
+
+        btn.appendChild(img);
+        btn.appendChild(rankBadge);
+        btn.appendChild(watchedBadge);
+        btn.appendChild(handleDiv);
+
+        btn.addEventListener('click', () => selectReelFromGrid(reelId));
+        container.appendChild(btn);
+      });
+    }
+
+    function selectReelFromGrid(reelId) {
+      if (!reelId) return;
+      const targetCard = document.querySelector(`#feedContainer .reel-card[data-id="${reelId}"]`);
+      if (!targetCard) return;
+
+      if (typeof currentCategory !== 'undefined' && currentCategory !== 'all' && targetCard.dataset.category !== currentCategory) {
+        if (typeof filterCategory === 'function') {
+          filterCategory('all');
+        }
+      }
+
+      toggleGridView(false);
+
+      if (typeof goToCard === 'function') {
+        goToCard(targetCard, { play: true });
+      }
+    }
+
+    // Init: paint snapshot state, owner-gate, opportunistic sync.
+    document.addEventListener('DOMContentLoaded', () => {
+      try {
+        document.body.classList.toggle('readonly', typeof isOwnerDevice === 'function' && !isOwnerDevice());
+        updateOwnerKeyStatus();
+        paintBookmarkButtons();
+        updateBookmarkBadge();
+        flushBookmarkOutbox();
+      } catch (e) {}
+    });

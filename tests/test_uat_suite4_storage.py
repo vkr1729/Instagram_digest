@@ -11,16 +11,16 @@ import storage_r2
 
 
 def test_uat_4_2_preflight_quota_guard(monkeypatch):
-    """UAT-4.2: Pre-flight check rejects batches that would exceed 5 GB quota."""
-    # Mock current usage as 4.8 GB
-    usage_bytes = int(4.8 * 1024 * 1024 * 1024)
+    """UAT-4.2: Pre-flight check rejects batches that would exceed 8 GB quota."""
+    # Mock current usage as 7.8 GB
+    usage_bytes = int(7.8 * 1024 * 1024 * 1024)
     monkeypatch.setattr(storage_r2, "get_bucket_storage_usage", lambda: (usage_bytes, 100))
 
-    # A 300 MB batch pushes it to 5.1 GB -> must abort
+    # A 300 MB batch pushes it to 8.1 GB -> must abort
     new_batch_bytes = int(300 * 1024 * 1024)
     assert storage_r2.check_preflight_quota(new_batch_bytes) is False
 
-    # A 50 MB batch stays at 4.85 GB -> allowed
+    # A 50 MB batch stays at 7.85 GB -> allowed
     small_batch_bytes = int(50 * 1024 * 1024)
     assert storage_r2.check_preflight_quota(small_batch_bytes) is True
 

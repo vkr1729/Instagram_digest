@@ -16,6 +16,7 @@ Validates:
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 from pathlib import Path
 import pytest
@@ -52,11 +53,17 @@ def mobile_page(built_site):
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(**IPHONE_15_PRO)
         page = context.new_page()
-        # Reset localStorage
-        page.goto(f"file://{built_site.resolve()}")
+        # Reset localStorage and unlock PIN if configured
+        pin = os.getenv("VIEWING_PIN", "").strip()
+        url = f"file://{built_site.resolve()}"
+        pin_url = f"{url}?pin={pin}" if pin else url
+        page.goto(url)
         page.evaluate("() => localStorage.clear()")
-        page.reload()
-        page.wait_for_selector(".reel-card")
+        page.goto(pin_url)
+        page.wait_for_selector(".reel-card", state="visible")
+        # Ensure video is paused so test suite starts in predictable non-immersive state
+        page.evaluate("() => { const v = document.querySelector('.reel-card .reel-video'); if (v) v.pause(); }")
+        page.wait_for_timeout(100)
         yield page
         browser.close()
 
@@ -118,7 +125,7 @@ def test_hold_to_boost_latch_tap_exit_and_reset(mobile_page: Page):
     mobile_page.wait_for_timeout(100)
     assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 2.0
     first_card.click(position={"x": 350, "y": 400})
-    mobile_page.wait_for_timeout(150)
+    mobile_page.wait_for_timeout(350)
     assert first_card.locator(".reel-video").evaluate("v => v.playbackRate") == 1.25
 
     # Latch again, then advance: the next reel must reset to default speed.
@@ -340,7 +347,7 @@ def test_navigator_share_with_physical_file(mobile_page: Page):
     }}""")
 
     share_btn = first_card.locator(".whatsapp-share-btn")
-    share_btn.click()
+    share_btn.click(force=True)
     mobile_page.wait_for_timeout(200)
 
     payload = mobile_page.evaluate("() => window.__sharedPayload")

@@ -491,3 +491,47 @@ def test_expand_checkpoint_spares_active_read_path():
     assert "stale != checkpoint_file and stale != read_path" in main_src
     # ...and the spared file is dropped once its items are integrated.
     assert "for done_file in {checkpoint_file, read_path}:" in main_src
+
+
+def test_discard_pending_job_deletes_only_job_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    _stage(tmp_path, "expand_checkpoint_2026-09-11.json",
+           {"version": 1, "target_count": 3, "reels": [{"id": "FAIL"}]})
+    _stage(tmp_path, "sync_progress_2026-09-11.json",
+           {"version": 1, "stage": "extracting", "done": {}, "candidates": []})
+    ok = local_server.discard_pending_job("expand_checkpoint_2026-09-11.json")
+    assert ok["success"] is True
+    assert not (tmp_path / "expand_checkpoint_2026-09-11.json").exists()
+    # Digest and sources are never discardable, even if named directly.
+    for refused in ("top100_digest.json", "sources.json", "../local_server.py",
+                    "expand_checkpoint_/etc.json", ""):
+        assert local_server.discard_pending_job(refused)["success"] is False
+    assert (tmp_path / "sync_progress_2026-09-11.json").exists()
+
+
+def test_discard_route_removes_stuck_job(tmp_path, monkeypatch):
+    import urllib.request
+    _stage(tmp_path, "expand_checkpoint_2026-09-11.json",
+           {"version": 1, "target_count": 3, "reels": [{"id": "FAIL"}]})
+    srv = _LiveServer(tmp_path, monkeypatch)
+    try:
+        payload = json.dumps({"file": "expand_checkpoint_2026-09-11.json"}).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{srv.port}/api/resume/discard",
+            data=payload, method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as res:
+            data = json.loads(res.read().decode())
+        assert data["success"] is True
+        status, body = srv.get("/api/resume-state")
+        assert json.loads(body)["expand"] == []
+    finally:
+        srv.close()
+    assert not (tmp_path / "expand_checkpoint_2026-09-11.json").exists()
+
+
+def test_dashboard_shows_per_job_resume_and_discard():
+    html = (config.TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
+    for marker in ("Job: expand digest", "Job: weekly sync", "Status: STUCK",
+                   "Status: RUNNING", "Resume this job", "Discard",
+                   "/api/resume/discard", "To stop it, use Kill server below."):
+        assert marker in html, marker

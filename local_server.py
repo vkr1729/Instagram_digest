@@ -555,6 +555,43 @@ def resume_pipeline_state() -> dict[str, Any]:
     return {"expand": pending_expand, "sync": pending_sync}
 
 
+_DISCARDABLE_PREFIXES = ("expand_checkpoint_", "sync_progress_", "expand_progress_")
+
+
+def discard_pending_job(file_name: Any) -> dict[str, Any]:
+    """Delete one stuck pending-job file so it stops reappearing on the dashboard.
+
+    Only checkpoint/progress files under DATA_DIR are eligible; anything else
+    is refused so a crafted request cannot delete the digest or sources.
+    Returns a {"success": bool, ...} payload for the dashboard toast.
+    """
+    name = str(file_name or "").strip()
+    if (not name or "/" in name or "\\" in name or ".." in name
+            or not name.endswith(".json")
+            or not name.startswith(_DISCARDABLE_PREFIXES)):
+        return {"success": False, "error": f"Not a discardable job file: {name!r}."}
+    try:
+        base = config.DATA_DIR.resolve()
+        target = (config.DATA_DIR / name).resolve()
+    except Exception:
+        return {"success": False, "error": f"Not a discardable job file: {name!r}."}
+    try:
+        inside = target.is_relative_to(base)
+    except Exception:
+        inside = False
+    if not inside or target.parent != base:
+        return {"success": False, "error": f"Not a discardable job file: {name!r}."}
+    try:
+        if not target.is_file():
+            return {"success": False, "error": f"Job file not found: {name}."}
+        target.unlink()
+    except OSError as exc:
+        logger.warning("Failed discarding pending job %s: %s", name, exc)
+        return {"success": False, "error": f"Could not delete {name}."}
+    logger.info("Discarded pending job file %s via dashboard.", name)
+    return {"success": True, "file": name, "message": f"Discarded {name}."}
+
+
 def _atomic_write_json(path: Path, data: Any) -> None:
     """Crash-safe JSON write: temp + flush + fsync + atomic replace + dir fsync."""
     atomic_io.durable_write_json(path, data)
@@ -644,9 +681,13 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # /retrigger -> launch sync with cookie refresh and render live status page
+        # /retrigger -> render the live status page only. Sync is started by
+        # the page itself via POST /api/sync-adhoc, which carries a
+        # same-origin Origin header and passes _is_local_origin. Triggering
+        # from GET would let any web page (<img src>) or prefetch fire a
+        # sync+deploy with no origin check (Referer on GET is bypassable via
+        # Referrer-Policy: no-referrer, so it cannot be relied on).
         if clean_path in ("/retrigger", "/retrigger/"):
-            trigger_adhoc_sync_task(deploy=True)
             html_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -695,6 +736,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     <div><a href="/" class="btn" id="homeBtn" style="display:none;">Return to Viewer</a></div>
   </div>
   <script>
+    fetch('/api/sync-adhoc', { method: 'POST' }).catch(() => {});
     async function checkStatus() {
       try {
         const res = await fetch('/api/sync-status');
@@ -753,6 +795,16 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if clean_path.startswith("/videos/"):
             rel_video_path = clean_path[len("/videos/"):]
             video_file = config.VIDEOS_DIR / rel_video_path
+            # Contain raw clients that send dot-segments browsers normalize
+            # away (e.g. GET /videos/../secret.env): resolve and require the
+            # target to stay inside VIDEOS_DIR.
+            try:
+                inside = video_file.resolve().is_relative_to(config.VIDEOS_DIR.resolve())
+            except Exception:
+                inside = False
+            if not inside:
+                self.send_error(HTTPStatus.NOT_FOUND, "File Not Found")
+                return
             if video_file.exists() and video_file.is_file():
                 self.serve_video_file(video_file)
                 return
@@ -760,7 +812,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         # Static assets from site/. API paths never resolve to files: a stray
         # site/api/* file must not shadow a real endpoint (or fake one).
         site_file = config.SITE_DIR / clean_path.lstrip("/")
-        if not clean_path.startswith("/api/") and site_file.exists() and site_file.is_file():
+        try:
+            site_inside = site_file.resolve().is_relative_to(config.SITE_DIR.resolve())
+        except Exception:
+            site_inside = False
+        if not clean_path.startswith("/api/") and site_inside and site_file.exists() and site_file.is_file():
             mime, _ = mimetypes.guess_type(str(site_file))
             content = site_file.read_bytes()
             self.send_response(HTTPStatus.OK)
@@ -1213,6 +1269,24 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if parsed.path in ("/api/resume/discard", "/api/resume/discard/"):
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+            try:
+                payload = json.loads(post_body.decode("utf-8"))
+            except Exception:
+                payload = {}
+            file_name = payload.get("file", payload.get("file_name", ""))
+            resp = discard_pending_job(file_name)
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if parsed.path in ("/api/server/shutdown", "/api/server/shutdown/"):
             logger.warning("Dashboard kill switch triggered via API.")
             pid = _schedule_server_shutdown()
@@ -1241,6 +1315,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(file_size))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
             try:
                 with video_path.open("rb") as f:
                     shutil.copyfileobj(f, self.wfile)

@@ -70,6 +70,7 @@ R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCO
 # GitHub Deployment
 GH_PAGES_REPO = os.getenv("GH_PAGES_REPO", "https://github.com/vkr1729/Instagram_digest.git").strip()
 PAGES_BASE_URL = os.getenv("PAGES_BASE_URL", "https://vkr1729.github.io/Instagram_digest").strip().rstrip("/")
+BOOKMARK_API_BASE = os.getenv("BOOKMARK_API_BASE", "").strip().rstrip("/")
 
 # Notification / Email Configuration
 SMTP_HOST = os.getenv("SMTP_HOST", os.getenv("SMTP_SERVER", "smtp.gmail.com")).strip()
@@ -86,7 +87,7 @@ MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
 # One-sided flood guard: no single category may exceed this share of the digest.
 # (Replaces the old fixed 40/15/15/10/10/10 percentage targets.)
 MAX_CATEGORY_SHARE = float(os.getenv("MAX_CATEGORY_SHARE", "0.50"))
-R2_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024  # Strict 5 GB safety guard (out of 10 GB free)
+R2_STORAGE_QUOTA_BYTES = 8 * 1024 * 1024 * 1024  # 8 GB ceiling: ~3.1 GB weekly + 3.5 GB bookmarks cap + 1.4 GB buffer (of 10 GB free)
 
 # Playback & UI Defaults
 DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.0"))

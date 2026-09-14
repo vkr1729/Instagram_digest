@@ -1,3 +1,32 @@
+# Changelog — Fable Hardening-Audit Fixes (2026-09-12)
+
+Addresses the post-hardening adversarial audit (`Fable Feedback/`): two P0s
+in the routine operator flow plus P1/P2 follow-ups. All 11 runnable audit
+probes now fail (defects gone); new `tests/test_fable_audit_fixes.py`
+(15 tests) inverts each probe.
+
+- P0 expand week drift: sync persists `r2_url`/`video_url` on the digest;
+  `run_expand` anchors to the digest's `run_date` instead of today, so a
+  weekend +100 no longer re-points existing reels at non-existent keys.
+  Expand also gains the `MIN_DEPLOY_ITEMS` viability gate.
+- P0 cross-process lock: `main._pipeline_file_lock()` (flock on
+  `data/.pipeline.lock`, exit 3 on contention) complements the threading
+  lock, covering cron / resume / CLI vs dashboard threads.
+- P1: `channels.html` escapes name/handle/category (`esc()`), drops inline
+  handle interpolation; `GET /retrigger` renders only (page POSTs to
+  `/api/sync-adhoc`); checkpoint resume filters ids already in the digest;
+  soft-block detector strips scripts/styles/comments/paragraphs and the reel
+  page requires absent validity signals before dropping.
+- P2: corrupt expand checkpoints and `last_run.json`/blacklists are
+  quarantined (`*.corrupt-*`); expand ranks start at max+1; `/videos/` and
+  static routes reject dot-segment escapes; `serve_video_file` sends the
+  status line on full GETs; pruner reports only confirmed deletes;
+  `save_sources`, following cache, `index.html`/`local_index.html`/
+  `data.json` write durably; locale/timezone pinned per session with
+  locale-matched stealth script; disjoint discovery selectors.
+- Docs: enrichment documented as serial (`ENRICH_WORKERS = 1`); collision
+  behavior documents both lock layers.
+
 # Changelog — Desktop Ops Dashboard (2026-09-12)
 
 Standalone local-only `/dashboard` page (Mock A + status-strip + responsive
@@ -102,13 +131,15 @@ in the sandbox).
 
 ## P0-1 / P0-2 — Scraper anti-bot posture
 
-- `extractor.py`: Chrome-only UA rotation pool, per-context
-  viewport/locale/timezone, webdriver-mask init script.
+- `extractor.py`: Chrome-only UA rotation pool, per-context UA/viewport,
+  locale/timezone pinned per authenticated session (rotating them across
+  contexts on one account is a linking signal), locale-matched
+  `navigator.languages`, `webdriver: false`, PluginArray-shaped `plugins`.
 - `human_pause()`: Gaussian + 10% long tail, replacing all uniform sleeps;
   feed cooldown is randomized (every 18–32 evals, N(12,3)s) with varied
   scroll keys; per-creator and enrichment pacing use it too.
-- Enrichment capped at 2 browsers from an exclusive-checkout session pool
-  (was: 6 workers × fresh browser per reel).
+- Enrichment serial (`ENRICH_WORKERS = 1`) through an exclusive-checkout
+  session pool (was: 6 workers × fresh browser per reel).
 - Following-API pagination: truncated exponential backoff (3 retries) +
   inter-page pacing.
 - Tests: `tests/test_scraper_hardening.py`.

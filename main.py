@@ -8,13 +8,20 @@ import argparse
 import json
 import logging
 import math
+import os
 import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None  # type: ignore[assignment]
 
 import config
 import extractor
@@ -31,13 +38,56 @@ MAX_EMPTY_CREATOR_RATIO = 0.6  # fraction of creators that returned 0 reels
 MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)
 
 
+def _quarantine_corrupt(path: Path, exc: Exception) -> None:
+    """Preserve an unreadable state file alongside for forensics."""
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = path.with_name(f"{path.name}.corrupt-{ts}")
+        backup.write_bytes(path.read_bytes())
+        logger.warning("Quarantined corrupt %s to %s: %s", path, backup, exc)
+    except Exception:
+        logger.warning("Unreadable %s; starting fresh: %s", path, exc)
+
+
+@contextmanager
+def _pipeline_file_lock() -> Iterator[None]:
+    """Cross-process exclusion for digest-mutating pipelines.
+
+    ``local_server._PIPELINE_LOCK`` is a threading lock: it cannot see cron
+    (run_weekly.sh), login-resume (resume_pending.sh) or manual CLI runs,
+    which execute in separate processes. This flock-guarded file is the
+    cross-process counterpart. Raises RuntimeError when another pipeline
+    holds the lock.
+    """
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = config.DATA_DIR / ".pipeline.lock"
+    if fcntl is None:  # pragma: no cover - non-POSIX fallback
+        yield
+        return
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError(
+                "another pipeline (sync/expand) holds data/.pipeline.lock"
+            )
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(fd)
+
+
 def get_last_run_info() -> dict[str, Any] | None:
     """Retrieve timestamp and metadata about the last completed sync run."""
     try:
         if config.LAST_RUN_FILE.exists():
             return json.loads(config.LAST_RUN_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
-        logger.warning("Failed reading last_run.json: %s", exc)
+        _quarantine_corrupt(config.LAST_RUN_FILE, exc)
     return None
 
 
@@ -137,6 +187,22 @@ def _ensure_valid_session(session) -> bool:
 
 
 def run_full_sync(
+    dry_run: bool = False,
+    deploy: bool = False,
+    days_back: int = 7,
+    limit_per_creator: int = 15,
+    since_timestamp: int | None = None,
+) -> int:
+    """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
+    try:
+        with _pipeline_file_lock():
+            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp)
+    except RuntimeError as exc:
+        logger.error("%s; refusing to start.", exc)
+        return 3
+
+
+def _run_full_sync(
     dry_run: bool = False,
     deploy: bool = False,
     days_back: int = 7,
@@ -721,6 +787,12 @@ def run_full_sync(
             logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
             ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
 
+        # Persist the real object URL so later expansions never derive keys
+        # from the calendar day they run on (week-drift fix).
+        for r in ranked_reels:
+            if r.get("id") in uploaded_url_map:
+                r["r2_url"] = r["video_url"] = uploaded_url_map[r["id"]]
+
         if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
             logger.error(
                 "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
@@ -788,9 +860,20 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
     Preserves all existing active reels in data/top100_digest.json and R2.
     Downloads and uploads ONLY the new reels, re-ranks, rebuilds site, and deploys if requested.
     """
-    week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    logger.info("Starting +%d reel expansion for week %s (deploy=%s)...", target_count, week_id, deploy)
+    try:
+        with _pipeline_file_lock():
+            return _run_expand(target_count, deploy)
+    except RuntimeError as exc:
+        logger.error("%s; refusing to start.", exc)
+        return 3
 
+
+def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
+    """
+    Expand active digest by discovering N extra reels from the Reels feed.
+    Preserves all existing active reels in data/top100_digest.json and R2.
+    Downloads and uploads ONLY the new reels, re-ranks, rebuilds site, and deploys if requested.
+    """
     if not config.DIGEST_BATCH_FILE.exists():
         logger.error("No active digest found (%s). Run full sync first.", config.DIGEST_BATCH_FILE)
         return 1
@@ -805,6 +888,13 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
     if not existing_items:
         logger.error("Active digest has 0 items. Run full sync first.")
         return 1
+
+    # An expansion belongs to the digest's week, not the calendar day it runs
+    # on: R2 keys, local files, checkpoints and the pruner are all keyed on
+    # run_date. Deriving from today re-points every existing reel at a key
+    # that does not exist when +100 runs on a later UTC day than the sync.
+    week_id = digest_data.get("run_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    logger.info("Starting +%d reel expansion for week %s (deploy=%s)...", target_count, week_id, deploy)
 
     existing_ids = {item["id"] for item in existing_items if "id" in item}
     logger.info("Preserving %d existing reels from active digest without deletion.", len(existing_items))
@@ -863,7 +953,8 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
     def _read_checkpoint(path: Path) -> list[dict[str, Any]]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            _quarantine_corrupt(path, exc)
             return []
         raw = data.get("reels") if isinstance(data, dict) else data
         if not isinstance(raw, list):
@@ -873,13 +964,29 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
     resumed: list[dict[str, Any]] = _read_checkpoint(read_path) if read_path.exists() else []
     if read_path.exists():
         if resumed:
-            logger.info(
-                "Resuming +%d expansion from checkpoint: %d reels already discovered.",
-                target_count, len(resumed),
-            )
+            # Drop banked reels an intervening sync already integrated so a
+            # resume cannot append a duplicate id to the manifest.
+            before = len(resumed)
+            resumed = [r for r in resumed if r.get("id") not in existing_ids]
+            if len(resumed) != before:
+                logger.info(
+                    "Filtered %d checkpoint reel(s) already in the digest.",
+                    before - len(resumed),
+                )
+            if resumed:
+                logger.info(
+                    "Resuming +%d expansion from checkpoint: %d reels already discovered.",
+                    target_count, len(resumed),
+                )
+            else:
+                logger.info("Checkpoint reels already integrated; discovering fresh reels.")
         else:
             logger.warning("Ignoring unreadable expand checkpoint: %s", read_path.name)
+            # _read_checkpoint already quarantined corrupt bytes; remove the
+            # unreadable file so it cannot be re-read as empty progress.
             try:
+                if not list(config.DATA_DIR.glob(f"{read_path.name}.corrupt-*")):
+                    _quarantine_corrupt(read_path, ValueError("unreadable checkpoint"))
                 read_path.unlink(missing_ok=True)
             except OSError:
                 pass
@@ -1044,11 +1151,14 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
             download_done += 1
             _write_expand_progress("downloading", download_done, len(external_reels))
 
-    # Restore discovery order, then assign contiguous ranks after existing.
+    # Restore discovery order, then assign ranks after the highest existing
+    # rank. The sync drops unplayables without renumbering, so len()+1 can
+    # collide with a surviving rank (e.g. ranks [1,2,4] + len-based 4).
     order = {id(r): i for i, r in enumerate(external_reels)}
     downloaded.sort(key=lambda r: order.get(id(r), 0))
+    _base_rank = max([int(i.get("rank") or 0) for i in existing_items] + [len(existing_items)])
     for offset, reel in enumerate(downloaded):
-        rank_num = len(existing_items) + 1 + offset
+        rank_num = _base_rank + 1 + offset
         reel["rank"] = rank_num
         reel["rank_display"] = f"#{rank_num:02d}"
         filename = f"{rank_num:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
@@ -1066,7 +1176,7 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
     downloadable = [r for r in downloaded if r.get("rank")]
     # Re-compact ranks in case a rename failed above (keeps numbering gapless).
     for offset, reel in enumerate(downloadable):
-        rank_num = len(existing_items) + 1 + offset
+        rank_num = _base_rank + 1 + offset
         if reel["rank"] != rank_num:
             old = week_videos_dir / f"{reel['rank']:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
             new = week_videos_dir / f"{rank_num:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
@@ -1143,8 +1253,17 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
         r2_uploaded_urls=uploaded_url_map,
     )
 
-    # 5. Deploy to GitHub Pages if requested
+    # 5. Deploy to GitHub Pages if requested (same viability gate as sync:
+    # never push a shrunken digest over a healthy one).
     if deploy:
+        if len(combined_items) < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Only %d reels after expansion (minimum %d required); "
+                "refusing to deploy over previous digest.",
+                len(combined_items), MIN_DEPLOY_ITEMS,
+            )
+            _clear_expand_progress()
+            return 2
         site_builder.deploy_to_gh_pages()
 
     _clear_expand_progress()

@@ -142,7 +142,7 @@
     </div>
   </div>
   <div class="activity"><h2>Recent activity</h2><div id="activityBody">Loading…</div></div>
-  <footer>Auto-resume armed — pending work restarts at next login. · <a href="/retrigger">Retrigger page</a> · <a href="/viewer">Viewer</a></footer>
+  <footer>Pending jobs wait here until you resume or discard them. · <a href="/retrigger">Retrigger page</a> · <a href="/viewer">Viewer</a></footer>
 </div>
 <div id="toast"></div>
 <script>
@@ -264,8 +264,10 @@
     const lastTxt = last && last.last_run_utc ? "Last success " + ago(last.last_run_utc) + " (" + esc(last.week_id || "") + ")" : "No successful run recorded";
     const build = sync.server_build ? " · build <b>" + esc(sync.server_build) + "</b>" : "";
     $("syncMeta").innerHTML = (running
-      ? "Running since <b>" + esc(sync.started_at || "?") + "</b>" + build
-      : esc(lastTxt) + (sync.last_error ? "<br>Last error: <b>" + esc(sync.last_error) + "</b>" : "") + build) +
+      ? "Status: RUNNING since <b>" + esc(sync.started_at || "?") + "</b>" + build +
+        "<br>To stop it, use Kill server below."
+      : "Status: " + esc(String(sync.status || "idle")) + " · " + esc(lastTxt) +
+        (sync.last_error ? "<br>Last error: <b>" + esc(sync.last_error) + "</b>" : "") + build) +
       renderSyncProgress(prog);
   }
   function renderExpand(expand, resume, prog) {
@@ -273,8 +275,9 @@
     const running = !!st.is_running;
     setPill($("expandPill"), running ? "RUNNING" : String(st.status || "idle").toUpperCase(), running ? "run" : "idle");
     $("expandMeta").innerHTML = (running
-      ? "Running since <b>" + esc(st.started_at || "?") + "</b>"
-      : (st.last_error ? "Last error: <b>" + esc(st.last_error) + "</b>"
+      ? "Status: RUNNING since <b>" + esc(st.started_at || "?") + "</b><br>To stop it, use Kill server below."
+      : "Status: " + esc(String(st.status || "idle")) + " · " +
+        (st.last_error ? "Last error: <b>" + esc(st.last_error) + "</b>"
         : "Appends fresh reels to the active digest.")) +
       renderExpandProgress(prog);
   }
@@ -282,18 +285,26 @@
     const lane = $("resumeLane");
     const items = [];
     (resume.expand || []).forEach((c) => {
-      items.push('<div class="banner"><p><b>Expand interrupted</b> — <b>' + c.banked + " of " + c.target_count +
-        "</b> banked " + ago(c.updated_at) + '.</p><div class="actions" style="margin:0">' +
-        '<button class="primary" data-resume-expand="' + c.target_count + '">Resume remaining ' +
-        Math.max(0, c.target_count - c.banked) + "</button></div></div>");
+      const left = Math.max(0, (c.target_count || 0) - (c.banked || 0));
+      items.push('<div class="banner"><p>Job: expand digest<br>' +
+        "File: " + esc(c.file || "") + "<br>" +
+        "Status: STUCK, not running<br>" +
+        "Progress: <b>" + c.banked + " of " + c.target_count + "</b> banked, " + left + " left · updated " + ago(c.updated_at) + ".</p>" +
+        '<div class="actions" style="margin:0">' +
+        '<button class="primary" data-resume-expand="' + c.target_count + '" data-resume-file="' + esc(c.file || "") + '">Resume this job</button>' +
+        '<button class="danger" data-discard-file="' + esc(c.file || "") + '">Discard</button></div></div>');
     });
     (resume.sync || []).forEach((s) => {
       const what = s.stage === "ranked" ? s.banked + " ranked reels"
         : s.stage === "enriched" ? s.banked + " enriched reels"
         : s.banked + " candidates" + (s.creators_visited ? ", " + s.creators_visited + " creators visited" : "");
-      items.push('<div class="banner"><p><b>Weekly sync interrupted</b> (' + esc(s.stage) + ") — " + esc(what) +
-        " banked " + ago(s.updated_at) + '.</p><div class="actions" style="margin:0">' +
-        '<button class="primary" data-resume-sync="1">Resume sync</button></div></div>');
+      items.push('<div class="banner"><p>Job: weekly sync<br>' +
+        "File: " + esc(s.file || "") + "<br>" +
+        "Status: STUCK at stage " + esc(s.stage) + ", not running<br>" +
+        "Progress: " + esc(what) + " banked · updated " + ago(s.updated_at) + ".</p>" +
+        '<div class="actions" style="margin:0">' +
+        '<button class="primary" data-resume-sync="1" data-resume-file="' + esc(s.file || "") + '">Resume this job</button>' +
+        '<button class="danger" data-discard-file="' + esc(s.file || "") + '">Discard</button></div></div>');
     });
     lane.innerHTML = items.join("");
     lane.querySelectorAll("[data-resume-expand]").forEach((b) => {
@@ -302,6 +313,26 @@
     lane.querySelectorAll("[data-resume-sync]").forEach((b) => {
       b.addEventListener("click", () => startAdhoc(b));
     });
+    lane.querySelectorAll("[data-discard-file]").forEach((b) => {
+      b.addEventListener("click", () => discardJob(b.getAttribute("data-discard-file"), b));
+    });
+  }
+  async function discardJob(file, btn) {
+    if (!file) return;
+    if (!window.confirm("Discard stuck job " + file + "? The banked progress is deleted and it stops reappearing.")) return;
+    if (btn) { btn.disabled = true; }
+    toast("Discarding " + file + "…");
+    try {
+      const res = await fetch("/api/resume/discard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file }),
+      });
+      const data = await res.json();
+      toast(data.message || data.error || (data.success ? "Discarded." : "Discard failed."));
+    } catch (e) { toast("Discard request failed."); }
+    if (btn) { btn.disabled = false; }
+    refresh();
   }
   function renderActivity(sync, expand, adhoc, resume) {
     const rows = [];

@@ -111,6 +111,10 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
         for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix="videos/"):
             for obj in page.get("Contents") or []:
                 key = obj.get("Key", "")
+                # Bookmarks live under bookmarks/ and are managed by the Worker/D1 cap,
+                # never by the weekly purger — skip defensively even if a listing leaks.
+                if not key.startswith("videos/"):
+                    continue
                 last_modified = obj.get("LastModified", datetime.now(timezone.utc))
 
                 # Check date in key name (e.g. videos/2026-W10/...) or last_modified
@@ -199,9 +203,13 @@ def purge_unreferenced_r2_videos() -> list[str]:
     paginator = s3.get_paginator("list_objects_v2")
     try:
         for wk in known_weeks:
-            for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix=f"videos/{wk}/"):
+            prefix = f"videos/{wk}/"
+            assert prefix.startswith("videos/"), f"orphan purge must stay under videos/, got {prefix!r}"
+            for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix=prefix):
                 for obj in page.get("Contents") or []:
                     k = obj.get("Key", "")
+                    if not k.startswith("videos/"):
+                        continue
                     if k and k.endswith(".mp4") and not _is_referenced(k, wk):
                         orphan_keys.append(k)
 
@@ -216,7 +224,9 @@ def purge_unreferenced_r2_videos() -> list[str]:
             )
             for err in resp.get("Errors") or []:
                 logger.error("Failed deleting orphan %s: %s", err.get("Key"), err.get("Message"))
-            purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []] or chunk)
+            # Report only keys R2 confirms deleted: falling back to the whole
+            # chunk here would claim failed deletes as purged.
+            purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []])
 
         if purged:
             logger.info("Purged %d unreferenced video objects from Cloudflare R2.", len(purged))

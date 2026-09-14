@@ -1,0 +1,23 @@
+    <!-- Hybrid Bookmarks: 3-column grid + full-screen overlay player -->
+    <section id="bookmarksContainer" class="bookmarks-view" style="display:none">
+      <div class="bookmarks-top-bar">
+        <button type="button" class="back-to-feed-btn" onclick="toggleBookmarksView(false)">← Feed</button>
+        <span class="bookmarks-title">🔖 Bookmarks</span>
+        <button type="button" class="owner-key-status-btn" id="ownerKeyStatusBtn" onclick="promptOwnerKey()" title="Owner Key Status">🔑 Link Key</button>
+      </div>
+      <input type="search" class="bookmark-search" id="bookmarkSearchInput"
+        placeholder="Search saved reels..." oninput="filterBookmarksGrid(this.value)" autocomplete="off">
+      <div class="bookmarks-grid" id="bookmarksGrid"></div>
+      <div class="bookmark-overlay" id="bookmarkOverlay" style="display:none">
+        <div class="bookmark-overlay-bar bookmark-overlay-top">
+          <button type="button" class="bookmark-overlay-close-btn" onclick="closeBookmarkOverlay()" aria-label="Close">✕</button>
+          <div class="bookmark-overlay-meta" id="bookmarkOverlayMeta"></div>
+          <button type="button" class="bookmark-overlay-saved-btn" id="bookmarkOverlayUnbookmark" onclick="overlayUnbookmark()" title="Tap to remove bookmark">🔖 Saved</button>
+        </div>
+        <video id="bookmarkOverlayVideo" controls playsinline preload="metadata"></video>
+        <div class="bookmark-overlay-bar bookmark-overlay-bottom">
+          <button type="button" class="bookmark-overlay-nav-btn" onclick="stepOverlay(-1)">↑ Prev</button>
+          <button type="button" class="bookmark-overlay-nav-btn" onclick="stepOverlay(1)">Next ↓</button>
+        </div>
+      </div>
+    </section>
