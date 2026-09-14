@@ -87,15 +87,18 @@
 
     function updateDailyCounterBadge() {
       const badge = document.getElementById('dailyCounterBadge');
-      if (!badge) return;
+      const modalCount = document.getElementById('modalDailyCount');
       const cnt = dailyViewedSet.size;
-      badge.textContent = `🎯 ${cnt}/50`;
-      if (cnt >= 50) {
-        badge.style.color = '#f09433';
-        badge.style.borderColor = 'rgba(240, 148, 51, 0.4)';
-      } else {
-        badge.style.color = '#a1a1aa';
-        badge.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+      if (modalCount) modalCount.textContent = cnt;
+      if (badge) {
+        badge.textContent = `🎯 ${cnt}/50`;
+        if (cnt >= 50) {
+          badge.style.color = '#f09433';
+          badge.style.borderColor = 'rgba(240, 148, 51, 0.4)';
+        } else {
+          badge.style.color = '#a1a1aa';
+          badge.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+        }
       }
     }
 

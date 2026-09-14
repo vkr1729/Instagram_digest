@@ -41,7 +41,7 @@ def page(built_site):
         page.evaluate("() => localStorage.clear()")
         page.goto(pin_url)
         page.wait_for_selector(".reel-card", state="visible")
-        page.evaluate("() => { const v = document.querySelector('.reel-card .reel-video'); if (v) v.pause(); }")
+        page.evaluate("() => { const v = document.querySelector('.reel-card .reel-video'); if (v) v.pause(); document.getElementById('appShell')?.classList.remove('immersive-mode'); }")
         yield page
         browser.close()
 

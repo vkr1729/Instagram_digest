@@ -4,18 +4,10 @@
         <div class="brand-logo">Instagram</div>
         <div class="header-controls">
           <span id="dailyCounterBadge" class="week-pill" style="font-size: 11px; font-weight: 600; color: #a1a1aa; border-color: rgba(255,255,255,0.15);" title="Daily Mindful Check-in (50/day target)">🎯 0/50</span>
-          <button class="jump-btn" id="jumpBtn" onclick="openJumpModal()" title="Jump to Reel # (or press G)">
-            #<span id="currentRankDisplay">1</span>/{{ items|length }}
-          </button>
-          <button class="icon-btn" id="gridToggleBtn" onclick="toggleGridView(true)" title="Browse all {{ items|length }} Reels in Grid View">
-            ⊞
-          </button>
-          <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">
-            📥
-          </button>
-          <button class="jump-btn bookmarks-chip" onclick="toggleBookmarksView(true)" title="Open Bookmarks">
-            🔖 <span class="bookmark-badge" id="bookmarkBadge">0</span>
-          </button>
+          <button class="jump-btn" id="jumpBtn" onclick="openJumpModal()" title="Jump to Reel # (or press G)">#<span id="currentRankDisplay">1</span>/{{ items|length }}</button>
+          <button class="icon-btn" id="gridToggleBtn" onclick="toggleGridView(true)" title="Browse all {{ items|length }} Reels in Grid View">⊞</button>
+          <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">📥</button>
+          <button class="jump-btn bookmarks-chip" onclick="toggleBookmarksView(true)" title="Open Bookmarks">🔖 <span class="bookmark-badge" id="bookmarkBadge">0</span></button>
           {% if is_local %}
           <a href="/dashboard" class="speed-btn" style="text-decoration:none;" title="Open Ops Dashboard">
             Ops Dashboard

@@ -5,6 +5,9 @@
         <div class="modal-icon-badge">🎯</div>
         <h3 class="modal-title">Jump to Reel</h3>
         <p class="modal-desc">Enter reel number (1–{{ items|length }}). All reels before this will be marked as watched.</p>
+        <div class="modal-daily-stat" id="modalDailyStat" style="font-size: 12px; color: #a1a1aa; margin: -6px 0 12px; font-weight: 500;">
+          🎯 Mindful Progress: <span id="modalDailyCount">0</span>/50 watched today
+        </div>
         <div class="jump-input-group">
           <input type="number" id="jumpInput" min="1" max="{{ items|length }}" placeholder="e.g. 52" inputmode="numeric" pattern="[0-9]*" onkeydown="if(event.key==='Enter')handleJumpSubmit()">
           <button class="jump-submit-btn" onclick="handleJumpSubmit()">Go</button>

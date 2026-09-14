@@ -219,3 +219,44 @@ def test_grid_and_bookmarks_mutual_exclusion(page: Page):
     page.wait_for_timeout(100)
     assert page.locator("#gridContainer").is_visible() is True
     assert page.locator("#bookmarksContainer").is_visible() is False
+
+
+def test_top_header_does_not_overflow_viewport(page: Page):
+    """Verify that on iPhone 15 Pro (393px width), the top header controls do not overflow or protrude."""
+    viewport = page.viewport_size
+    assert viewport is not None
+    vp_width = viewport["width"]
+
+    top_header = page.locator("#topHeader")
+    header_box = top_header.bounding_box()
+    assert header_box is not None
+    assert header_box["x"] >= 0
+    assert header_box["x"] + header_box["width"] <= vp_width + 1
+
+    # Check that the rightmost button (bookmarks-chip) is fully inside viewport with margin
+    bm_chip = page.locator(".header-controls .bookmarks-chip")
+    chip_box = bm_chip.bounding_box()
+    assert chip_box is not None
+    assert chip_box["x"] + chip_box["width"] <= vp_width - 4
+
+
+def test_top_header_on_small_mobile_screen_does_not_overflow(built_site):
+    """Verify that on a narrow 360px Android screen, top header does not overflow."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 360, "height": 780}, is_mobile=True)
+        page = context.new_page()
+        pin = os.getenv("VIEWING_PIN", "").strip()
+        url = f"file://{built_site.resolve()}"
+        pin_url = f"{url}?pin={pin}" if pin else url
+        page.goto(url)
+        page.evaluate("() => localStorage.clear()")
+        page.goto(pin_url)
+        page.wait_for_selector(".reel-card", state="visible")
+
+        bm_chip = page.locator(".header-controls .bookmarks-chip")
+        chip_box = bm_chip.bounding_box()
+        assert chip_box is not None
+        assert chip_box["x"] + chip_box["width"] <= 360 - 2
+        browser.close()
+
