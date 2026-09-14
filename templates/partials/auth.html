@@ -1,5 +1,5 @@
     <!-- Two-Tier Gate: lock screen renders before feed; hidden when no PIN configured -->
-    <div class="lock-screen" id="lockScreen"{% if not pin_sha256 %} style="display:none"{% endif %}>
+    <div class="lock-screen" id="lockScreen"{% if not pin_hash %} style="display:none"{% endif %}>
       <div class="lock-card">
         <div class="lock-brand">Instagram Digest</div>
         <div class="lock-dots" id="lockDots" aria-label="PIN progress">○ ○ ○ ○</div>
@@ -22,26 +22,44 @@
     </div>
     <script>
     // One-time link keys (?pin= / ?owner_key=) are consumed BEFORE any fetch
-    // and stripped from the URL (referer hygiene). Owner link is single-use:
-    // never forward it; rotate OWNER_KEY server-side if leaked.
-    window.__PIN_SHA256 = {{ pin_sha256|default('')|tojson }};
+    // and stripped from the URL (referer hygiene). The API base is NEVER
+    // accepted from a link: a crafted ?api_base= URL would redirect every
+    // Bearer-authenticated bookmark call (and the owner key with it) to an
+    // attacker host on the next launch. A dev override may exist only in
+    // localStorage on the localhost origin (see bookmarkApiBase in player.js).
+    window.__PIN_HASH = {{ pin_hash|default('')|tojson }};
+    window.__PIN_SALT = {{ pin_salt|default('')|tojson }};
+    window.__PIN_ITER = {{ pin_iterations|default(200000)|tojson }};
     window.__BOOKMARK_API_BASE = {{ bookmark_api_base|default('')|tojson }};
-    window.__FEED_HIDDEN_BY_LOCK = Boolean(window.__PIN_SHA256);
+    window.__IS_LOCAL = {{ 'true' if is_local else 'false' }};
+    window.__FEED_HIDDEN_BY_LOCK = Boolean(window.__PIN_HASH);
     (function authBoot() {
       try {
         const q = new URLSearchParams(location.search);
         let touched = false;
-        if (q.has('owner_key') && q.get('owner_key')) {
-          localStorage.setItem('digest_owner_key', q.get('owner_key'));
+        const linkKey = (q.get('owner_key') || '').trim();
+        if (linkKey) {
           touched = true;
+          const existing = localStorage.getItem('digest_owner_key') || '';
+          // A link must never silently replace an already-linked key (key
+          // fixation -> 403 storm -> "re-link" prompts). Ask once.
+          if (!existing || window.confirm('This link carries an Owner Key. Link this device as the bookmark owner?')) {
+            localStorage.setItem('digest_owner_key', linkKey);
+          }
         }
-        if (q.has('api_base') && q.get('api_base')) {
-          localStorage.setItem('digest_api_base', q.get('api_base'));
-          touched = true;
+        if (q.has('api_base')) {
+          touched = true;                               // ignored and purged
+          try { localStorage.removeItem('digest_api_base'); } catch (e) {}
         }
-        if (q.has('pin')) { touched = true; } // validated against hash below, never stored
-        if (touched) window.history.replaceState(null, '', location.pathname);
-        if (!window.__PIN_SHA256) {
+        if (q.has('pin')) { touched = true; }           // validated against hash below, never stored
+        if (touched) {
+          const keep = new URLSearchParams();
+          if (q.get('reel')) keep.set('reel', q.get('reel'));
+          if (q.has('mediadebug')) keep.set('mediadebug', '1');
+          const qs = keep.toString();
+          window.history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+        }
+        if (!window.__PIN_HASH) {
           document.getElementById('lockScreen').style.display = 'none';
         } else if (localStorage.getItem('digest_pin_ok') === '1') {
           unlockScreen();
@@ -51,17 +69,22 @@
       } catch (e) {}
     })();
     let _pinBuf = '', _pinFails = 0, _lockUntil = 0;
-    async function sha256hex(s) {
+    try { _lockUntil = Number(localStorage.getItem('digest_pin_lock_until') || 0); } catch (e) {}
+    async function pinHashHex(pin) {
       if (!window.crypto || !crypto.subtle) return null;
-      const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-      return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
+      const enc = new TextEncoder();
+      const salt = Uint8Array.from((window.__PIN_SALT || '').match(/../g) || [], (h) => parseInt(h, 16));
+      const key = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits']);
+      const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: window.__PIN_ITER || 200000 }, key, 256);
+      return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
     function paintDots() {
       const el = document.getElementById('lockDots');
       if (el) el.textContent = '● '.repeat(_pinBuf.length) + '○ '.repeat(4 - _pinBuf.length);
     }
     async function enterPin(d) {
-      if (performance.now() < _lockUntil) return;
+      if (Date.now() < _lockUntil) return;
       if (_pinBuf.length >= 4) return;
       _pinBuf += d;
       paintDots();
@@ -71,16 +94,21 @@
     function clearPin() { _pinBuf = ''; paintDots(); }
     async function submitPin(pin) {
       const msg = document.getElementById('lockMsg');
-      const hex = await sha256hex(pin);
-      if (hex && hex === window.__PIN_SHA256) {
-        try { localStorage.setItem('digest_pin_ok', '1'); } catch (e) {}
+      if (Date.now() < _lockUntil) {
+        if (msg) msg.textContent = 'Too many attempts — try again shortly.';
+        return;
+      }
+      const hex = await pinHashHex(pin);
+      if (hex && hex === window.__PIN_HASH) {
+        try { localStorage.setItem('digest_pin_ok', '1'); localStorage.removeItem('digest_pin_lock_until'); } catch (e) {}
         _pinFails = 0;
         unlockScreen();
       } else {
         _pinFails++;
         _pinBuf = ''; paintDots();
         if (_pinFails >= 5) {
-          _lockUntil = performance.now() + 30000;
+          _lockUntil = Date.now() + 30000;
+          try { localStorage.setItem('digest_pin_lock_until', String(_lockUntil)); } catch (e) {}
           if (msg) msg.textContent = 'Too many attempts — try again in 30s.';
         } else if (msg) {
           msg.textContent = hex === null ? 'Secure crypto unavailable on this browser.' : 'Wrong PIN.';
@@ -90,19 +118,21 @@
     function unlockScreen() {
       document.getElementById('lockScreen').style.display = 'none';
       const feed = document.getElementById('feedContainer');
-      if (feed) feed.style.display = '';
-      window.__FEED_HIDDEN_BY_LOCK = false;
+      if (feed && window.__FEED_HIDDEN_BY_LOCK) feed.style.display = '';
       document.body.classList.toggle('readonly', !isOwnerDevice());
-      if (typeof resumeInitialPosition === 'function') resumeInitialPosition();
       if (typeof flushBookmarkOutbox === 'function') flushBookmarkOutbox();
     }
     function isOwnerDevice() {
       try { return Boolean(localStorage.getItem('digest_owner_key')); } catch (e) { return false; }
     }
+    function updateOwnerKeyStatus() {
+      // Reflects credential state after a 403: read-only chrome, badge kept.
+      try { document.body.classList.toggle('readonly', !isOwnerDevice()); } catch (e) {}
+    }
     // auth.html parses before #feedContainer exists: re-apply once DOM is ready.
     document.addEventListener('DOMContentLoaded', () => {
       try {
-        if (!window.__PIN_SHA256 || localStorage.getItem('digest_pin_ok') === '1') unlockScreen();
+        if (!window.__PIN_HASH || localStorage.getItem('digest_pin_ok') === '1') unlockScreen();
       } catch (e) {}
     });
     </script>

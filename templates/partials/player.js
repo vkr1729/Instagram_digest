@@ -77,7 +77,10 @@
     const LAST_ACTIVE_KEY = 'ig_digest_last_active_id_' + currentWeekId;
 
     // Daily Mindful Limit Tracking (50 reels/day goal)
-    const todayStr = new Date().toISOString().slice(0, 10);
+    function localDateStr(d = new Date()) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    const todayStr = localDateStr();
     const DAILY_SET_KEY = 'ig_digest_daily_viewed_' + todayStr;
     const DAILY_SNOOZE_KEY = 'ig_digest_daily_snooze_' + todayStr;
     let dailyViewedSet = new Set();
@@ -152,6 +155,8 @@
         Object.keys(localStorage).forEach(k => {
           const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id|last_active_id|download_completed|downloaded_count)_(\d{4}-\d{2}-\d{2})$/);
           if ((m && !keep.has(m[1])) || k === 'ig_digest_watched_ids') localStorage.removeItem(k);
+          const d = k.match(/^ig_digest_daily_(?:viewed|snooze)_(\d{4}-\d{2}-\d{2})$/);
+          if (d && d[1] !== todayStr) localStorage.removeItem(k);
         });
       } catch (e) {}
     })();
@@ -249,8 +254,10 @@
       const set = getWatchedIds();
       set.add(reelId);
       const jsonStr = JSON.stringify(Array.from(set));
-      localStorage.setItem(STORAGE_KEY, jsonStr);
-      localStorage.setItem(LAST_WATCHED_KEY, reelId);
+      try {
+        localStorage.setItem(STORAGE_KEY, jsonStr);
+        localStorage.setItem(LAST_WATCHED_KEY, reelId);
+      } catch (e) { /* Safari private mode / quota: session set keeps the session coherent */ }
 
       if (typeof updateCategoryProgressRings === 'function') {
         updateCategoryProgressRings();
@@ -298,7 +305,7 @@
               }
             });
             if (changed) {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(set)));
+              try { localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(set))); } catch (e) {}
               filterCategory(currentCategory);
             }
           }
@@ -662,6 +669,9 @@
     let lastTapTime = 0;
     let lastTapX = 0;
     let isTouchSwiping = false;
+    // Single gesture tap window: double-tap (above) and single-tap debounce
+    // (below) must agree, or taps in the gap both pause AND toggle fullscreen.
+    const TAP_WINDOW_MS = 320;
     const feed = document.getElementById('feedContainer');
 
     let lastDoubleActionTime = 0;
@@ -700,7 +710,7 @@
       const width = window.innerWidth;
       const timeDiff = now - lastTapTime;
 
-      if (timeDiff < 380 && Math.abs(clickX - lastTapX) < 100) {
+      if (timeDiff < TAP_WINDOW_MS && Math.abs(clickX - lastTapX) < 100) {
         lastTapTime = 0;
         handleDoubleAction(clickX, width);
       } else {
@@ -877,6 +887,19 @@
         _paintCategoryProgressRings();
       });
     }
+    function cardMatchesCategory(card, cat) {
+      const cardCat = card.dataset.category;
+      return (
+        cat === 'all' ||
+        cardCat === cat ||
+        (cat === 'ai_tech' && cardCat === 'tech') ||
+        (cat === 'tech' && (cardCat === 'ai_tech' || cardCat === 'tech')) ||
+        (cat === 'niche' && cardCat === 'explainer') ||
+        (cat === 'explainer' && (cardCat === 'niche' || cardCat === 'explainer')) ||
+        (cat === 'entertainment' && cardCat === 'culture') ||
+        (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
+      );
+    }
     function _paintCategoryProgressRings() {
       const watched = getWatchedIds();
       const allCards = Array.from(document.querySelectorAll('.reel-card'));
@@ -884,19 +907,7 @@
 
       bubbles.forEach(bubble => {
         const cat = bubble.dataset.category;
-        const matchingCards = allCards.filter(card => {
-          const cardCat = card.dataset.category;
-          return (
-            cat === 'all' ||
-            cardCat === cat ||
-            (cat === 'ai_tech' && cardCat === 'tech') ||
-            (cat === 'tech' && (cardCat === 'ai_tech' || cardCat === 'tech')) ||
-            (cat === 'niche' && cardCat === 'explainer') ||
-            (cat === 'explainer' && (cardCat === 'niche' || cardCat === 'explainer')) ||
-            (cat === 'entertainment' && cardCat === 'culture') ||
-            (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
-          );
-        });
+        const matchingCards = allCards.filter(card => cardMatchesCategory(card, cat));
 
         const total = matchingCards.length;
         const watchedCount = matchingCards.filter(c => watched.has(c.dataset.id)).length;
@@ -968,7 +979,7 @@
       }
 
       if (card.dataset.id) {
-        localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id);
+        try { localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id); } catch (e) {}
         recordDailyView(card.dataset.id);
       }
 
@@ -992,36 +1003,54 @@
       }
     }
 
-    // P2: Stall/Error Recovery: skip unplayable cards permanently (ignoring file:// test fixtures)
-    function skipDeadCard(card, why) {
+    // P2: Stall/Error Recovery. A stall or an error while offline is transient:
+    // skip past it now, keep the card, retry on a later visit; only a second
+    // strike (or a decode/unsupported-source error while online) hides it.
+    const DEAD_STRIKES = 2;
+    function strikesOf(card) { return parseInt(card.dataset.strikes || '0', 10); }
+    function skipDeadCard(card, why, permanent = false) {
       if (!card || card.dataset.dead) return;
       if (window.location.protocol === 'file:') return;
       const v = card.querySelector('.reel-video');
       if (v && v.dataset.src && v.dataset.src.startsWith('data:')) return;
-      // Snapshot position BEFORE marking dead (visibleCards excludes dead
-      // cards, so indexing after would miss and jump to the first reel).
+      const strikes = strikesOf(card) + 1;
+      card.dataset.strikes = String(strikes);
+      const transient = !permanent && (navigator.onLine === false || strikes < DEAD_STRIKES);
+      // Snapshot position BEFORE hiding (visibleCards excludes hidden cards).
       const cards = visibleCards();
       const i = cards.indexOf(card);
       const wasCurrent = (card === currentActiveCard);
-      card.dataset.dead = '1';
-      console.warn('Skipping dead reel', card.dataset.id, why);
-      showToast('Reel unavailable, skipping');
-      card.style.display = 'none';
+      console.warn(transient ? 'Skipping stalled reel' : 'Skipping dead reel', card.dataset.id, why, 'strike', strikes);
+      showToast(transient ? 'Reel is slow to load, skipping for now' : 'Reel unavailable, skipping');
       if (v) {
         v.pause();
         v.removeAttribute('src');
+        delete v.dataset.warmed;
+        delete v.dataset.readyWaiter;
         v.load();
       }
-      // Only navigate when the dead card is the current one; offscreen cards
-      // are just marked so they never stall a later scroll into view.
+      if (!transient) {
+        card.dataset.dead = '1';
+        card.style.display = 'none';
+      }
       if (!wasCurrent) return;
       const next = cards[i + 1] || cards[i - 1];
-      if (next) {
+      if (next && next !== card) {
         goToCard(next);
       } else {
         filterCategory(currentCategory);
       }
     }
+
+    // Back online: every card hidden by a strike gets another chance.
+    window.addEventListener('online', () => {
+      document.querySelectorAll('.reel-card[data-dead]').forEach(c => {
+        delete c.dataset.dead;
+        delete c.dataset.strikes;
+        c.style.display = cardMatchesCategory(c, currentCategory) ? 'flex' : 'none';
+      });
+      updateCategoryProgressRings();
+    });
 
     // Story Category Filtering & Resume from First Unwatched Reel (Requirement 7)
     function filterCategory(cat, options = {}) {
@@ -1035,17 +1064,7 @@
       let matchingCards = [];
 
       cards.forEach(card => {
-        const cardCat = card.dataset.category;
-        const matchesCat = (
-          cat === 'all' ||
-          cardCat === cat ||
-          (cat === 'ai_tech' && cardCat === 'tech') ||
-          (cat === 'tech' && (cardCat === 'ai_tech' || cardCat === 'tech')) ||
-          (cat === 'niche' && cardCat === 'explainer') ||
-          (cat === 'explainer' && (cardCat === 'niche' || cardCat === 'explainer')) ||
-          (cat === 'entertainment' && cardCat === 'culture') ||
-          (cat === 'culture' && (cardCat === 'entertainment' || cardCat === 'culture'))
-        );
+        const matchesCat = cardMatchesCategory(card, cat);
 
         // Requirement 7: Keep watched videos visible and accessible in feed!
         if (matchesCat && !card.dataset.dead) {
@@ -1213,7 +1232,7 @@
       if (card.dataset.id) {
         preloadReelThumbnail(card.dataset.id);
         resolveShareFile(card);
-        localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id);
+        try { localStorage.setItem(LAST_ACTIVE_KEY, card.dataset.id); } catch (e) {}
         recordDailyView(card.dataset.id);
       }
 
@@ -1355,7 +1374,9 @@
       video.addEventListener('error', () => {
         mtrace(`ev-error idx=${card.dataset.index}`);
         delete video.dataset.readyWaiter;
-        skipDeadCard(card, 'media error');
+        const code = video.error && video.error.code;
+        const permanent = navigator.onLine !== false && (code === 3 || code === 4) && strikesOf(card) >= 1;
+        skipDeadCard(card, 'media error', permanent);
       });
 
       // P5: clear the tap-to-unmute pill as soon as audio is back
@@ -1454,7 +1475,7 @@
             playIcon.classList.add('visible');
             setTimeout(() => playIcon.classList.remove('visible'), 400);
           }
-        }, 280);
+        }, TAP_WINDOW_MS);
       });
 
       video.addEventListener('ended', () => {
@@ -1545,15 +1566,19 @@
         }
       }
 
-      const targetCard = allCards[targetIdx];
+      let targetCard = allCards[targetIdx];
+      if (targetCard && targetCard.dataset.dead) {
+        targetCard = allCards.slice(targetIdx).find(c => !c.dataset.dead) || null;
+      }
+      if (!targetCard) { showToast('That reel is unavailable'); return; }
       if (targetCard && targetCard.dataset.id) {
         watched.delete(targetCard.dataset.id);
         delete targetCard.dataset.markedWatched;
       }
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(watched)));
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(watched))); } catch (e) {}
       if (targetCard && targetCard.dataset.id) {
-        localStorage.setItem(LAST_WATCHED_KEY, targetCard.dataset.id);
+        try { localStorage.setItem(LAST_WATCHED_KEY, targetCard.dataset.id); } catch (e) {}
       }
 
       if (newlyWatched.length > 0 && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
@@ -1668,6 +1693,7 @@
 
       if (e.key === 'b' || e.key === 'B') {
         e.preventDefault();
+        if (!window.__IS_LOCAL) return; // unselect is a local-dashboard-only control
         if (currentActiveCard) {
           const badge = currentActiveCard.querySelector('.creator-badge');
           if (badge) {
@@ -1799,126 +1825,148 @@
       }
     }, 2000);
 
-    // Progressive Service Worker Caching (Requirements 5 & 8: Prev 5 + Next 20)
+    // Progressive Service Worker Caching (Requirements 5 & 8: Prev 5 + Next 20).
+    // Coalesced: a fling across ten reels posts one window, not ten.
+    let cacheWindowTimer = null;
     function syncCacheWindow(activeCard) {
       if (!navigator.serviceWorker || !navigator.serviceWorker.controller || !activeCard) return;
+      clearTimeout(cacheWindowTimer);
+      cacheWindowTimer = setTimeout(() => _postCacheWindow(activeCard), 250);
+    }
+
+    function _postCacheWindow(activeCard) {
+      if (activeCard !== currentActiveCard) return;
+      if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return;
       const vCards = visibleCards();
       const activeIdx = vCards.indexOf(activeCard);
       if (activeIdx === -1) return;
 
       const start = Math.max(0, activeIdx - 5);
       const end = Math.min(vCards.length - 1, activeIdx + 20);
-
       const keepUrls = [];
       const prefetchUrls = [];
+      const srcAt = (i) => { const v = vCards[i].querySelector('.reel-video'); return v && v.dataset.src ? v.dataset.src : null; };
 
-      // Immediate high-priority: next 1, next 2, next 3
-      for (let i = 1; i <= 3; i++) {
-        if (activeIdx + i <= end) {
-          const v = vCards[activeIdx + i].querySelector('.reel-video');
-          if (v && v.dataset.src) prefetchUrls.push(v.dataset.src);
-        }
-      }
+      for (let i = 1; i <= 3; i++) { if (activeIdx + i <= end) { const s = srcAt(activeIdx + i); if (s) prefetchUrls.push(s); } }
+      for (let i = activeIdx + 4; i <= end; i++) { const s = srcAt(i); if (s) prefetchUrls.push(s); }
+      for (let i = activeIdx - 1; i >= start; i--) { const s = srcAt(i); if (s) prefetchUrls.push(s); }
+      for (let i = start; i <= end; i++) { const s = srcAt(i); if (s) keepUrls.push(s); }
 
-      // Rest of the 20-ahead window
-      for (let i = activeIdx + 4; i <= end; i++) {
-        const v = vCards[i].querySelector('.reel-video');
-        if (v && v.dataset.src) prefetchUrls.push(v.dataset.src);
-      }
-
-      // Prev 5 window
-      for (let i = activeIdx - 1; i >= start; i--) {
-        const v = vCards[i].querySelector('.reel-video');
-        if (v && v.dataset.src) prefetchUrls.push(v.dataset.src);
-      }
-
-      // Keep set for cache pruning
-      for (let i = start; i <= end; i++) {
-        const v = vCards[i].querySelector('.reel-video');
-        if (v && v.dataset.src) keepUrls.push(v.dataset.src);
-      }
-
-      navigator.serviceWorker.controller.postMessage({
-        action: 'PRECACHE_VIDEOS',
-        urls: prefetchUrls
-      });
+      navigator.serviceWorker.controller.postMessage({ action: 'PRECACHE_VIDEOS', urls: prefetchUrls });
 
       const isDownloaded = localStorage.getItem('ig_digest_download_completed_' + currentWeekId) === 'true';
       navigator.serviceWorker.controller.postMessage({
         action: 'PRUNE_CACHE',
         keepUrls: keepUrls,
-        preventPrune: isDownloaded
+        // Never prune while a bulk download is filling the cache.
+        preventPrune: isDownloaded || fullDownload.running
       });
     }
 
-    // Full Batch Offline Download (Travel / Airplane Mode)
-    function startFullDownload() {
-      if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
-        showToast('Service worker active on reload');
-        return;
-      }
-      const allUrls = visibleCards()
+    // Full Batch Offline Download (Travel / Airplane Mode). Runs on the page:
+    // the Cache API is available here, and unlike a service-worker message
+    // handler the page is not killed at the extendable-event lifetime cap.
+    // Failures are counted and surfaced; "completed" is written only when
+    // every reel is actually in the cache.
+    const fullDownload = { running: false, cancel: false };
+    const DOWNLOAD_CONCURRENCY = 3;
+
+    function paintDownloadProgress(done, total, failed) {
+      const bar = document.getElementById('offlineProgressBar');
+      const txt = document.getElementById('offlineProgressText');
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      if (bar) bar.style.width = pct + '%';
+      if (txt) txt.textContent = `Downloading ${done} / ${total} (${pct}%)` + (failed ? ` · ${failed} failed` : '');
+    }
+
+    async function startFullDownload() {
+      if (fullDownload.running) return;
+      if (!('caches' in window)) { showToast('Offline cache is not available in this browser'); return; }
+      const urls = visibleCards()
         .map(c => c.querySelector('.reel-video'))
         .filter(v => v && v.dataset.src)
         .map(v => v.dataset.src);
-
+      const total = urls.length;
       const btn = document.getElementById('startOfflineDownloadBtn');
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Downloading...';
-      }
-
+      if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
       const pCont = document.getElementById('offlineProgressContainer');
       if (pCont) pCont.style.display = 'block';
-
-      requestWakeLock(); // Keep screen awake during download
-
-      navigator.serviceWorker.controller.postMessage({
-        action: 'DOWNLOAD_ALL',
-        urls: allUrls
-      });
+      requestWakeLock();
+      fullDownload.running = true;
+      fullDownload.cancel = false;
+      let done = 0, failed = 0;
+      try {
+        const cache = await caches.open('ig-digest-media-v1');
+        const missing = [];
+        for (const raw of urls) {
+          const clean = raw.split('?')[0];
+          if (await cache.match(clean)) { done++; cachedVideoUrlsSet.add(clean); } else missing.push(raw);
+        }
+        paintDownloadProgress(done, total, failed);
+        let idx = 0;
+        const worker = async () => {
+          while (idx < missing.length && !fullDownload.cancel) {
+            const raw = missing[idx++];
+            const clean = raw.split('?')[0];
+            let ok = false;
+            for (let attempt = 0; attempt < 2 && !ok && !fullDownload.cancel; attempt++) {
+              try {
+                const res = await fetch(raw, { mode: 'cors' });
+                if (res.ok) {
+                  const headers = { 'Content-Type': res.headers.get('Content-Type') || 'video/mp4', 'Accept-Ranges': 'bytes' };
+                  const len = res.headers.get('Content-Length');
+                  if (len) headers['Content-Length'] = len;
+                  await cache.put(clean, new Response(res.body, { status: 200, headers }));
+                  ok = true;
+                }
+              } catch (err) {
+                if (err && err.name === 'QuotaExceededError') {
+                  fullDownload.cancel = true;
+                  showToast('Device storage is full');
+                  break;
+                }
+                if (attempt === 0) await new Promise(r => setTimeout(r, 600));
+              }
+            }
+            if (ok) { done++; cachedVideoUrlsSet.add(clean); } else failed++;
+            paintDownloadProgress(done, total, failed);
+          }
+        };
+        await Promise.all(Array.from({ length: DOWNLOAD_CONCURRENCY }, worker));
+      } finally {
+        fullDownload.running = false;
+      }
+      const txt = document.getElementById('offlineProgressText');
+      const complete = total > 0 && done === total;
+      if (complete) {
+        if (txt) txt.textContent = `All ${total} reels stored offline! 🎉`;
+        try {
+          localStorage.setItem('ig_digest_download_completed_' + currentWeekId, 'true');
+          localStorage.setItem('ig_digest_downloaded_count_' + currentWeekId, String(total));
+        } catch (e) {}
+        showToast('Offline download complete');
+        setTimeout(() => closeModal('offlineModal'), 1200);
+      } else {
+        if (txt) txt.textContent = fullDownload.cancel
+          ? `Stopped at ${done} / ${total}`
+          : `${done} / ${total} stored · ${failed} could not be downloaded`;
+        try { localStorage.removeItem('ig_digest_download_completed_' + currentWeekId); } catch (e) {}
+        showToast(fullDownload.cancel ? 'Download stopped' : `${failed} reels failed — tap Download to retry`);
+      }
+      syncDownloadButtonState();
     }
 
-    if (navigator.serviceWorker) {
-      navigator.serviceWorker.ready.then(() => {
-        queryServiceWorkerCache();
-      });
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        queryServiceWorkerCache();
-      });
+    function cancelFullDownload() { fullDownload.cancel = true; }
 
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.ready.then(() => { queryServiceWorkerCache(); });
+      navigator.serviceWorker.addEventListener('controllerchange', () => { queryServiceWorkerCache(); });
       navigator.serviceWorker.addEventListener('message', (event) => {
         const data = event.data;
         if (!data) return;
         if (data.action === 'CACHED_URLS_LIST' && Array.isArray(data.urls)) {
           cachedVideoUrlsSet = new Set(data.urls);
           syncDownloadButtonState();
-        } else if (data.action === 'DOWNLOAD_PROGRESS') {
-          const bar = document.getElementById('offlineProgressBar');
-          const txt = document.getElementById('offlineProgressText');
-          if (bar && txt) {
-            const pct = data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0;
-            bar.style.width = pct + '%';
-            txt.textContent = `Downloading ${data.completed} / ${data.total} (${pct}%)`;
-          }
-          if (data.url) {
-            cachedVideoUrlsSet.add(data.url);
-          }
-        } else if (data.action === 'DOWNLOAD_COMPLETE') {
-          const txt = document.getElementById('offlineProgressText');
-          if (txt) txt.textContent = `All ${data.total} reels stored offline! 🎉`;
-          const btn = document.getElementById('startOfflineDownloadBtn');
-          if (btn) {
-            btn.disabled = true;
-            btn.textContent = 'All Downloaded ✓';
-          }
-          try {
-            localStorage.setItem('ig_digest_download_completed_' + currentWeekId, 'true');
-            localStorage.setItem('ig_digest_downloaded_count_' + currentWeekId, String(data.total));
-          } catch (e) {}
-          syncDownloadButtonState();
-          setTimeout(() => closeModal('offlineModal'), 1200);
-          showToast('Offline download complete');
         }
       });
     }
@@ -1976,10 +2024,18 @@
 
     // ---- Hybrid Bookmarks: API, snapshot, IndexedDB outbox, sync ----
     function bookmarkApiBase() {
-      try {
-        const override = localStorage.getItem('digest_api_base');
-        if (override) return override.replace(/\/$/, '');
-      } catch (e) {}
+      // Dev-only override: honoured solely on the local dashboard origin, so a
+      // poisoned localStorage entry can never redirect the public PWA's
+      // Bearer-authenticated calls (see auth.html authBoot).
+      const h = location.hostname;
+      if (h === 'localhost' || h === '127.0.0.1') {
+        try {
+          const override = localStorage.getItem('digest_api_base');
+          if (override && /^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(override)) return override.replace(/\/$/, '');
+        } catch (e) {}
+      } else {
+        try { localStorage.removeItem('digest_api_base'); } catch (e) {} // purge anything a link left behind
+      }
       return (window.__BOOKMARK_API_BASE || '').replace(/\/$/, '');
     }
 
@@ -2065,7 +2121,7 @@
         creator_handle: badge ? badge.textContent.replace(/^@/, '').trim() : '',
         caption: cap ? cap.textContent.trim().slice(0, 500) : '',
         category: card ? (card.dataset.category || '') : '',
-        video_url: v ? (v.dataset.src || v.currentSrc || v.src || '') : '',
+        video_url: v ? (v.dataset.r2Src || v.dataset.src || v.currentSrc || v.src || '') : '',
         thumbnail_url: v ? (v.dataset.poster || '') : '',
       };
     }
@@ -2114,52 +2170,70 @@
 
     const OUTBOX_BACKOFF = [1000, 5000, 30000, 300000];
     let outboxFlushing = false;
+    let outboxDirty = false;      // an op was queued while a flush was running -> flush again
+    let outboxRetryTimer = null;
+
+    function revertOptimisticAdd(id) {
+      setBookmarkSnapshot(getBookmarkSnapshot().filter(r => r.id !== id));
+    }
+
+    function scheduleOutboxRetry(attempts) {
+      if (attempts >= 5) return; // parked: badge shows ⚠; the next online/launch/tab trigger retries
+      clearTimeout(outboxRetryTimer);
+      outboxRetryTimer = setTimeout(flushBookmarkOutbox, OUTBOX_BACKOFF[Math.min(Math.max(attempts - 1, 0), 3)]);
+    }
+
     async function flushBookmarkOutbox() {
-      if (outboxFlushing) return;
+      if (outboxFlushing) { outboxDirty = true; return; }
       const base = bookmarkApiBase();
       if (!base) return;
       let db;
       try { db = await openIdb(); } catch (e) { return; }
       outboxFlushing = true;
       try {
-        const ops = (await idbAll(db)).sort((a, b) => (a.ts - b.ts) || (a.opId - b.opId));
-        for (const op of ops) {
-          let res;
-          try {
-            res = await sendBookmarkOp(op.op, op.id, op.payload);
-          } catch (err) {
-            break; // network down: preserve order, retry on next trigger
-          }
-          if (res.ok) {
-            await idbDelete(db, op.opId);
-            continue;
-          }
-          if (res.status === 403) {
-            await idbDelete(db, op.opId);
-            document.body.classList.add('readonly');
-            updateOwnerKeyStatus();
-            showToast('Owner key invalid — re-link this device.');
-            continue;
-          }
-          if (res.status === 400 || res.status === 404 || res.status === 409 || res.status === 413) {
-            await idbDelete(db, op.opId); // permanent: poison-pill drop
-            if (res.status === 404) {
-              setBookmarkSnapshot(getBookmarkSnapshot().filter(r => r.id !== op.id));
-              showToast('That reel expired from the weekly digest.');
+        do {
+          outboxDirty = false;
+          // opId is monotonic per device; ts is wall-clock and can move backwards.
+          const ops = (await idbAll(db)).sort((a, b) => a.opId - b.opId);
+          for (const op of ops) {
+            let res;
+            try {
+              res = await sendBookmarkOp(op.op, op.id, op.payload);
+            } catch (err) {
+              scheduleOutboxRetry(op.attempts || 0); // network down: keep order, retry later
+              return;
             }
-            continue;
+            if (res.ok) {
+              await idbDelete(db, op.opId);
+              continue;
+            }
+            if (res.status === 403) {
+              await idbDelete(db, op.opId);
+              if (op.op === 'POST') revertOptimisticAdd(op.id);
+              document.body.classList.add('readonly');
+              updateOwnerKeyStatus();
+              showToast('Owner key invalid — re-link this device.');
+              continue;
+            }
+            if (res.status === 400 || res.status === 404 || res.status === 409 || res.status === 413) {
+              await idbDelete(db, op.opId); // permanent: poison-pill drop, and undo the optimistic paint
+              if (op.op === 'POST') revertOptimisticAdd(op.id);
+              showToast(res.status === 404 ? 'That reel expired from the weekly digest.'
+                      : res.status === 413 ? 'That reel is too large to bookmark (50 MB limit).'
+                      : `Bookmark rejected (${res.status}).`);
+              continue;
+            }
+            // 5xx / other: persist the attempt count and retry later WITHOUT sleeping here.
+            op.attempts = (op.attempts || 0) + 1;
+            await idbPut(db, op);
+            scheduleOutboxRetry(op.attempts);
+            return;
           }
-          // 5xx / other: backoff, park after 5 attempts.
-          op.attempts = (op.attempts || 0) + 1;
-          if (op.attempts >= 5) break; // parked; badge shows pending, retry next trigger
-          await idbPut(db, op);
-          await new Promise(r => setTimeout(r, OUTBOX_BACKOFF[Math.min(op.attempts - 1, 3)]));
-          break;
-        }
+        } while (outboxDirty);
         await syncBookmarksFromServer();
-        updateBookmarkBadge(await pendingOpCount());
       } finally {
         outboxFlushing = false;
+        updateBookmarkBadge(await pendingOpCount());
       }
     }
 
@@ -2170,7 +2244,17 @@
       try {
         const res = await fetch(`${base}/api/bookmarks`, { headers: bookmarkAuthHeaders() });
         if (!res.ok) return;
-        setBookmarkSnapshot(await res.json());
+        let rows = await res.json();
+        if (!Array.isArray(rows)) return;
+        // Re-apply ops still in the outbox so a fetch that raced a fresh tap
+        // cannot wipe its optimistic state (the op lands on the next flush).
+        let pending = [];
+        try { pending = (await idbAll(await openIdb())).sort((a, b) => a.opId - b.opId); } catch (e) {}
+        for (const op of pending) {
+          rows = rows.filter(r => r.id !== op.id);
+          if (op.op === 'POST') rows.push({ ...(op.payload || { id: op.id }), bookmarked_at: new Date(op.ts || Date.now()).toISOString() });
+        }
+        setBookmarkSnapshot(rows);
       } catch (e) {}
     }
 
@@ -2348,7 +2432,18 @@
       const pp = video.play();
       if (pp && pp.catch) pp.catch(() => {});
       if (meta) {
-        meta.innerHTML = `<span class="meta-handle">@${r.creator_handle || 'reel'}</span><span class="meta-dot">•</span><span class="meta-count">${overlayIdx + 1}/${overlayList.length}</span>`;
+        // Server rows are data, never markup: build nodes via the DOM API.
+        meta.textContent = '';
+        const h = document.createElement('span');
+        h.className = 'meta-handle';
+        h.textContent = '@' + (r.creator_handle || 'reel');
+        const dot = document.createElement('span');
+        dot.className = 'meta-dot';
+        dot.textContent = '•';
+        const cnt = document.createElement('span');
+        cnt.className = 'meta-count';
+        cnt.textContent = `${overlayIdx + 1}/${overlayList.length}`;
+        meta.append(h, dot, cnt);
       }
       if (unbm) unbm.textContent = '🔖 Saved';
     }
@@ -2466,7 +2561,7 @@
       if (!container) return;
       const q = (filter || '').trim().toLowerCase();
       const selectedCat = cat || 'all';
-      const allCards = Array.from(document.querySelectorAll('#feedContainer .reel-card'));
+      const allCards = Array.from(document.querySelectorAll('#feedContainer .reel-card')).filter(c => !c.dataset.dead);
       const watchedSet = (typeof getWatchedIds === 'function') ? getWatchedIds() : new Set();
 
       let watchedCount = 0;
@@ -2553,8 +2648,9 @@
 
     function selectReelFromGrid(reelId) {
       if (!reelId) return;
-      const targetCard = document.querySelector(`#feedContainer .reel-card[data-id="${reelId}"]`);
-      if (!targetCard) return;
+      const esc = (window.CSS && CSS.escape) ? CSS.escape(reelId) : reelId.replace(/["\\]/g, '\\$&');
+      const targetCard = document.querySelector(`#feedContainer .reel-card[data-id="${esc}"]`);
+      if (!targetCard || targetCard.dataset.dead) return;
 
       if (typeof currentCategory !== 'undefined' && currentCategory !== 'all' && targetCard.dataset.category !== currentCategory) {
         if (typeof filterCategory === 'function') {

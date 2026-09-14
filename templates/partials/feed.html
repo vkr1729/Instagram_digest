@@ -1,4 +1,4 @@
-    <main class="feed-container" id="feedContainer"{% if pin_sha256 %} style="display:none"{% endif %}>
+    <main class="feed-container" id="feedContainer"{% if pin_hash %} style="display:none"{% endif %}>
       {% for item in items %}
       <article class="reel-card" data-id="{{ item.id }}" data-category="{{ item.category }}" data-index="{{ loop.index0 }}">
         <div class="reel-progress"><div class="reel-progress-fill"></div></div>
@@ -11,6 +11,7 @@
           class="reel-video"
           {% if loop.index0 < 3 %}poster="{{ item.poster or item.thumbnail }}" preload="auto"{% else %}preload="none"{% endif %}
           data-src="{{ item.video_url }}"
+          data-r2-src="{{ item.r2_url }}"
           data-poster="{{ item.poster or item.thumbnail }}"
           playsinline
           webkit-playsinline
