@@ -24,8 +24,10 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="preconnect" href="https://instagram-digest-media.kedarvreddy.workers.dev" crossorigin>
-  <link rel="dns-prefetch" href="https://instagram-digest-media.kedarvreddy.workers.dev">
+  {% if r2_public_domain %}
+  <link rel="preconnect" href="{{ r2_public_domain }}" crossorigin>
+  <link rel="dns-prefetch" href="{{ r2_public_domain }}">
+  {% endif %}
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Grand+Hotel&display=swap" rel="stylesheet">
   <style>
 {% include "partials/styles.css" %}

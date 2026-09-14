@@ -13,7 +13,7 @@
 # ==============================================================================
 set -uo pipefail
 
-APP_DIR="/home/kedarnath-reddy-vallaboina/Instagram_digest"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$APP_DIR/logs/friday_overnight.log"
 mkdir -p "$APP_DIR/logs"
 

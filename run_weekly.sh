@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-APP_DIR="/home/kedarnath-reddy-vallaboina/Instagram_digest"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$APP_DIR/logs"
 LOG_FILE="$LOG_DIR/weekly_sync.log"
 

@@ -249,6 +249,7 @@ def build_site(
         pages_base_url=config.PAGES_BASE_URL,
         pin_sha256=pin_sha256,
         bookmark_api_base=config.BOOKMARK_API_BASE,
+        r2_public_domain=config.R2_PUBLIC_DOMAIN,
     )
     r2_index_path = config.SITE_DIR / "index.html"
     atomic_io.durable_write_text(r2_index_path, rendered_r2)
@@ -263,6 +264,7 @@ def build_site(
         pages_base_url="http://localhost:8080",
         pin_sha256=pin_sha256,
         bookmark_api_base=config.BOOKMARK_API_BASE,
+        r2_public_domain="",
     )
     local_index_path = config.SITE_DIR / "local_index.html"
     atomic_io.durable_write_text(local_index_path, rendered_local)

@@ -44,3 +44,11 @@ videos/
 site/
 logs/
 .instagram_digest/
+
+# Cloudflare & Wrangler
+.wrangler/
+*/.wrangler/
+
+# Debug and troubleshooting uploads
+debug/
+.user_uploaded/
