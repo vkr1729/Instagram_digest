@@ -255,7 +255,9 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
             import requests
             cdata = json.loads(cookies_json_path.read_text(encoding="utf-8"))
             cookies_dict = cdata.get("cookies_dict", {})
-            user_id = cookies_dict.get("ds_user_id", "175246825")
+            user_id = str(cookies_dict.get("ds_user_id") or "").strip()
+            if not user_id.isdigit():
+                raise RuntimeError("ds_user_id cookie missing; refusing to query another account's following list")
             csrftoken = cookies_dict.get("csrftoken", "")
 
             headers = {
@@ -497,6 +499,17 @@ def _extract_shortcode(href: str) -> str:
     query strings, and missing trailing slash)."""
     m = re.search(r"reel/([A-Za-z0-9_-]+)", href or "")
     return m.group(1) if m else ""
+
+
+_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9._]{0,29}$")
+
+
+def clean_handle(raw: Any) -> str:
+    """Instagram usernames are 1-30 chars of [a-z0-9._]. Anything else (page
+    text mistaken for a handle, '<img...>', '../..') is rejected as empty so it
+    can never reach a filename, an R2 key, a D1 row or a DOM sink."""
+    h = str(raw or "").strip().lower().lstrip("@")
+    return h if _HANDLE_RE.fullmatch(h) else ""
 
 
 class InstagramSession:
@@ -879,7 +892,7 @@ def extract_single_reel_metadata(
             data = json.loads(res.stdout)
             reel_id = str(data.get("id") or reel_info["id"])
             views = int(data.get("view_count") or data.get("play_count") or reel_info.get("view_count", 0))
-            handle = data.get("channel") or data.get("uploader_id") or creator_handle
+            handle = clean_handle(data.get("channel") or data.get("uploader_id")) or creator_handle
             name = data.get("uploader") or handle
 
             return {
@@ -1241,7 +1254,7 @@ def extract_external_reels_from_feed(
 
         if data and data.get("reelId"):
             rid = data["reelId"]
-            h = (data.get("handle") or "").lower()
+            h = clean_handle(data.get("handle"))
             caption = data.get("caption", "")
             likes = parse_view_count_text(data.get("rawLikes", ""))
             comments = parse_view_count_text(data.get("rawComments", ""))
@@ -1252,7 +1265,7 @@ def extract_external_reels_from_feed(
             if not h or (likes == 0 and comments == 0):
                 meta = extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h})
                 if meta:
-                    h = (meta.get("creator_handle") or h).lower()
+                    h = clean_handle(meta.get("creator_handle")) or h
                     caption = caption or meta.get("caption", "")
                     likes = max(likes, meta.get("like_count", 0))
                     comments = max(comments, meta.get("comment_count", 0))

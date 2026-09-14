@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 import atomic_io
 import config
@@ -71,7 +71,7 @@ def build_site(
 
     env = Environment(
         loader=FileSystemLoader(str(config.TEMPLATES_DIR)),
-        autoescape=select_autoescape(["html", "xml"]),
+        autoescape=True,
     )
     template = env.get_template("viewer.html")
 
@@ -152,28 +152,42 @@ def build_site(
     def _make_thumb(reel_id: str) -> None:
         thumb_file = thumb_dir / f"{reel_id}.jpg"
         portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
-        if ((not thumb_file.exists() or not portrait_file.exists())
-                and week_video_dir.exists() and shutil.which("ffmpeg")):
-            matches = list(week_video_dir.glob(f"*_{reel_id}.mp4"))
-            if matches:
-                try:
-                    subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]),
-                            "-filter_complex",
-                            "[0:v]split=2[for_og][for_v];"
-                            "[for_og]scale=1200:630:force_original_aspect_ratio=increase,"
-                            "crop=1200:630,boxblur=25:5[bg];"
-                            "[0:v]scale=-1:630[fg];[bg][fg]overlay=(W-w)/2:0[og];"
-                            "[for_v]scale=720:1280:force_original_aspect_ratio=increase,"
-                            "crop=720:1280[vert]",
-                            "-map", "[og]", "-vframes", "1", "-q:v", "5", str(thumb_file),
-                            "-map", "[vert]", "-vframes", "1", "-q:v", "5", str(portrait_file),
-                        ],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
-                    )
-                except Exception:
-                    pass
+        if thumb_file.exists() and portrait_file.exists():
+            return
+        if not (week_video_dir.exists() and shutil.which("ffmpeg")):
+            return
+        matches = list(week_video_dir.glob(f"*_{reel_id}.mp4"))
+        if not matches:
+            return
+        # Render to temp names (ffmpeg needs the .jpg extension to pick the
+        # encoder), then publish atomically: a timeout can never leave a
+        # truncated JPEG that later runs treat as "already generated".
+        tmp_thumb = thumb_dir / f".tmp-{reel_id}.jpg"
+        tmp_portrait = thumb_dir / f".tmp-{reel_id}_portrait.jpg"
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-ss", "00:00:01", "-i", str(matches[0]),
+                    "-filter_complex",
+                    "[0:v]split=2[for_og][for_v];"
+                    "[for_og]scale=1200:630:force_original_aspect_ratio=increase,"
+                    "crop=1200:630,boxblur=25:5[bg];"
+                    "[0:v]scale=-1:630[fg];[bg][fg]overlay=(W-w)/2:0[og];"
+                    "[for_v]scale=720:1280:force_original_aspect_ratio=increase,"
+                    "crop=720:1280[vert]",
+                    "-map", "[og]", "-vframes", "1", "-q:v", "5", str(tmp_thumb),
+                    "-map", "[vert]", "-vframes", "1", "-q:v", "5", str(tmp_portrait),
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=True,
+            )
+            if tmp_thumb.stat().st_size > 0 and tmp_portrait.stat().st_size > 0:
+                os.replace(tmp_thumb, thumb_file)
+                os.replace(tmp_portrait, portrait_file)
+        except Exception:
+            pass
+        finally:
+            for t in (tmp_thumb, tmp_portrait):
+                t.unlink(missing_ok=True)
 
     with ThreadPoolExecutor(max_workers=4) as thumb_executor:
         list(thumb_executor.map(_make_thumb, list(current_ids)))
@@ -235,9 +249,18 @@ def build_site(
     weeks_r2 = build_weeks_metadata(is_local=False)
     weeks_local = build_weeks_metadata(is_local=True)
 
-    # Two-tier gate: only the SHA-256 hash of VIEWING_PIN ships to the bundle.
+    # Viewing PIN: obfuscation, not authentication (the bundle is public and so
+    # is data.json). PBKDF2 + per-build salt only makes the PIN itself
+    # non-trivial to recover from the bundle (an unsalted SHA-256 of a 4-digit
+    # PIN falls in under a millisecond) — it does not make the gate strong.
+    import secrets
+    PIN_PBKDF2_ITERATIONS = 200_000
     _view_pin = os.getenv("VIEWING_PIN", "").strip()
-    pin_sha256 = hashlib.sha256(_view_pin.encode()).hexdigest() if _view_pin else ""
+    pin_salt = secrets.token_hex(16) if _view_pin else ""
+    pin_hash = (
+        hashlib.pbkdf2_hmac("sha256", _view_pin.encode(), bytes.fromhex(pin_salt), PIN_PBKDF2_ITERATIONS).hex()
+        if _view_pin else ""
+    )
 
     # 1. Render site/index.html (GitHub Pages version)
     rendered_r2 = template.render(
@@ -247,7 +270,7 @@ def build_site(
         is_local=False,
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
         pages_base_url=config.PAGES_BASE_URL,
-        pin_sha256=pin_sha256,
+        pin_hash=pin_hash, pin_salt=pin_salt, pin_iterations=PIN_PBKDF2_ITERATIONS,
         bookmark_api_base=config.BOOKMARK_API_BASE,
         r2_public_domain=config.R2_PUBLIC_DOMAIN,
     )
@@ -262,7 +285,7 @@ def build_site(
         is_local=True,
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
         pages_base_url="http://localhost:8080",
-        pin_sha256=pin_sha256,
+        pin_hash=pin_hash, pin_salt=pin_salt, pin_iterations=PIN_PBKDF2_ITERATIONS,
         bookmark_api_base=config.BOOKMARK_API_BASE,
         r2_public_domain="",
     )

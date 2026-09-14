@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+_UMASK = os.umask(0); os.umask(_UMASK)  # read once at import; os.umask is process-global
+
 
 def durable_write_bytes(path: str | Path, payload: bytes) -> None:
     """Atomically write raw bytes to *path* with fsync durability."""
@@ -24,6 +26,7 @@ def durable_write_bytes(path: str | Path, payload: bytes) -> None:
     fd, tmp_name = tempfile.mkstemp(
         dir=str(target.parent), prefix=f".{target.name}.tmp-"
     )
+    os.fchmod(fd, 0o666 & ~_UMASK)  # mkstemp is 0600; honour the umask like a normal create()
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(payload)

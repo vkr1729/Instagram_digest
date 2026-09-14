@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import random
+import re as _re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -69,7 +70,7 @@ def _pipeline_file_lock() -> Iterator[None]:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError(
+            raise PipelineBusy(
                 "another pipeline (sync/expand) holds data/.pipeline.lock"
             )
         yield
@@ -91,7 +92,8 @@ def get_last_run_info() -> dict[str, Any] | None:
     return None
 
 
-def save_last_run_info(week_id: str, timestamp: float | None = None) -> dict[str, Any]:
+def save_last_run_info(week_id: str, timestamp: float | None = None,
+                       since_timestamp: int | None = None) -> dict[str, Any]:
     """Persist the timestamp and week_id of a successful sync run."""
     ts = timestamp if timestamp is not None else time.time()
     dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -99,6 +101,9 @@ def save_last_run_info(week_id: str, timestamp: float | None = None) -> dict[str
         "timestamp": ts,
         "last_run_utc": dt_utc,
         "week_id": week_id,
+        # Weekly runs cover the full window; ad-hoc runs are top-ups that must
+        # not shorten the next weekly anchor (F20).
+        "kind": "ad-hoc" if since_timestamp is not None else "weekly",
     }
     try:
         import atomic_io
@@ -107,6 +112,16 @@ def save_last_run_info(week_id: str, timestamp: float | None = None) -> dict[str
     except Exception as exc:
         logger.warning("Failed saving last_run.json: %s", exc)
     return info
+
+
+_SAFE_COMPONENT_RE = _re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_component(value: Any, fallback: str) -> str:
+    """Filename / R2-key component: strips path separators and glob
+    metacharacters, never empty, never a dot-segment."""
+    s = _SAFE_COMPONENT_RE.sub("", str(value or "")).strip(".")
+    return s or fallback
 
 
 def _digest_item_count() -> int:
@@ -125,6 +140,25 @@ def _digest_item_count() -> int:
 RESUMABLE_SYNC_STAGES = ("extracting", "enriched", "ranked", "publishing", "cooling_down")
 # Stages whose banked ranked list can be reused directly, skipping extraction.
 RANKED_SYNC_STAGES = ("ranked", "publishing")
+
+# A banked ranked list older than this must never be republished as a new week.
+MAX_SYNC_RESUME_AGE_DAYS = 3
+
+
+class PipelineBusy(RuntimeError):
+    """Another sync/expand holds data/.pipeline.lock."""
+
+
+def _retire_sync_file(path: Path, why: str) -> None:
+    """Move a checkpoint out of the sync_progress_*.json namespace so neither
+    this pipeline nor resume_pending.sh can pick it up again. Bytes are kept
+    (forensics); only the name changes, so the glob no longer matches."""
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path.rename(path.with_name(f"{path.name}.retired-{ts}"))
+        logger.info("Retired sync progress %s (%s).", path.name, why)
+    except OSError as exc:
+        logger.warning("Could not retire %s: %s", path, exc)
 
 # Low-profile pacing (Instagram automation warning): slower than a human
 # speed-reader, with periodic long breaks. Costs roughly an extra hour per
@@ -197,7 +231,7 @@ def run_full_sync(
     try:
         with _pipeline_file_lock():
             return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp)
-    except RuntimeError as exc:
+    except PipelineBusy as exc:
         logger.error("%s; refusing to start.", exc)
         return 3
 
@@ -222,7 +256,9 @@ def _run_full_sync(
     if not dry_run and config.R2_ACCOUNT_ID:
         storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
         storage_r2.purge_unreferenced_r2_videos()
-        if not storage_r2.check_preflight_quota():
+        if not storage_r2.check_preflight_quota(
+            estimated_new_bytes=storage_r2.estimate_weekly_batch_bytes()
+        ):
             logger.error("Pre-flight quota check failed. Aborting to protect Cloudflare free limits.")
             return 1
 
@@ -272,12 +308,26 @@ def _run_full_sync(
     if not dry_run and sync_read_path.exists():
         try:
             loaded_sync = json.loads(sync_read_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Ignoring unreadable sync progress: %s", exc)
+            _quarantine_corrupt(sync_read_path, exc)
+            _retire_sync_file(sync_read_path, "unreadable")
+        else:
+            banked_week = str(loaded_sync.get("week_id") or "") if isinstance(loaded_sync, dict) else ""
+            try:
+                banked_age_days = (
+                    datetime.now(timezone.utc)
+                    - datetime.strptime(banked_week, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                ).days
+            except ValueError:
+                banked_age_days = 10**6
             if (
                 isinstance(loaded_sync, dict)
                 and loaded_sync.get("version") == 1
                 and loaded_sync.get("limit_per_creator") == limit_per_creator
                 and loaded_sync.get("since_timestamp") == since_timestamp
                 and loaded_sync.get("stage") in RESUMABLE_SYNC_STAGES
+                and banked_age_days <= MAX_SYNC_RESUME_AGE_DAYS
             ):
                 sync_progress = loaded_sync
                 if loaded_sync.get("days_back") != days_back:
@@ -287,11 +337,10 @@ def _run_full_sync(
                     )
             else:
                 logger.warning(
-                    "Ignoring sync progress %s (run parameters changed since it was written).",
-                    sync_read_path.name,
+                    "Ignoring sync progress %s (parameters changed or banked work is %s days old); retiring it.",
+                    sync_read_path.name, banked_age_days,
                 )
-        except Exception as exc:
-            logger.warning("Ignoring unreadable sync progress: %s", exc)
+                _retire_sync_file(sync_read_path, "parameters changed or stale")
     if not dry_run:
         for stale_sync in config.DATA_DIR.glob("sync_progress_*.json"):
             if stale_sync != sync_checkpoint and stale_sync != sync_read_path:
@@ -368,14 +417,44 @@ def _run_full_sync(
                     )
             candidates_cache_file = config.DATA_DIR / "candidates_cache.json"
             cache_hit = False
-            if candidates_cache_file.exists():
+            if candidates_cache_file.exists() and not candidates:
+                # `not candidates` keeps banked resume candidates in charge:
+                # they are fresher (the run that wrote them was in flight),
+                # and the resume path continues extraction to completion
+                # anyway, so the cache can never improve on them.
                 try:
                     if time.time() - candidates_cache_file.stat().st_mtime < 12 * 3600:
-                        candidates = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
-                        logger.info("Loaded %d candidate reels from fresh candidates_cache.json.", len(candidates))
-                        cache_hit = True
+                        cached = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
+                        cached_items = (
+                            cached.get("candidates") if isinstance(cached, dict) else None
+                        )
+                        params_match = (
+                            isinstance(cached, dict)
+                            and cached.get("version") == 1
+                            and cached.get("since_timestamp") == since_timestamp
+                            and cached.get("days_back") == days_back
+                            and cached.get("limit_per_creator") == limit_per_creator
+                        )
+                        if isinstance(cached_items, list) and params_match:
+                            candidates = [
+                                c for c in cached_items
+                                if isinstance(c, dict) and c.get("id")
+                            ]
+                            logger.info(
+                                "Loaded %d candidate reels from fresh candidates_cache.json.",
+                                len(candidates),
+                            )
+                            cache_hit = True
+                        elif isinstance(cached, list):
+                            logger.info(
+                                "Ignoring legacy candidates_cache.json (no run parameters); re-extracting."
+                            )
+                        else:
+                            logger.info(
+                                "Ignoring candidates_cache.json (run parameters changed)."
+                            )
                 except Exception:
-                    candidates = []
+                    pass
             if cache_hit:
                 # A fresh cache covers every creator post-gate; nothing to visit.
                 extraction_complete = True
@@ -518,10 +597,11 @@ def _run_full_sync(
                         "Viability gate failed: %d candidates (expected >=%d), %d/%d creators empty. Aborting.",
                         len(candidates), int(MIN_CANDIDATE_RATIO * expected_total), empty_total, len(per_source)
                     )
-                    try:
-                        sync_checkpoint.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    for hopeless in {sync_checkpoint, sync_read_path}:
+                        try:
+                            hopeless.unlink(missing_ok=True)
+                        except OSError:
+                            pass
                     _alert_sync_abort(
                         "viability gate failed",
                         f"{len(candidates)} candidates, {empty_total}/{len(per_source)} creators empty",
@@ -531,7 +611,14 @@ def _run_full_sync(
                 logger.info("Extracted total %d candidate reels across creators.", len(candidates))
                 try:
                     import atomic_io
-                    atomic_io.durable_write_json(candidates_cache_file, candidates)
+                    atomic_io.durable_write_json(candidates_cache_file, {
+                        "version": 1,
+                        "since_timestamp": since_timestamp,
+                        "days_back": days_back,
+                        "limit_per_creator": limit_per_creator,
+                        "written_at": time.time(),
+                        "candidates": candidates,
+                    })
                 except Exception:
                     pass
                 _write_sync_progress("extracting", {
@@ -705,10 +792,11 @@ def _run_full_sync(
                 _write_sync_progress("ranked", {"ranked": ranked_reels})
             elif not dry_run:
                 # Hopeless run: drop staged progress so the next attempt starts fresh.
-                try:
-                    sync_checkpoint.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                for hopeless in {sync_checkpoint, sync_read_path}:
+                    try:
+                        hopeless.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     if not ranked_reels:
         logger.error("No reels qualified for Top Digest. Aborting run without touching digest/site.")
@@ -717,7 +805,17 @@ def _run_full_sync(
 
     # 5. Media Download and R2 Upload (Multi-threaded B1, C4 closed browser session)
     uploaded_url_map: dict[str, str] = {}
-    if not dry_run and ranked_reels:
+    if not dry_run:
+        if not ranked_reels:
+            # E.g. every upload failed during an R2 outage: refuse to wipe the
+            # live digest with an empty batch (F2 non-deploy path).
+            logger.error(
+                "No playable reels (previous digest: %d, minimum %d); "
+                "refusing to overwrite the live digest.",
+                _digest_item_count(), MIN_DEPLOY_ITEMS,
+            )
+            _alert_sync_abort("digest save refused", "zero playable reels")
+            return 2
         week_videos_dir = config.VIDEOS_DIR / week_id
         week_videos_dir.mkdir(parents=True, exist_ok=True)
 
@@ -726,9 +824,12 @@ def _run_full_sync(
         logger.info("Downloading and syncing Top %d reels with worker pool...", len(ranked_reels))
 
         def process_reel(reel: dict[str, Any]) -> tuple[str, str]:
-            reel_id = reel["id"]
-            handle = reel["creator_handle"]
+            reel_id = _safe_component(reel["id"], "")
+            handle = _safe_component(reel["creator_handle"], "creator")
             rank = reel.get("rank", 1)
+            if not reel_id:
+                logger.warning("Skipping reel with unusable id %r", reel.get("id"))
+                return (str(reel.get("id")), "")
             filename = f"{rank:02d}_{handle}_{reel_id}.mp4"
             local_video_path = week_videos_dir / filename
 
@@ -787,6 +888,26 @@ def _run_full_sync(
             logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
             ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
 
+        # Never shrink the live digest: refuse to save a batch that is empty
+        # or materially smaller than the healthy one it would replace. This
+        # gate previously ran only when deploy=True, so a non-deploy sync
+        # during an R2 outage could save an EMPTY digest over 300 live reels.
+        prev_count = _digest_item_count()
+        if not ranked_reels or (
+            prev_count >= MIN_DEPLOY_ITEMS and len(ranked_reels) < MIN_DEPLOY_ITEMS
+        ):
+            logger.error(
+                "Only %d playable reels (previous digest: %d, minimum %d); "
+                "refusing to overwrite the live digest.",
+                len(ranked_reels), prev_count, MIN_DEPLOY_ITEMS,
+            )
+            _alert_sync_abort(
+                "digest save refused",
+                f"only {len(ranked_reels)} playable reels "
+                f"(previous digest {prev_count}, minimum {MIN_DEPLOY_ITEMS})",
+            )
+            return 2
+
         # Persist the real object URL so later expansions never derive keys
         # from the calendar day they run on (week-drift fix).
         for r in ranked_reels:
@@ -807,20 +928,28 @@ def _run_full_sync(
         # 6. Save digest batch payload (only playable reels saved!)
         ranker.save_digest_batch(ranked_reels, run_date=week_id)
 
-        # Staged work is now in the digest: clear sync progress so the next
-        # run starts fresh instead of replaying it.
-        try:
-            (config.DATA_DIR / f"sync_progress_{week_id}.json").unlink(missing_ok=True)
-        except OSError:
-            pass
+        # Staged work is now in the digest: clear BOTH the current-week file and
+        # the older-day file this run resumed from. Leaving the latter behind made
+        # every later run re-resume it and resume_pending.sh start a full
+        # sync+deploy at every login.
+        for done_file in {sync_checkpoint, sync_read_path}:
+            try:
+                done_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
         # 7. Execute 14-Day Rolling Purge (both R2 and local disk)
         storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
         storage_r2.purge_unreferenced_r2_videos()
         storage_r2.purge_expired_local_videos(max_age_days=config.RETENTION_DAYS)
     else:
-        # Dry-run: save ranked reels
-        ranker.save_digest_batch(ranked_reels, run_date=week_id)
+        # Dry-run preview only: never persist. Saving here would clobber the
+        # live digest (data/top100_digest.json + data/digests/<week>.json)
+        # that the dashboard serves and that --build-only/--deploy read.
+        logger.info(
+            "Dry-run complete: %d reels ranked; live digest left untouched.",
+            len(ranked_reels),
+        )
 
     # 8. Compile Variant 1A Static Viewer Site
     r2_index, local_index = site_builder.build_site(
@@ -833,7 +962,7 @@ def _run_full_sync(
         site_builder.deploy_to_gh_pages()
 
     if not dry_run:
-        save_last_run_info(week_id)
+        save_last_run_info(week_id, since_timestamp=since_timestamp)
         # 10. Send notification email confirming weekly refresh
         try:
             import notifier
@@ -863,7 +992,7 @@ def run_expand(target_count: int = 100, deploy: bool = False) -> int:
     try:
         with _pipeline_file_lock():
             return _run_expand(target_count, deploy)
-    except RuntimeError as exc:
+    except PipelineBusy as exc:
         logger.error("%s; refusing to start.", exc)
         return 3
 
@@ -1118,11 +1247,21 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     for item in existing_items:
         rid = item.get("id")
         if rid:
-            r2_url = item.get("r2_url") or item.get("video_url") or f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_{item.get('creator_handle')}_{rid}.mp4"
+            r2_url = item.get("r2_url") or item.get("video_url") or (
+                f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_"
+                f"{_safe_component(item.get('creator_handle'), 'creator')}_{_safe_component(rid, 'reel')}.mp4"
+            )
             uploaded_url_map[rid] = r2_url
 
     def _pending_path(reel: dict[str, Any]) -> Path:
-        return week_videos_dir / f"_pending_{reel['creator_handle']}_{reel['id']}.mp4"
+        return week_videos_dir / (
+            f"_pending_{_safe_component(reel['creator_handle'], 'creator')}_"
+            f"{_safe_component(reel['id'], 'reel')}.mp4"
+        )
+
+    def _final_name(reel: dict[str, Any], rank_num: int) -> str:
+        return (f"{rank_num:02d}_{_safe_component(reel['creator_handle'], 'creator')}_"
+                f"{_safe_component(reel['id'], 'reel')}.mp4")
 
     def download_new_reel(reel: dict[str, Any]) -> dict[str, Any] | None:
         tmp_path = _pending_path(reel)
@@ -1161,7 +1300,7 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
         rank_num = _base_rank + 1 + offset
         reel["rank"] = rank_num
         reel["rank_display"] = f"#{rank_num:02d}"
-        filename = f"{rank_num:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
+        filename = _final_name(reel, rank_num)
         final_path = week_videos_dir / filename
         tmp_path = _pending_path(reel)
         try:
@@ -1178,8 +1317,8 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     for offset, reel in enumerate(downloadable):
         rank_num = _base_rank + 1 + offset
         if reel["rank"] != rank_num:
-            old = week_videos_dir / f"{reel['rank']:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
-            new = week_videos_dir / f"{rank_num:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
+            old = week_videos_dir / _final_name(reel, reel["rank"])
+            new = week_videos_dir / _final_name(reel, rank_num)
             try:
                 old.rename(new)
             except OSError:
@@ -1188,7 +1327,7 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             reel["rank_display"] = f"#{rank_num:02d}"
 
     def upload_new_reel(reel: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
-        filename = f"{reel['rank']:02d}_{reel['creator_handle']}_{reel['id']}.mp4"
+        filename = _final_name(reel, reel["rank"])
         public_url = storage_r2.upload_reel_to_r2(
             week_videos_dir / filename,
             week_id=week_id,
@@ -1326,7 +1465,11 @@ def main() -> int:
     days_back = args.days_back
     since_ts = None
     last_run = get_last_run_info()
-    if args.ad_hoc or (last_run and "timestamp" in last_run and args.days_back == 7):
+    # Ad-hoc runs narrow the window but must not shorten the NEXT weekly run:
+    # only anchor to a previous WEEKLY run (kind tag, F20). An ad-hoc success
+    # would otherwise shrink Friday's digest to "since the ad-hoc".
+    anchorable = last_run and last_run.get("kind", "weekly") != "ad-hoc"
+    if args.ad_hoc or (anchorable and "timestamp" in (last_run or {}) and args.days_back == 7):
         if last_run and "timestamp" in last_run:
             elapsed = time.time() - last_run["timestamp"]
             if 3600 <= elapsed <= 7 * 86400:

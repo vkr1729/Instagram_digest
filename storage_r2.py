@@ -71,10 +71,36 @@ def get_bucket_storage_usage() -> tuple[int, int]:
     return total_bytes, total_objects
 
 
+def estimate_weekly_batch_bytes(default_bytes: int = 3200 * 1024 * 1024) -> int:
+    """Estimate the next weekly upload volume from the most recent real batch.
+
+    The previous fixed 1 GB estimate let a ~3 GB weekly batch (300 reels)
+    breach the 8 GB safety quota mid-upload: pre-flight passed with
+    current + 1 GB projected, then the real ~3 GB landed. Sizes the next
+    batch from the newest week directory that still has local videos
+    (retention keeps last week's dir until the next run purges it),
+    falling back to a conservative 3.2 GB.
+    """
+    if config.VIDEOS_DIR.exists():
+        for week_dir in sorted(config.VIDEOS_DIR.glob("*"), reverse=True):
+            if not week_dir.is_dir():
+                continue
+            total = sum(
+                f.stat().st_size for f in week_dir.glob("*.mp4") if f.is_file()
+            )
+            if total > 0:
+                logger.info(
+                    "Batch estimate from %s: %.1f MB.", week_dir.name, total / 1048576
+                )
+                return int(total * 1.1)  # 10% headroom for re-rank churn
+    return default_bytes
+
+
 def check_preflight_quota(estimated_new_bytes: int = 1000 * 1024 * 1024) -> bool:
     """
     Strict pre-flight safety check:
-    Ensures current_storage + new_batch < 5 GB (half of Cloudflare's 10 GB free tier).
+    Ensures current_storage + estimated_new_bytes stays under the 8 GB
+    self-imposed quota (buffer under Cloudflare's 10 GB free tier).
     """
     current_bytes, count = get_bucket_storage_usage()
     projected = current_bytes + estimated_new_bytes
@@ -307,6 +333,10 @@ def upload_reel_to_r2(
 
     if not key_name:
         key_name = local_file.name
+
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_id) or not re.fullmatch(r"[A-Za-z0-9._-]+\.mp4", key_name):
+        logger.error("Refusing unsafe R2 key components week_id=%r key_name=%r", week_id, key_name)
+        return ""
 
     r2_key = f"videos/{week_id}/{key_name}"
 

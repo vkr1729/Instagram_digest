@@ -17,9 +17,19 @@ logger = logging.getLogger("InstagramDigest.Ranker")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
+def _num(v: Any) -> float:
+    """Coerce a metric to a finite float (None/'12K'/NaN -> 0.0) so a partial
+    extractor payload can never raise inside ranking or poison the sort."""
+    try:
+        f = float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f == f and f not in (float("inf"), float("-inf")) else 0.0
+
+
 def calculate_creator_baseline(reels: list[dict[str, Any]]) -> float:
     """Calculate median view count baseline for a creator's recent reels."""
-    views = [max(1, r.get("view_count", 0)) for r in reels]
+    views = [max(1.0, _num(r.get("view_count"))) for r in reels]
     if not views:
         return 1000.0
     return float(statistics.median(views))
@@ -36,9 +46,9 @@ def compute_viral_score(reel: dict[str, Any], baseline_views: float) -> float:
     """
     import math
 
-    views = max(1, reel.get("view_count", 0))
-    likes = reel.get("like_count", 0)
-    comments = reel.get("comment_count", 0)
+    views = max(1.0, _num(reel.get("view_count")))
+    likes = _num(reel.get("like_count"))
+    comments = _num(reel.get("comment_count"))
 
     # 1. Reach ratio relative to creator's median baseline
     reach_ratio = views / max(200.0, baseline_views)
@@ -57,7 +67,7 @@ def compute_viral_score(reel: dict[str, Any], baseline_views: float) -> float:
     score = damped_reach * (1.0 + (smooth_engagement * 4.0))
 
     # 5. Mild recency bonus within 7-day window if timestamp is present
-    ts = reel.get("timestamp") or 0
+    ts = _num(reel.get("timestamp"))
     if ts:
         age_hours = max(0.0, (datetime.now(timezone.utc).timestamp() - ts) / 3600.0)
         recency_factor = 1.0 / math.pow((age_hours + 12.0) / 24.0, 0.15)
