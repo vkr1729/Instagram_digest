@@ -1,3 +1,14 @@
+# Changelog — PWA resume-after-unlock fix (2026-09-15)
+
+- Fixed: PWA always opened at reel #1 instead of the last-active reel.
+  The PIN lock hides the feed at player init so the initial scroll is
+  deferred, but `unlockScreen()` never performed it — and the autoplay
+  observer then overwrote the saved position with #1. `unlockScreen()`
+  now runs the deferred `resumeInitialPosition()` one-shot after
+  revealing the feed (also repairs `?reel=` deep links through the
+  lock). New `tests/test_resume_after_unlock.py` pins it (unit + e2e;
+  both fail pre-fix).
+
 # Changelog — Release 5.0.0 (2026-09-15)
 
 - Release version established: `config.APP_VERSION = "5.0.0"` (single

@@ -121,6 +121,15 @@
       if (feed && window.__FEED_HIDDEN_BY_LOCK) feed.style.display = '';
       document.body.classList.toggle('readonly', !isOwnerDevice());
       if (typeof flushBookmarkOutbox === 'function') flushBookmarkOutbox();
+      // The feed is hidden behind the lock at player init, so the initial
+      // scroll is deferred (see filterCategory / resumeInitialPosition in
+      // player.js). Now that the feed is laid out, jump to the resume target
+      // (?reel= deep link, else last-active reel) instead of opening at #1.
+      // One-shot: a later unlock call must never yank the user's scroll.
+      if (feed && !window.__DID_INITIAL_RESUME && typeof window.resumeInitialPosition === 'function') {
+        window.__DID_INITIAL_RESUME = true;
+        window.resumeInitialPosition();
+      }
     }
     function isOwnerDevice() {
       try { return Boolean(localStorage.getItem('digest_owner_key')); } catch (e) { return false; }
