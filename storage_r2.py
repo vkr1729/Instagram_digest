@@ -66,7 +66,7 @@ def get_bucket_storage_usage() -> tuple[int, int]:
                 total_objects += 1
     except ClientError as e:
         logger.warning("Error calculating R2 bucket usage: %s", e)
-        return 0, 0
+        return -1, -1
 
     return total_bytes, total_objects
 
@@ -103,6 +103,9 @@ def check_preflight_quota(estimated_new_bytes: int = 1000 * 1024 * 1024) -> bool
     self-imposed quota (buffer under Cloudflare's 10 GB free tier).
     """
     current_bytes, count = get_bucket_storage_usage()
+    if current_bytes < 0:
+        logger.error("CRITICAL: cannot verify R2 usage (outage?); refusing to upload blind.")
+        return False
     projected = current_bytes + estimated_new_bytes
     current_mb = current_bytes / (1024 * 1024)
     projected_mb = projected / (1024 * 1024)
@@ -164,11 +167,14 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
         for i in range(0, len(stale_keys), 1000):
             chunk = stale_keys[i : i + 1000]
             logger.info("Batch deleting %d expired R2 objects...", len(chunk))
-            s3.delete_objects(
+            resp = s3.delete_objects(
                 Bucket=config.R2_BUCKET_NAME,
-                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": False},
             )
-            purged.extend(chunk)
+            for err in resp.get("Errors") or []:
+                logger.error("Failed deleting expired %s: %s", err.get("Key"), err.get("Message"))
+            # Report only keys R2 confirms deleted.
+            purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []])
     except ClientError as e:
         logger.warning("Error during R2 purge: %s", e)
 

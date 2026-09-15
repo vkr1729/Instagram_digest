@@ -55,7 +55,9 @@ if ENV_FILE.exists():
             continue
         k, v = line.split("=", 1)
         k = k.strip()
-        v = v.strip().strip("'\"")
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+            v = v[1:-1]
         if k and k not in os.environ:
             os.environ[k] = v
 
@@ -74,23 +76,46 @@ BOOKMARK_API_BASE = os.getenv("BOOKMARK_API_BASE", "").strip().rstrip("/")
 
 # Notification / Email Configuration
 SMTP_HOST = os.getenv("SMTP_HOST", os.getenv("SMTP_SERVER", "smtp.gmail.com")).strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+
+
+def _env_int(name: str, default: int, lo: int | None = None, hi: int | None = None) -> int:
+    """Parse an int env var defensively: garbage → default, then clamped."""
+    try:
+        v = int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        v = default
+    if lo is not None:
+        v = max(lo, v)
+    if hi is not None:
+        v = min(hi, v)
+    return v
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var defensively: garbage → default."""
+    try:
+        return float(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+SMTP_PORT = _env_int("SMTP_PORT", 587, 1, 65535)
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SMTP_USERNAME", "")).strip()
 SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("SMTP_PASSWORD", "")).strip().strip('"')
 NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("RECIPIENT_EMAIL", "")).strip()
 
 # Pipeline & Retention Limits (Default: 1 week rolling archive)
-RETENTION_WEEKS = int(os.getenv("RETENTION_WEEKS", "1"))
-RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", str(RETENTION_WEEKS * 7 + 1)))
-TOP_DIGEST_COUNT = int(os.getenv("TOP_DIGEST_COUNT", "300"))
-MAX_PER_CREATOR = int(os.getenv("MAX_PER_CREATOR", "4"))
+RETENTION_WEEKS = _env_int("RETENTION_WEEKS", 1, 1, 52)
+RETENTION_DAYS = _env_int("RETENTION_DAYS", RETENTION_WEEKS * 7 + 1, 1, 365)
+TOP_DIGEST_COUNT = _env_int("TOP_DIGEST_COUNT", 300, 1, 1000)
+MAX_PER_CREATOR = _env_int("MAX_PER_CREATOR", 4, 1, 50)
 # One-sided flood guard: no single category may exceed this share of the digest.
 # (Replaces the old fixed 40/15/15/10/10/10 percentage targets.)
-MAX_CATEGORY_SHARE = float(os.getenv("MAX_CATEGORY_SHARE", "0.50"))
+MAX_CATEGORY_SHARE = _env_float("MAX_CATEGORY_SHARE", 0.50)
 R2_STORAGE_QUOTA_BYTES = 8 * 1024 * 1024 * 1024  # 8 GB ceiling: ~3.1 GB weekly + 3.5 GB bookmarks cap + 1.4 GB buffer (of 10 GB free)
 
 # Playback & UI Defaults
-DEFAULT_PLAYBACK_SPEED = float(os.getenv("DEFAULT_PLAYBACK_SPEED", "1.0"))
+DEFAULT_PLAYBACK_SPEED = _env_float("DEFAULT_PLAYBACK_SPEED", 1.0)
 AUTO_ADVANCE_DELAY_SECONDS = 0.5
 AVAILABLE_SPEEDS = [1.0, 1.25, 1.5, 1.75, 2.0]
 

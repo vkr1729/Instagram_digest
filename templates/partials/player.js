@@ -315,6 +315,11 @@
 
     function switchWeek(targetUrl) {
       if (!targetUrl) return;
+      if (/^\s*javascript:/i.test(targetUrl)) return;
+      if (/^https?:\/\//i.test(targetUrl)) {
+        let u; try { u = new URL(targetUrl); } catch (e) { return; }
+        if (u.origin !== location.origin) return;
+      }
       const inArchive = window.location.pathname.includes('/archive/');
       if (inArchive) {
         if (!targetUrl.startsWith('http') && !targetUrl.startsWith('/')) {
@@ -470,7 +475,8 @@
       const shareText = `Watch @${creatorHandle || 'reel'} on Instagram Digest: ${shareUrl}`;
 
       // Extract caption from active card snippet (capped at 1,000 chars matching Telegram bookmarking)
-      const card = document.querySelector(`.reel-card[data-id="${reelId}"]`);
+      const escId = (window.CSS && CSS.escape) ? CSS.escape(reelId) : String(reelId).replace(/["\\]/g, '\\$&');
+      const card = document.querySelector(`.reel-card[data-id="${escId}"]`);
       const captionEl = card ? card.querySelector('.caption-snippet') : null;
       const rawCaption = captionEl ? (captionEl.innerText || captionEl.textContent || '').trim() : '';
       const shareCaption = rawCaption ? rawCaption.slice(0, 1000) : `Reel by @${creatorHandle || 'creator'}`;
@@ -1317,7 +1323,7 @@
               // Total playback failure (e.g. Low Power Mode rejects even muted
               // programmatic play): leave a visible tap affordance. The next
               // tap resumes through the normal manual path.
-              const icon = card.querySelector('.play-indicator');
+              const icon = card.querySelector('.play-pause-indicator');
               if (icon) {
                 icon.textContent = '▶';
                 icon.classList.add('visible');
@@ -1366,7 +1372,7 @@
         if (gen === navGen && currentActiveCard === card) {
           advanceToNextReel(card);
         }
-      }, 350);
+      }, 500);
     }
 
     // Wire Up Video Events
@@ -1652,6 +1658,7 @@
       cardsToRemove.forEach(c => {
         const v = c.querySelector('video');
         if (v) v.pause();
+        try { observer.unobserve(c); } catch (e) {}
         c.remove();
       });
       if (typeof updateCategoryProgressRings === 'function') {
@@ -1903,10 +1910,11 @@
       let done = 0, failed = 0;
       try {
         const cache = await caches.open('ig-digest-media-v1');
+        const existing = new Set((await cache.keys()).map(r => r.url.split('?')[0]));
         const missing = [];
         for (const raw of urls) {
           const clean = raw.split('?')[0];
-          if (await cache.match(clean)) { done++; cachedVideoUrlsSet.add(clean); } else missing.push(raw);
+          if (existing.has(clean)) { done++; cachedVideoUrlsSet.add(clean); } else missing.push(raw);
         }
         paintDownloadProgress(done, total, failed);
         let idx = 0;
@@ -2201,12 +2209,35 @@
           outboxDirty = false;
           // opId is monotonic per device; ts is wall-clock and can move backwards.
           const ops = (await idbAll(db)).sort((a, b) => a.opId - b.opId);
-          for (const op of ops) {
+          // Coalesce: POST then DELETE for the same id is a no-op — drop both
+          // so a toggle-on-then-off while offline performs zero server work.
+          // (DELETE then POST replays in order, which is already correct.)
+          {
+            const firstById = new Map();
+            for (const op of ops) if (!firstById.has(op.id)) firstById.set(op.id, op);
+            const lastById = new Map();
+            for (const op of ops) lastById.set(op.id, op);
+            for (const [id, last] of lastById) {
+              const first = firstById.get(id);
+              if (first !== last && first.op === 'POST' && last.op === 'DELETE') {
+                for (const op of ops.filter(o => o.id === id)) await idbDelete(db, op.opId);
+              }
+            }
+          }
+          const effective = (await idbAll(db)).sort((a, b) => a.opId - b.opId);
+          for (const op of effective) {
             let res;
             try {
               res = await sendBookmarkOp(op.op, op.id, op.payload);
             } catch (err) {
-              scheduleOutboxRetry(op.attempts || 0); // network down: keep order, retry later
+              // Network down: persist the attempt so backoff actually backs
+              // off, and do not arm a timer while offline at all — the
+              // 'online' event listener re-flushes. (Previously attempts
+              // stayed 0 and this re-armed every 1000ms forever.)
+              op.attempts = (op.attempts || 0) + 1;
+              await idbPut(db, op);
+              if (navigator.onLine === false) return;
+              scheduleOutboxRetry(op.attempts);
               return;
             }
             if (res.ok) {
@@ -2265,11 +2296,15 @@
     }
 
     function paintBookmarkButtons() {
-      const ids = snapshotIds();
+      const rows = new Map(getBookmarkSnapshot().map(r => [r.id, r]));
       document.querySelectorAll('.bookmark-btn[data-id]').forEach(b => {
-        const isBm = ids.has(b.dataset.id);
+        const row = rows.get(b.dataset.id);
+        const isBm = !!row;
         b.classList.toggle('bookmarked', isBm);
-        b.textContent = isBm ? '🔖 Saved' : '🔖 Save';
+        // telegram_message_id null (after flush+sync) = cold backup pending:
+        // say so instead of showing a confident "Saved".
+        b.textContent = !isBm ? '🔖 Save'
+          : (row.telegram_message_id == null ? '🔖 Saving…' : '🔖 Saved');
       });
     }
 

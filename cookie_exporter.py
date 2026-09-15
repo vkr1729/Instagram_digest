@@ -64,6 +64,10 @@ def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
     if not padded:
         return ""
     pad_len = padded[-1]
+    if pad_len < 1 or pad_len > 16 or len(padded) < 32 + pad_len:
+        return ""
+    if padded[-pad_len:] != bytes([pad_len]) * pad_len:
+        return ""
     unpadded = padded[:-pad_len]
     # Linux Chrome prefixes the SHA256(host_key) to the plaintext.
     return unpadded[32:].decode("utf-8", errors="replace")
@@ -71,8 +75,19 @@ def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
 
 def _secure_write_text(path: Path, content: str) -> None:
     """Write a credential-bearing file readable only by its owner (0600)."""
-    path.write_text(content, encoding="utf-8")
-    os.chmod(path, 0o600)
+    # Create restricted from the first byte: no world-readable window.
+    data = content.encode("utf-8")
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    os.chmod(path, 0o600)  # harden pre-existing files with looser modes
 
 
 def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:

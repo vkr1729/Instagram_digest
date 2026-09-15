@@ -562,7 +562,9 @@
       listEl.innerHTML = filtered.map(c => {
         const h = esc(c.handle);
         const name = esc(c.name || '@' + c.handle);
-        const cat = esc(c.category || 'entertainment');
+        const catRaw = c.category || 'entertainment';
+        const cat = esc(catRaw);
+        const catCls = String(catRaw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
         const isChecked = selectedHandles.has(c.handle);
         const initial = esc((c.handle[0] || '?').toUpperCase());
         return `
@@ -572,7 +574,7 @@
             <div class="channel-info">
               <div class="channel-handle-row">
                 <a href="https://instagram.com/${encodeURIComponent(c.handle)}" target="_blank" rel="noopener" class="channel-handle">@${h}</a>
-                <span class="cat-pill ${cat}">${cat}</span>
+                <span class="cat-pill ${catCls}">${cat}</span>
               </div>
               <div class="channel-name">${name}</div>
             </div>

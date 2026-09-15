@@ -144,6 +144,9 @@ def rank_top_reels(
     # Group candidate reels by creator
     by_creator: dict[str, list[dict[str, Any]]] = {}
     for r in candidates:
+        if not isinstance(r, dict) or not r.get("creator_handle") or not r.get("id"):
+            logger.warning("Skipping malformed candidate: %r", r)
+            continue
         h = r["creator_handle"].lower().replace("@", "")
         by_creator.setdefault(h, []).append(r)
 
@@ -174,12 +177,20 @@ def rank_top_reels(
     used_ids: set[str] = set()
 
     # Step 1: Guaranteed Representation — Pick #1 top reel for each active creator
+    _first_picks: list[tuple[str, dict[str, Any]]] = []
     for handle, q in creator_queues.items():
         if q:
-            top_pick = q.pop(0)
-            selected.append(top_pick)
-            creator_counts[handle] += 1
-            used_ids.add(top_pick["id"])
+            _first_picks.append((handle, q.pop(0)))
+    # More creators than slots: keep the highest-score first-picks so the
+    # digest never exceeds top_n (guarantee is best-effort past capacity).
+    _first_picks.sort(key=lambda t: t[1]["viral_score"], reverse=True)
+    for handle, top_pick in _first_picks[:top_n]:
+        selected.append(top_pick)
+        creator_counts[handle] += 1
+        used_ids.add(top_pick["id"])
+    # Return unselected first-picks to their queues for the fill phase.
+    for handle, top_pick in _first_picks[top_n:]:
+        creator_queues[handle].insert(0, top_pick)
 
     logger.info("Guaranteed representation selected %d reels (1 per creator).", len(selected))
 

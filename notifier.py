@@ -368,7 +368,7 @@ def build_failure_alert_message(context: str, exit_code: int = 1) -> MIMEMultipa
     text_content = f"""INSTAGRAM DIGEST PIPELINE FAILURE
 ==================================
 
-Context: {html.escape(context)}
+Context: {context}
 Exit code: {exit_code}
 
 The run produced nothing new; the previous working digest was preserved.

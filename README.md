@@ -427,9 +427,9 @@ All settings can be customized in `.env` or passed as environment variables:
 ## 🔒 Privacy & Security Posture
 
 * **No Credentials Stored:** Account passwords are never requested or stored. The scraper reuses an existing Chrome session via cookie export.
-* **Client-Side PIN Gate:** Hashed with SHA-256 in memory; unauthenticated users cannot view video feeds or metadata.
+* **Client-Side PIN Gate:** Obfuscated with PBKDF2 (200k iterations) in memory; deters casual scrapers from viewing video feeds or metadata. It is not access control — treat the Pages URL as public.
 * **Cryptographic Device Isolation:** The Cloudflare Worker enforces Owner Key validation; read-only devices cannot alter bookmarks or trigger API pushes.
-* **Zero Analytics / Tracking:** No third-party ad networks, Google Analytics, or invasive trackers.
+* **Zero Analytics / Tracking:** No analytics SDKs, ad networks, or invasive trackers. (Google Fonts serves the typeface — the only third-party request.)
 
 ---
 

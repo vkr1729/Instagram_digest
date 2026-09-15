@@ -1,3 +1,36 @@
+# Changelog — Final Teardown Fixes (2026-09-15)
+
+Implements `FINAL_TEARDOWN_REVIEW_AND_FIXES.md` (post-hardening adversarial
+review): 4 P1 ship-blockers, 11 P2s, 40 P3s. New
+`tests/test_teardown_final.py` (54 tests) pins each fix; suite is
+266 passed with only the pre-existing Playwright sandbox failures.
+
+- P1: `--dry-run` returns before the site compile (live share pages /
+  thumbnails / `data.json` / archives untouched); playback-failure
+  affordance selector fixed to `.play-pause-indicator`; `topup_digest.py`
+  gains the C2 unplayable filter, F2 no-shrink/deploy gates, paced
+  enrichment (`ENRICH_PAUSE`), a sanitized delete glob, and the pipeline
+  file lock.
+- P2: bookmark outbox persists attempts and never timers while offline
+  (+ POST→DELETE coalescing); builder prefers persisted `r2_url` and
+  sanitizes derived names; archive pages get `../` asset refs + a
+  same-scope `sw.js` copy; `/api/sync-following` is single-flight;
+  yt-dlp TLS verification restored; feed fallback reuses the session;
+  expired-purge reports confirmed deletes only; credential files are
+  created 0600; ranker caps the fair-share guarantee at `top_n`; Telegram
+  archive retries once and the client paints "Saving…" while unarchived.
+- P3: bounded POST bodies, no wildcard CORS on mutating endpoints, 416s
+  carry `Content-Range`, `stat()` TOCTOU guards, fail-closed quota
+  sentinel, defensive env parsing, CDN size cap + HTML rejection,
+  PKCS#7 validation, atomic share/archive/manifest writes, deploy
+  timeouts, balanced modals, honest PIN/README docs, and small client
+  hardening (selector escaping, `switchWeek` validation, unobserve,
+  0.5s advance contract, batched pre-scan, SW image cap + fetch timeout,
+  Worker body/id/cron hardening).
+- Worker changes (`cloudflare/worker.js`) are committed but NOT deployed —
+  run `wrangler deploy` from `cloudflare/` and verify one bookmark stamps
+  `telegram_message_id`.
+
 # Changelog — Fable Hardening-Audit Fixes (2026-09-12)
 
 Addresses the post-hardening adversarial audit (`Fable Feedback/`): two P0s

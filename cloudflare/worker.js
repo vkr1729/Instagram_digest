@@ -59,7 +59,9 @@ async function authed(request, env) {
   const b = new Uint8Array(db);
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
+  const ok = diff === 0;
+  if (!ok) console.warn('bookmark API: presented owner key rejected');
+  return ok;
 }
 
 async function selectAll(env) {
@@ -214,6 +216,22 @@ async function archiveToTelegram(env, id, caption, sizeBytes) {
     if (msgId === null && sizeBytes <= MAX_VIDEO_BYTES) {
       msgId = await tgSendVideoMultipart(env, id, cap);
     }
+    if (msgId === null) {
+      // One delayed retry for transient Telegram/R2 blips. waitUntil allows
+      // ~30s; this costs 5s + one more attempt before giving up for good.
+      await new Promise((r) => setTimeout(r, 5000));
+      // Re-check the guard: the row may have been deleted/evicted meanwhile.
+      const still = await env.DB.prepare(
+        'SELECT telegram_message_id FROM bookmarks WHERE id = ?').bind(id).first();
+      if (still && still.telegram_message_id === null) {
+        if (sizeBytes <= TG_URL_FETCH_MAX) {
+          msgId = await tgSendVideoByUrl(env, `${env.R2_PUBLIC_BASE_URL}/bookmarks/${id}.mp4`, cap);
+        }
+        if (msgId === null && sizeBytes <= MAX_VIDEO_BYTES) {
+          msgId = await tgSendVideoMultipart(env, id, cap);
+        }
+      }
+    }
   } catch {
     msgId = null;
   }
@@ -221,8 +239,8 @@ async function archiveToTelegram(env, id, caption, sizeBytes) {
     await env.DB.prepare(
       'UPDATE bookmarks SET telegram_message_id = ? WHERE id = ? AND telegram_message_id IS NULL'
     ).bind(msgId, id).run();
-    await regenManifest(env);
   }
+  await regenManifest(env);
 }
 
 async function handlePost(request, env, ctx) {
@@ -230,7 +248,9 @@ async function handlePost(request, env, ctx) {
   if (declared > MAX_JSON_BODY) return json(request, env, { error: 'BODY_TOO_LARGE' }, 413);
   let body;
   try {
-    body = await request.json();
+    const buf = await request.arrayBuffer();
+    if (buf.byteLength > MAX_JSON_BODY) return json(request, env, { error: 'BODY_TOO_LARGE' }, 413);
+    body = JSON.parse(new TextDecoder().decode(buf));
   } catch {
     return json(request, env, { error: 'BAD_JSON' }, 400);
   }
@@ -264,6 +284,7 @@ async function handlePost(request, env, ctx) {
     return json(request, env, { error: 'UNTRUSTED_SOURCE' }, 400);
   }
   if (!SOURCE_KEY_RE.test(sourceKey)) return json(request, env, { error: 'UNTRUSTED_SOURCE' }, 400);
+  if (!sourceKey.endsWith(`_${id}.mp4`)) return json(request, env, { error: 'ID_SOURCE_MISMATCH' }, 400);
 
   const src = await env.MY_BUCKET.get(sourceKey);
   if (!src) return json(request, env, { error: 'SOURCE_PURGED' }, 404);
@@ -341,8 +362,11 @@ async function reconcileOrphans(env) {
     await env.MY_BUCKET.delete(orphans.slice(i, i + 1000)).catch(() => {});
   }
   const dead = [];
-  for (const id of live) {
-    if (!(await env.MY_BUCKET.head(`bookmarks/${id}.mp4`))) dead.push(id);
+  const ids = [...live];
+  for (let i = 0; i < ids.length; i += 20) {
+    const batch = ids.slice(i, i + 20);
+    const heads = await Promise.all(batch.map((id) => env.MY_BUCKET.head(`bookmarks/${id}.mp4`)));
+    heads.forEach((h, j) => { if (!h) dead.push(batch[j]); });
   }
   if (dead.length) {
     await env.DB.batch(dead.map((id) => env.DB.prepare('DELETE FROM bookmarks WHERE id = ?').bind(id)));

@@ -104,6 +104,12 @@ def human_pause(mu: float = 3.8, sigma: float = 1.1, floor: float = 1.5) -> floa
     return pause
 
 
+def _cookie_python() -> str:
+    """Interpreter for cookie_exporter.py: the system one carries dbus/cryptography."""
+    import sys
+    return "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+
+
 def get_cookie_args() -> list[str]:
     """Determine best available cookie argument: cookies.txt or browser cookies."""
     cookies_txt = config.ROOT_DIR / "cookies.txt"
@@ -242,7 +248,7 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
     if cookie_exporter_script.exists():
         try:
             logger.info("Running cookie_exporter to refresh Chrome Instagram session...")
-            subprocess.run(["/usr/bin/python3", str(cookie_exporter_script)], check=True, capture_output=True, timeout=15)
+            subprocess.run([_cookie_python(), str(cookie_exporter_script)], check=True, capture_output=True, timeout=15)
         except Exception as exc:
             logger.warning("Could not run cookie_exporter: %s", exc)
 
@@ -882,7 +888,6 @@ def extract_single_reel_metadata(
         "--referer", "https://www.instagram.com/",
         "--dump-single-json",
         "--no-warnings",
-        "--no-check-certificates",
         reel_url,
     ]
 
@@ -1033,10 +1038,19 @@ def download_reel_video(
                 logger.info("Downloading reel stream (attempt %d/%d): %s...", attempt, max_retries, reel_url)
                 with requests.get(cdn_target, headers=headers, stream=True, timeout=45) as r:
                     if r.status_code == 200:
-                        with open(temp_path, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=65536):
-                                if chunk:
-                                    f.write(chunk)
+                        _ct = (r.headers.get("Content-Type") or "").lower()
+                        if "text/html" in _ct:
+                            logger.warning("CDN returned HTML; skipping to yt-dlp fallback.")
+                            temp_path.unlink(missing_ok=True)
+                        else:
+                            _dl = 0
+                            with open(temp_path, "wb") as f:
+                                for chunk in r.iter_content(chunk_size=65536):
+                                    if chunk:
+                                        f.write(chunk)
+                                        _dl += len(chunk)
+                                        if _dl > 250 * 1024 * 1024:
+                                            raise ValueError("CDN download exceeded 250MB cap")
 
                         if temp_path.exists() and temp_path.stat().st_size > 50000:
                             temp_path.replace(output_path)
@@ -1263,7 +1277,7 @@ def extract_external_reels_from_feed(
 
             # If handle or metrics not fully parsed from DOM, enrich via yt-dlp fallback
             if not h or (likes == 0 and comments == 0):
-                meta = extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h})
+                meta = extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, session=session)
                 if meta:
                     h = clean_handle(meta.get("creator_handle")) or h
                     caption = caption or meta.get("caption", "")
@@ -1293,10 +1307,12 @@ def extract_external_reels_from_feed(
                             "creator_name": h,
                             "caption": caption[:300],
                             "view_count": estimated_views,
+                            "view_count_estimated": True,
                             "like_count": likes,
                             "comment_count": comments,
                             "duration": 30,
                             "timestamp": int(time.time()),
+                            "timestamp_estimated": True,
                             "category": cat,
                             "thumbnail": poster,
                             "video_cdn_url": video_cdn,

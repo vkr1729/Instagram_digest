@@ -745,6 +745,14 @@ def _run_full_sync(
                                     "Rate limit during feed discovery; sleeping %d min, then one retry...",
                                     FEED_RETRY_WAIT_MIN,
                                 )
+                                _write_sync_progress("cooling_down", {
+                                    "done": done_map, "candidates": candidates,
+                                    "shortlist": shortlist, "enriched": enriched,
+                                    "extraction_complete": True,
+                                    "total_sources": extraction_total,
+                                    "blocked_handle": "__feed__",
+                                    "resumes_in_min": FEED_RETRY_WAIT_MIN,
+                                })
                                 time.sleep(FEED_RETRY_WAIT_MIN * 60)
                     if feed_blocked is not None:
                         raise feed_blocked
@@ -794,16 +802,6 @@ def _run_full_sync(
     # 5. Media Download and R2 Upload (Multi-threaded B1, C4 closed browser session)
     uploaded_url_map: dict[str, str] = {}
     if not dry_run:
-        if not ranked_reels:
-            # E.g. every upload failed during an R2 outage: refuse to wipe the
-            # live digest with an empty batch (F2 non-deploy path).
-            logger.error(
-                "No playable reels (previous digest: %d, minimum %d); "
-                "refusing to overwrite the live digest.",
-                _digest_item_count(), MIN_DEPLOY_ITEMS,
-            )
-            _alert_sync_abort("digest save refused", "zero playable reels")
-            return 2
         week_videos_dir = config.VIDEOS_DIR / week_id
         week_videos_dir.mkdir(parents=True, exist_ok=True)
 
@@ -902,6 +900,11 @@ def _run_full_sync(
             if r.get("id") in uploaded_url_map:
                 r["r2_url"] = r["video_url"] = uploaded_url_map[r["id"]]
 
+        # 6. Save digest batch payload (only playable reels saved!).
+        # Saved BEFORE the deploy gate so a small-but-real first run persists
+        # locally even when Pages is (correctly) left untouched.
+        ranker.save_digest_batch(ranked_reels, run_date=week_id)
+
         if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
             logger.error(
                 "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
@@ -912,9 +915,6 @@ def _run_full_sync(
                 f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS})",
             )
             return 2
-
-        # 6. Save digest batch payload (only playable reels saved!)
-        ranker.save_digest_batch(ranked_reels, run_date=week_id)
 
         # Staged work is now in the digest: clear BOTH the current-week file and
         # the older-day file this run resumed from. Leaving the latter behind made
@@ -938,6 +938,14 @@ def _run_full_sync(
             "Dry-run complete: %d reels ranked; live digest left untouched.",
             len(ranked_reels),
         )
+
+    if dry_run:
+        # Dry-run contract: zero mutations. build_site() prunes share pages /
+        # thumbnails outside the passed set and rewrites data.json + archives,
+        # so compiling here would destroy live assets for a mere preview.
+        logger.info("Dry-run: skipping site compile; live site left untouched.")
+        logger.info("Sync completed successfully! (dry-run, no artifacts written)")
+        return 0
 
     # 8. Compile Variant 1A Static Viewer Site
     r2_index, local_index = site_builder.build_site(
@@ -1408,12 +1416,14 @@ def main() -> int:
     parser.add_argument("--build-only", action="store_true", help="Compile static site using existing digest data")
     parser.add_argument("--deploy", action="store_true", help="Deploy compiled site to GitHub Pages")
     parser.add_argument("--dry-run", action="store_true", help="Simulate pipeline without downloading or uploading videos")
-    parser.add_argument("--limit-per-creator", type=int, default=15, help="Max candidate reels per creator (default: 15)")
+    parser.add_argument("--limit-per-creator", type=int, default=15, help="Max candidate reels per creator (default: 15; discovery visits at most 5/creator, 6 for food)")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     args = parser.parse_args()
 
     # Expand mode
-    if args.expand > 0:
+    if args.expand != 0:
+        if args.expand < 0:
+            parser.error("--expand requires a positive reel count")
         return run_expand(target_count=args.expand, deploy=args.deploy)
 
     # Serve mode

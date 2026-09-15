@@ -41,6 +41,12 @@ _SYNC_STATE: dict[str, Any] = {
 }
 
 
+def _cookie_python() -> str:
+    """Interpreter for cookie_exporter.py: the system one carries dbus/cryptography."""
+    import sys
+    return "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+
+
 def _pipeline_busy() -> bool:
     """True when either pipeline holds the shared digest-mutating lock."""
     if _PIPELINE_LOCK.locked():
@@ -92,7 +98,7 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
             if cookie_exp.exists():
                 try:
                     import subprocess
-                    subprocess.run(["/usr/bin/python3", str(cookie_exp)], capture_output=True, text=True, timeout=25)
+                    subprocess.run([_cookie_python(), str(cookie_exp)], capture_output=True, text=True, timeout=25)
                 except Exception as c_err:
                     logger.warning("Failed refreshing cookies before sync: %s", c_err)
 
@@ -152,6 +158,27 @@ _EXPAND_STATE: dict[str, Any] = {
     "last_error": None,
 }
 
+_FOLLOWING_LOCK = threading.Lock()
+_FOLLOWING_RUNNING = False
+
+_MAX_JSON_BODY = 4 * 1024 * 1024  # watched/bulk payloads are KBs; 4MB is generous
+
+
+def _read_json_body(handler) -> dict:
+    """Read a bounded JSON POST body: garbage Content-Length → {}, oversize → ValueError."""
+    try:
+        content_len = int(handler.headers.get("Content-Length", 0))
+    except (TypeError, ValueError):
+        content_len = 0
+    if content_len <= 0:
+        return {}
+    if content_len > _MAX_JSON_BODY:
+        raise ValueError(f"body too large: {content_len}")
+    try:
+        return json.loads(handler.rfile.read(content_len).decode("utf-8"))
+    except Exception:
+        return {}
+
 
 def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]:
     """Launch a background thread expanding the active digest by N external reels."""
@@ -189,7 +216,7 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
             if cookie_exp.exists():
                 try:
                     import subprocess
-                    subprocess.run(["/usr/bin/python3", str(cookie_exp)], capture_output=True, text=True, timeout=25)
+                    subprocess.run([_cookie_python(), str(cookie_exp)], capture_output=True, text=True, timeout=25)
                 except Exception as c_err:
                     logger.warning("Failed refreshing cookies before expand: %s", c_err)
 
@@ -227,8 +254,8 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
 def refresh_cookies_status() -> dict[str, Any]:
     """Refresh Instagram cookies from Chrome and report freshness signals.
 
-    Runs cookie_exporter.py under /usr/bin/python3 (system interpreter, which
-    carries dbus/cryptography — the venv does not), exactly like the expand
+    Runs cookie_exporter.py under the system interpreter (which carries
+    dbus/cryptography — the venv does not), exactly like the expand
     worker and run_weekly.sh, then reads back data/cookies.json. The expand
     and retrigger pipelines already auto-refresh before running; this helper
     backs the manual dashboard button so the owner can confirm a healthy
@@ -241,7 +268,7 @@ def refresh_cookies_status() -> dict[str, Any]:
         return {"success": False, "error": "cookie_exporter.py not found."}
     try:
         proc = subprocess.run(
-            ["/usr/bin/python3", str(cookie_exp)],
+            [_cookie_python(), str(cookie_exp)],
             capture_output=True, text=True, timeout=25,
         )
     except Exception as exc:
@@ -627,9 +654,14 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         clean_path = parsed.path
 
         def _head(path: Path, content_type: str, extra: dict[str, str] | None = None) -> None:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Content-Length", str(size))
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -1043,7 +1075,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1061,7 +1092,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1075,7 +1105,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1084,11 +1113,29 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/sync-following":
             logger.info("On-demand following sync triggered via dashboard API.")
 
+            global _FOLLOWING_RUNNING
+            with _FOLLOWING_LOCK:
+                if _FOLLOWING_RUNNING:
+                    resp = {"success": True, "status": "already_running",
+                            "message": "Following sync is already running."}
+                    body = json.dumps(resp).encode("utf-8")
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                _FOLLOWING_RUNNING = True
+
             def _run_following_sync():
+                global _FOLLOWING_RUNNING
                 try:
                     extractor.sync_following_accounts(force=True)
                 except Exception as exc:
                     logger.exception("Following sync worker error: %s", exc)
+                finally:
+                    with _FOLLOWING_LOCK:
+                        _FOLLOWING_RUNNING = False
 
             threading.Thread(target=_run_following_sync, daemon=True).start()
             resp = {"success": True, "message": "Following sync started in background."}
@@ -1102,12 +1149,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/watched":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
             try:
-                payload = json.loads(post_body.decode("utf-8"))
-            except Exception:
-                payload = {}
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
 
             week_id = payload.get("week_id", "default")
             action = payload.get("action", "add")
@@ -1137,12 +1183,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/watched/bulk":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
             try:
-                payload = json.loads(post_body.decode("utf-8"))
-            except Exception:
-                payload = {}
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
 
             week_id = payload.get("week_id", "default")
             watched_ids = payload.get("watched_ids", [])
@@ -1171,12 +1216,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/blacklist":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
             try:
-                payload = json.loads(post_body.decode("utf-8"))
-            except Exception:
-                payload = {}
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
 
             handle = payload.get("creator_handle", "").strip().lower().replace("@", "")
             action = payload.get("action", "add")
@@ -1217,12 +1261,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/api/channels/bulk-unselect":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
             try:
-                payload = json.loads(post_body.decode("utf-8"))
-            except Exception:
-                payload = {}
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
 
             handles_in = payload.get("creator_handles", [])
             action = payload.get("action", "add")  # "add" to mute, "remove" to restore
@@ -1278,18 +1321,16 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path in ("/api/resume/discard", "/api/resume/discard/"):
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
             try:
-                payload = json.loads(post_body.decode("utf-8"))
-            except Exception:
-                payload = {}
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
             file_name = payload.get("file", payload.get("file_name", ""))
             resp = discard_pending_job(file_name)
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1303,7 +1344,6 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1313,7 +1353,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
     def serve_video_file(self, video_path: Path):
         """Serve video supporting HTTP 206 Partial Content Range requests for video seeking."""
-        file_size = video_path.stat().st_size
+        try:
+            file_size = video_path.stat().st_size
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "File Not Found")
+            return
         range_header = self.headers.get("Range")
 
         if not range_header:
@@ -1334,7 +1378,10 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         # Partial range request (e.g. bytes=0-1024)
         bytes_prefix = "bytes="
         if not range_header.startswith(bytes_prefix):
-            self.send_error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{file_size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
 
         range_str = range_header[len(bytes_prefix):].strip()

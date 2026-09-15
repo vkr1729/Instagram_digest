@@ -480,6 +480,15 @@ def test_b2_batched_r2_purge(monkeypatch):
         }
     ]
     mock_s3.get_paginator.return_value = mock_paginator
+    # Quiet: False means R2 reports per-key results; the mock must answer
+    # in that shape (Deleted-only accounting — failed deletes are NOT purged).
+    mock_s3.delete_objects.return_value = {
+        "Deleted": [
+            {"Key": "videos/2025-01-01/01_test.mp4"},
+            {"Key": "videos/2025-01-01/02_test.mp4"},
+        ],
+        "Errors": [],
+    }
     monkeypatch.setattr(storage_r2, "get_s3_client", lambda: mock_s3)
     monkeypatch.setattr(config, "R2_BUCKET_NAME", "test_bucket")
 
@@ -493,7 +502,7 @@ def test_b2_batched_r2_purge(monkeypatch):
                 {"Key": "videos/2025-01-01/01_test.mp4"},
                 {"Key": "videos/2025-01-01/02_test.mp4"}
             ],
-            "Quiet": True
+            "Quiet": False
         }
     )
 

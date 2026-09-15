@@ -130,6 +130,12 @@ self.addEventListener('fetch', (event) => {
           const networkResponse = await fetch(event.request);
           if (networkResponse && (networkResponse.ok || networkResponse.type === 'opaque')) {
             cache.put(event.request, networkResponse.clone());
+            event.waitUntil((async () => {
+              const keys = await cache.keys();
+              if (keys.length > 400) {
+                await Promise.all(keys.slice(0, keys.length - 400).map((k) => cache.delete(k)));
+              }
+            })());
           }
           return networkResponse;
         } catch (err) {
@@ -194,10 +200,14 @@ function cacheOne(cache, rawUrl) {
   if (inflight.has(cleanUrl)) return inflight.get(cleanUrl);
   const p = (async () => {
     if (await cache.match(cleanUrl)) return true;
-    const res = await fetch(rawUrl, { mode: 'cors' });
-    if (!res.ok) return false;
-    await storeResponse(cache, cleanUrl, res);
-    return true;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 30000);
+    try {
+      const res = await fetch(rawUrl, { mode: 'cors', signal: ctl.signal });
+      if (!res.ok) return false;
+      await storeResponse(cache, cleanUrl, res);
+      return true;
+    } finally { clearTimeout(timer); }
   })().catch(() => false).finally(() => inflight.delete(cleanUrl));
   inflight.set(cleanUrl, p);
   return p;

@@ -26,6 +26,13 @@ logger = logging.getLogger("InstagramDigest.SiteBuilder")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
+def _safe_component(value, fallback):
+    """Mirror of main._safe_component (kept local: main imports this module)."""
+    import re as _re
+    s = _re.sub(r"[^A-Za-z0-9._-]", "", str(value or "")).strip(".")
+    return s or fallback
+
+
 def _prune_site_assets(current_ids: set[str], keep_week_ids: set[str]) -> None:
     """Prune stale share pages, thumbnails, and archives no longer in current retention window."""
     share_dir = config.SITE_DIR / "share"
@@ -66,7 +73,8 @@ def build_site(
         else:
             digest_data = {"run_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "items": []}
 
-    raw_items = digest_data.get("items", [])
+    # Work on copies: annotating items with URLs must never mutate the caller's digest.
+    raw_items = [dict(i) for i in digest_data.get("items", [])]
     week_id = digest_data.get("run_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
     env = Environment(
@@ -87,8 +95,15 @@ def build_site(
         local_item = dict(item)
 
         # Video URL resolution
-        video_filename = f"{item.get('rank', 1):02d}_{item.get('creator_handle')}_{item.get('id')}.mp4"
-        r2_url = url_map.get(item.get("id")) or f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{video_filename}"
+        video_filename = (
+            f"{item.get('rank', 1):02d}_"
+            f"{_safe_component(item.get('creator_handle'), 'creator')}_"
+            f"{_safe_component(item.get('id'), 'reel')}.mp4"
+        )
+        # Prefer the persisted object URL (written at upload time); the derived
+        # name is a last resort for legacy digests that predate it.
+        r2_url = url_map.get(item.get("id")) or item.get("r2_url") or (
+            f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{video_filename}")
         local_url = f"/videos/{week_id}/{video_filename}"
 
         r2_item["video_url"] = r2_url
@@ -162,8 +177,9 @@ def build_site(
         # Render to temp names (ffmpeg needs the .jpg extension to pick the
         # encoder), then publish atomically: a timeout can never leave a
         # truncated JPEG that later runs treat as "already generated".
-        tmp_thumb = thumb_dir / f".tmp-{reel_id}.jpg"
-        tmp_portrait = thumb_dir / f".tmp-{reel_id}_portrait.jpg"
+        _safe_id = _safe_component(reel_id, "reel")
+        tmp_thumb = thumb_dir / f".tmp-{_safe_id}.jpg"
+        tmp_portrait = thumb_dir / f".tmp-{_safe_id}_portrait.jpg"
         try:
             subprocess.run(
                 [
@@ -183,8 +199,8 @@ def build_site(
             if tmp_thumb.stat().st_size > 0 and tmp_portrait.stat().st_size > 0:
                 os.replace(tmp_thumb, thumb_file)
                 os.replace(tmp_portrait, portrait_file)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Thumbnail generation failed for %s: %s", reel_id, exc)
         finally:
             for t in (tmp_thumb, tmp_portrait):
                 t.unlink(missing_ok=True)
@@ -284,7 +300,7 @@ def build_site(
         available_weeks=weeks_local,
         is_local=True,
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
-        pages_base_url="http://localhost:8080",
+        pages_base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:8080"),
         pin_hash=pin_hash, pin_salt=pin_salt, pin_iterations=PIN_PBKDF2_ITERATIONS,
         bookmark_api_base=config.BOOKMARK_API_BASE,
         r2_public_domain="",
@@ -357,11 +373,22 @@ def build_site(
   </div>
 </body>
 </html>"""
-        (share_dir / f"{reel_id}.html").write_text(share_page_content, encoding="utf-8")
+        atomic_io.durable_write_text(share_dir / f"{reel_id}.html", share_page_content)
 
     # 4. Also render as archive copies
-    (archive_dir / f"{week_id}.html").write_text(rendered_r2, encoding="utf-8")
-    (archive_dir / f"local_{week_id}.html").write_text(rendered_local, encoding="utf-8")
+    # Archive pages live one directory deeper: rewrite same-origin asset refs
+    # to ../ or the SW/manifest/icons 404 (P2-3). Videos/thumbnails/share links
+    # are absolute and unaffected.
+    _ARCHIVE_REWRITES = (
+        ('"./sw.js', '"../sw.js'),
+        ('"manifest.webmanifest"', '"../manifest.webmanifest"'),
+        ('"apple-touch-icon.png"', '"../apple-touch-icon.png"'),
+    )
+    for _name, _html in ((f"{week_id}.html", rendered_r2),
+                         (f"local_{week_id}.html", rendered_local)):
+        for _old, _new in _ARCHIVE_REWRITES:
+            _html = _html.replace(_old, _new)
+        atomic_io.durable_write_text(archive_dir / _name, _html)
 
     # 4. Write data.json API payload (pruned to playable reels when a URL map was provided)
     data_payload = dict(digest_data)
@@ -369,10 +396,12 @@ def build_site(
     if r2_uploaded_urls is not None:
         data_payload["items"] = [i for i in raw_items if i.get("id") in current_ids]
         data_payload["count"] = len(data_payload["items"])
+    else:
+        data_payload["items"] = raw_items
     atomic_io.durable_write_json(config.SITE_DIR / "data.json", data_payload)
 
     # 5. Write .nojekyll for GitHub Pages
-    (config.SITE_DIR / ".nojekyll").write_text("", encoding="utf-8")
+    atomic_io.durable_write_text(config.SITE_DIR / ".nojekyll", "")
 
     # 6. Copy PWA and Apple Touch Icon assets
     assets_dir = config.ROOT_DIR / "assets"
@@ -409,14 +438,18 @@ def build_site(
             }
         ]
     }
-    (config.SITE_DIR / "manifest.webmanifest").write_text(
-        json.dumps(manifest_data, indent=2), encoding="utf-8"
-    )
+    atomic_io.durable_write_json(config.SITE_DIR / "manifest.webmanifest", manifest_data)
 
     # 8. Copy Service Worker
     sw_src = config.TEMPLATES_DIR / "sw.js"
     if sw_src.exists():
-        shutil.copy2(sw_src, config.SITE_DIR / "sw.js")
+        for _dest in (config.SITE_DIR / "sw.js", archive_dir / "sw.js"):
+            # Atomic publish (temp + replace); the archive copy gives Prev-week
+            # pages a same-scope worker (P2-3). CacheStorage is per-origin so
+            # caches stay shared.
+            _tmp = _dest.with_name(f"{_dest.name}.tmp-{os.getpid()}")
+            shutil.copy2(sw_src, _tmp)
+            os.replace(_tmp, _dest)
 
     logger.info("Successfully compiled static site at %s and %s (%d available weeks)",
                 r2_index_path, local_index_path, len(sorted_weeks))
@@ -436,21 +469,21 @@ def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.
         if temp_git_dir.exists():
             shutil.rmtree(temp_git_dir, ignore_errors=True)
 
-        subprocess.run(["git", "init"], cwd=site_dir, check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(["git", "config", "user.name", "InstagramDigest Bot"], cwd=site_dir, check=True)
-        subprocess.run(["git", "config", "user.email", "digest@bot.local"], cwd=site_dir, check=True)
-        subprocess.run(["git", "checkout", "-b", "gh-pages"], cwd=site_dir, check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(["git", "add", "."], cwd=site_dir, check=True)
+        subprocess.run(["git", "init"], cwd=site_dir, check=True, stdout=subprocess.DEVNULL, timeout=300)
+        subprocess.run(["git", "config", "user.name", "InstagramDigest Bot"], cwd=site_dir, check=True, timeout=300)
+        subprocess.run(["git", "config", "user.email", "digest@bot.local"], cwd=site_dir, check=True, timeout=300)
+        subprocess.run(["git", "checkout", "-b", "gh-pages"], cwd=site_dir, check=True, stdout=subprocess.DEVNULL, timeout=300)
+        subprocess.run(["git", "add", "."], cwd=site_dir, check=True, timeout=300)
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         subprocess.run(
             ["git", "commit", "-m", f"Instagram Digest sync: {now_str}"],
-            cwd=site_dir, check=True, stdout=subprocess.DEVNULL
+            cwd=site_dir, check=True, stdout=subprocess.DEVNULL, timeout=300
         )
-        subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=site_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=site_dir, check=True, timeout=300)
 
         logger.info("Pushing to origin gh-pages (force)...")
-        res = subprocess.run(["git", "push", "-f", "origin", "gh-pages"], cwd=site_dir, capture_output=True, text=True)
+        res = subprocess.run(["git", "push", "-f", "origin", "gh-pages"], cwd=site_dir, capture_output=True, text=True, timeout=300)
         if res.returncode == 0:
             logger.info("Successfully deployed to GitHub Pages! Live at https://vkr1729.github.io/Instagram_digest/")
             return True

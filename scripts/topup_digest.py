@@ -44,6 +44,15 @@ logger = logging.getLogger("InstagramDigest.TopUp")
 
 
 def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", deploy: bool = True) -> int:
+    try:
+        with main._pipeline_file_lock():
+            return _topup_digest(watched_count, new_week_id, deploy)
+    except main.PipelineBusy as exc:
+        logger.error("%s; refusing to start.", exc)
+        return 3
+
+
+def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", deploy: bool = True) -> int:
     # 1. Load active digest
     if not config.DIGEST_BATCH_FILE.exists():
         logger.error("Active digest %s does not exist.", config.DIGEST_BATCH_FILE)
@@ -68,7 +77,7 @@ def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", depl
     deleted_local = 0
     if old_video_dir.exists():
         for item in watched_items:
-            rid = item.get("id")
+            rid = main._safe_component(item.get("id"), "")
             if not rid:
                 continue
             for match in old_video_dir.glob(f"*_{rid}.mp4"):
@@ -159,6 +168,10 @@ def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", depl
             filename = f"{new_rank:02d}_{clean_handle}_{rid}.mp4"
             dest_path = new_video_dir / filename
 
+            # Same anti-automation pacing as the weekly pipeline: never hammer
+            # reel pages back-to-back from the owner's session.
+            mu, sigma, floor = main.ENRICH_PAUSE
+            extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
             # Enrich metadata
             try:
                 meta = extractor.extract_single_reel_metadata(r, session=session)
@@ -218,6 +231,7 @@ def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", depl
         )
         return (reel["id"], public_url, reel)
 
+    uploaded_url_map: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(_upload_item, r) for r in all_300]
         uploaded_count = 0
@@ -227,11 +241,26 @@ def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", depl
                 if pub_url:
                     reel_obj["r2_url"] = pub_url
                     reel_obj["video_url"] = pub_url
+                    uploaded_url_map[rid] = pub_url
                     uploaded_count += 1
             except Exception as exc:
                 logger.warning("Upload error: %s", exc)
 
     logger.info("R2 sync complete: %d/%d reels active.", uploaded_count, len(all_300))
+
+    # C2: drop unplayables (mirror main.py) — never render a card we cannot play.
+    dropped = [r["id"] for r in all_300 if r.get("id") not in uploaded_url_map]
+    if dropped:
+        logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(str(d) for d in dropped[:10]))
+        all_300 = [r for r in all_300 if r.get("id") in uploaded_url_map]
+
+    # F2: never shrink the live digest.
+    prev_count = len(existing_items)
+    if not all_300 or (prev_count >= main.MIN_DEPLOY_ITEMS
+                       and len(all_300) < main.MIN_DEPLOY_ITEMS):
+        logger.error("Only %d playable reels (previous %d, minimum %d); refusing to overwrite.",
+                     len(all_300), prev_count, main.MIN_DEPLOY_ITEMS)
+        return 2
 
     # 9. Save updated digest batch
     ranker.save_digest_batch(all_300, run_date=new_week_id)
@@ -243,9 +272,16 @@ def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", depl
 
     # 11. Build and deploy static PWA
     logger.info("Compiling static site for week %s...", new_week_id)
-    site_builder.build_site()
+    site_builder.build_site(
+        digest_data={"run_date": new_week_id, "items": all_300},
+        r2_uploaded_urls=uploaded_url_map,
+    )
 
     if deploy:
+        if len(all_300) < main.MIN_DEPLOY_ITEMS:
+            logger.error("Only %d reels (minimum %d); refusing to deploy.",
+                         len(all_300), main.MIN_DEPLOY_ITEMS)
+            return 2
         logger.info("Deploying updated site to GitHub Pages...")
         site_builder.deploy_to_gh_pages()
         logger.info("Successfully deployed to GitHub Pages!")
