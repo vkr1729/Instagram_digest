@@ -35,6 +35,11 @@
     // by the card click handler; timestamped so a stale stamp can never eat a
     // later, unrelated pause tap.
     let gestureUnmuteAt = 0;
+    // First-tap play guard: the bootstrap below runs on touchstart, before the
+    // click handler captures tap intent. Without this stamp, a first tap on a
+    // paused video would capture "was playing" and the timer would pause the
+    // video the same gesture just started.
+    let gesturePlayAt = 0;
     let autoAdvanceTimeout = null;
     let isScrollingTransition = false;
     let currentActiveCard = null;
@@ -660,6 +665,7 @@
         const v = currentActiveCard.querySelector('.reel-video');
         if (v) {
           if (v.muted) gestureUnmuteAt = performance.now();
+          if (v.paused) gesturePlayAt = performance.now();
           v.muted = false;
           v.play().catch(() => {});
         }
@@ -1442,6 +1448,8 @@
         // here (not in the timer) so only this gesture's toggle is suppressed.
         const tapUnmutedAt = gestureUnmuteAt;
         gestureUnmuteAt = 0;
+        const tapPlayedAt = gesturePlayAt;
+        gesturePlayAt = 0;
         // Hold-2x release clicks are swallowed here, but the flag is LEFT SET:
         // the card handler fires before the bubbled feed handler, which must
         // still see it to consume the tap — clearing here seeded phantom
@@ -1457,6 +1465,13 @@
           pendingSingleTapTimer = null;
         }
         const clickX = e.clientX;
+        // Tap-intent capture: the debounce races autoplay — a tap committed
+        // while paused must not pause a video that started during the wait
+        // (field traces: ev-play -> ev-pause ~320ms at t~0, then the
+        // manual-pause cooldown wedges it until the next tap). A fresh
+        // bootstrap stamp means this same gesture already started it.
+        const pausedAtTap = Boolean(video.paused ||
+          (tapPlayedAt && performance.now() - tapPlayedAt < 500));
         pendingSingleTapTimer = setTimeout(() => {
           pendingSingleTapTimer = null;
           if (card !== currentActiveCard) return;
@@ -1471,15 +1486,24 @@
           // paused video still resumes (never a dead tap). The 1500ms bound
           // keeps a stale capture from eating an unrelated later pause.
           if (tapUnmutedAt && performance.now() - tapUnmutedAt < 1500 && !video.paused) {
+            mtrace(`tap-unmute-keep idx=${card.dataset.index}`);
+            return;
+          }
+          // Intent already satisfied: play state flipped during the debounce
+          // (autoplay won the race, or the video ended/was driven elsewhere).
+          if (video.paused !== pausedAtTap) {
+            mtrace(`tap-noop idx=${card.dataset.index} wasPaused=${pausedAtTap}`);
             return;
           }
           if (video.paused) {
+            mtrace(`tap-play idx=${card.dataset.index}`);
             manualPause = { card: null, at: 0 };
             playCardVideo(card, true);
             playIcon.textContent = '▶';
             playIcon.classList.add('visible');
             setTimeout(() => playIcon.classList.remove('visible'), 400);
           } else {
+            mtrace(`tap-pause idx=${card.dataset.index}`);
             video.pause();
             manualPause = { card, at: performance.now() };
             syncImmersive();

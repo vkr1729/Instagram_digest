@@ -1,3 +1,17 @@
+# Changelog — Tap-intent race fix (2026-09-15)
+
+- Fixed: tap committed on a paused/loading video paused it the instant
+  autoplay won the 320ms debounce (field traces Sep 12 + Sep 15:
+  ev-play -> ev-pause ~320ms at t~0; the manual-pause cooldown then
+  wedged it until the next tap). The click handler now captures
+  `video.paused` synchronously plus a first-tap bootstrap play-stamp,
+  and the timer no-ops when the state flipped mid-debounce. Tap
+  decisions are now traced (`tap-play`/`tap-pause`/`tap-noop`/
+  `tap-unmute-keep`) — taps were invisible in `?mediadebug=1` before.
+  New `tests/test_tap_intent_race.py` (4 static + 3 behavioral; all 7
+  fail pre-fix). Slow first-byte on cold cache (8.5s in trace) is
+  delivery latency, not logic; MP4s verified faststart.
+
 # Changelog — PWA resume-after-unlock fix (2026-09-15)
 
 - Fixed: PWA always opened at reel #1 instead of the last-active reel.
