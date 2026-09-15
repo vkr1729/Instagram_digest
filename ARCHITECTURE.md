@@ -4,6 +4,8 @@
 > revisions. Where this document and code disagree, the code wins; where it
 > and `CHANGELOG.md` disagree on history, the changelog wins.
 > Review baseline: pre-fix adversarial score F/39 → post-fix B+/87.
+> Release 5.0.0 (2026-09-15): final teardown implemented — 4 P1, 11 P2,
+> 40 P3 fixed and pinned by `tests/test_teardown_final.py`; see CHANGELOG.
 
 ## 1. What the system is
 
@@ -34,7 +36,8 @@ Stage contracts:
    reuses the user's Chrome session. Emits candidate reels with
    best-effort metadata.
 2. **Rank** (`ranker.py`). Pure function of candidates + sources. Bayesian-
-   damped viral score, fair-share caps (max 4/creator), category quotas,
+   damped viral score, fair-share caps (max 4/creator), one-sided category
+   ceiling (no fixed quotas), guaranteed representation capped at `top_n`,
    deterministic shuffle. Assigns final ranks.
 3. **Materialize** (`main.py` + `storage_r2.py`). Downloads, uploads,
    drops unplayables. The digest file is written only after filtering, so
@@ -82,8 +85,10 @@ remains the backstop that aborts a run before it touches the digest.
 ### 3.4 Durability (post-fix)
 
 Choice: `atomic_io.durable_write_json` (temp + flush + fsync + replace +
-dir-fsync) for all state; one `_PIPELINE_LOCK` across sync/expand;
-corrupt files quarantined, never silently reset; R2 key-set access locked.
+dir-fsync) for all state; one `_PIPELINE_LOCK` across sync/expand (the
+top-up script joins the same file lock); corrupt files quarantined, never
+silently reset; R2 key-set access locked. Share pages, archives, and the
+manifest also write atomically; credential files are created 0600.
 
 Rationale: the two worst pre-fix failure modes were torn digests and a
 pruner that treated them as truth. Durability is now structural, not
@@ -117,8 +122,11 @@ ranges — including suffix ranges and real `416 + bytes */size`.
 
 Rationale: WebKit rejects 200s for media and stalls on clamped 1-byte
 206s. The range matrix is executed against the shipped file in Node, so
-regressions fail loudly. Known limit: full-blob materialization per seek;
-no physical-iOS observation yet.
+regressions fail loudly. Known limit: full-blob materialization per seek.
+Field-verified on iPhone since: Low-Power-Mode play rejects paint a tap
+affordance that resumes through the manual path. Archive (Prev-week)
+pages carry a same-scope `sw.js` copy with parent-relative refs, so
+offline + range slicing work on every week, not just the current one.
 
 ### 3.8 Rendering performance (post-fix)
 
@@ -141,11 +149,17 @@ complexity risk.
   (threading lock); cron / resume / CLI processes are excluded by the
   `data/.pipeline.lock` flock (second process exits 3 and alerts).
 - Deploy threshold: refuses to publish under 60% of target playable items.
+- `--dry-run` performs zero mutations (returns before the site compile,
+  so live share pages / thumbnails / `data.json` are untouched).
+- Following-sync is single-flight like sync/expand (second caller gets
+  `already_running` instead of spawning a duplicate crawl).
 
 ## 5. Verification (what "done" meant)
 
-- 84 non-browser tests green; 16 Playwright tests green on maintainer
-  hardware (sandbox kills browser processes with SIGTRAP — see CHANGELOG).
+- 266 non-browser tests green (incl. 54 final-teardown regression tests
+  in `tests/test_teardown_final.py`); 16 Playwright tests green on
+  maintainer hardware (sandbox kills browser processes with SIGTRAP —
+  see CHANGELOG).
 - SW range logic executed in Node (12-case matrix), not just read.
 - Rendered bundle inspected: fix markers present, inline scripts pass
   `node --check`.

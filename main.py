@@ -1,5 +1,5 @@
 """
-main.py — Main CLI orchestrator for Instagram Digest v1.0.
+main.py — Main CLI orchestrator for Instagram Digest v5.0.0.
 """
 
 from __future__ import annotations
@@ -1406,7 +1406,7 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Instagram Digest v1.0 — Weekly High-Signal Reel Curator")
+    parser = argparse.ArgumentParser(description=f"Instagram Digest v{config.APP_VERSION} — Weekly High-Signal Reel Curator")
     parser.add_argument("--sync", action="store_true", help="Run full weekly extraction, ranking, and sync")
     parser.add_argument("--ad-hoc", action="store_true", help="Run ad-hoc midweek sync picking reels between now and the last run timestamp")
     parser.add_argument("--expand", type=int, default=0, help="Expand active digest with N new external reels from Reels feed")

@@ -415,6 +415,7 @@ def build_site(
         "name": "Instagram Digest",
         "short_name": "Digest",
         "description": "Weekly curated Instagram Reels digest",
+        "version": config.APP_VERSION,
         "start_url": "./",
         "display": "standalone",
         "display_override": ["fullscreen", "standalone"],

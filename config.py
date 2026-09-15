@@ -1,11 +1,13 @@
 """
-config.py — Central configuration and paths for Instagram Digest v1.0.
+config.py — Central configuration and paths for Instagram Digest v5.0.0.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
+APP_VERSION = "5.0.0"  # Single source of truth for the release version.
 
 # Base paths
 ROOT_DIR = Path(__file__).resolve().parent

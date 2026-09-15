@@ -1,3 +1,20 @@
+# Changelog — Release 5.0.0 (2026-09-15)
+
+- Release version established: `config.APP_VERSION = "5.0.0"` (single
+  source of truth), surfaced in the PWA manifest, README badge, and
+  `PROJECT.md` title. `ARCHITECTURE.md` updated for the teardown release
+  (rank ceiling, atomic share/archive/manifest, 0600 credential creates,
+  archive SW scope, dry-run zero-mutation, single-flight following sync,
+  266-test suite).
+- Docs cleanup: removed 11 stale handover prompts, review briefs, and
+  fix-plan MDs (FRONTIER_*, HANDOFF_*, REVIEW_*, INSTAGRAM_DIGEST_REVIEW_*,
+  FINAL_TEARDOWN_*, FINAL_FRONTIER_*, MUSE_SPARK_HANDOFF). Root docs are
+  now README / PROJECT / ARCHITECTURE / CHANGELOG / UAT_PLAN; the
+  `Fable Feedback/` audit and `docs/superpowers/` design history stay.
+- Worker `cloudflare/worker.js` (Telegram retry, bounded POST bodies,
+  id↔source binding, parallel cron heads) deployed to production;
+  liveness verified (403 shape + CORS preflight + R2 manifest serving).
+
 # Changelog — Final Teardown Fixes (2026-09-15)
 
 Implements `FINAL_TEARDOWN_REVIEW_AND_FIXES.md` (post-hardening adversarial

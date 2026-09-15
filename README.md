@@ -6,6 +6,7 @@
 ---
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)](#instagram-digest)
 [![Zero Cost](https://img.shields.io/badge/Hosting_Cost-$0.00_Forever-success.svg)](#the-000-forever-zero-cost-architecture)
 [![Progressive Web App](https://img.shields.io/badge/PWA-iOS_%26_Android-purple.svg)](#pwa-installation-guide)
 [![Cloudflare R2](https://img.shields.io/badge/Storage-Cloudflare_R2_(0_Egress)-orange.svg)](#4-zero-egress-cloudflare-r2-media-delivery)

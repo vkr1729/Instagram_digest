@@ -1,4 +1,4 @@
-# Instagram Digest v1.0 — High-Signal Top 300 Reel Viewer & Rolling Retention
+# Instagram Digest v5.0.0 — High-Signal Top 300 Reel Viewer & Rolling Retention
 
 ## Outcome
 Curate a high-signal, finite weekly batch of the Top 300 Instagram reels across followed creators into a clean, mobile-first web viewer deployed to GitHub Pages and streamed via Cloudflare R2 (with an identical zero-bandwidth local desktop dashboard). Replaces Instagram's algorithmic addiction with a structured, high-efficiency media briefing that auto-advances at 1.25x speed, filters by 4 thematic buckets, and eliminates doom-scrolling.
