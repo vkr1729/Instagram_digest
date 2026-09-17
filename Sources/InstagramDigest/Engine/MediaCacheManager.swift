@@ -262,39 +262,118 @@ public actor MediaCacheManager {
             return
         }
 
-        // Locate existing media file from feed
+        // Locate existing media file from feed, or fallback to remote download directly
         let feedURL = pathResolver.localFileURL(for: weekID, reelID: reelID)
-        guard fm.fileExists(atPath: feedURL.path) else {
-            throw CacheError.fileNotFound("Local media not available to store offline. Download first.")
-        }
+        if fm.fileExists(atPath: feedURL.path) {
+            let attrs = try fm.attributesOfItem(atPath: feedURL.path)
+            let fileSize = attrs[.size] as? Int64 ?? (item.sizeBytes > 0 ? item.sizeBytes : fallbackSizeBytes)
 
-        let attrs = try fm.attributesOfItem(atPath: feedURL.path)
-        let fileSize = attrs[.size] as? Int64 ?? (item.sizeBytes > 0 ? item.sizeBytes : fallbackSizeBytes)
+            // Ensure space under 1.5 GB cap
+            try await ensureSpaceForBookmark(incomingBytes: fileSize)
 
-        // Ensure space under 1.5 GB cap
-        try await ensureSpaceForBookmark(incomingBytes: fileSize)
+            // Perform disk copy off-actor to avoid blocking actor during large file I/O
+            let dest = bookmarkDestURL
+            let src = feedURL
+            try await Task.detached {
+                let fileMgr = FileManager.default
+                try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                if fileMgr.fileExists(atPath: dest.path) {
+                    try? fileMgr.removeItem(at: dest)
+                }
+                try fileMgr.copyItem(at: src, to: dest)
+                try LibraryPathResolver.shared.applyProtectionAndBackupExclusion(to: dest)
+            }.value
 
-        // Perform disk copy off-actor to avoid blocking actor during large file I/O
-        let dest = bookmarkDestURL
-        let src = feedURL
-        try await Task.detached {
-            let fileMgr = FileManager.default
-            try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
-            if fileMgr.fileExists(atPath: dest.path) {
-                try? fileMgr.removeItem(at: dest)
+            item.localStatus = .cached
+            item.sizeBytes = fileSize
+            item.lastAccessedAt = Date()
+            self.totalBookmarkBytes += fileSize
+            do {
+                try context.save()
+            } catch {
+                context.rollback()
             }
-            try fileMgr.copyItem(at: src, to: dest)
-            try LibraryPathResolver.shared.applyProtectionAndBackupExclusion(to: dest)
-        }.value
+        } else if let remoteURL = item.videoUrl {
+            // Direct download from remote URL (e.g. Cloudflare R2 worker)
+            let estimatedBytes = item.sizeBytes > 0 ? item.sizeBytes : (fallbackSizeBytes > 0 ? fallbackSizeBytes : 10_000_000)
+            try await ensureSpaceForBookmark(incomingBytes: estimatedBytes)
 
-        item.localStatus = .cached
-        item.sizeBytes = fileSize
-        item.lastAccessedAt = Date()
-        self.totalBookmarkBytes += fileSize
+            let (tempURL, _) = try await URLSession.shared.download(from: remoteURL)
+            let dest = bookmarkDestURL
+            let actualBytes: Int64 = (try? fm.attributesOfItem(atPath: tempURL.path)[.size] as? Int64) ?? estimatedBytes
+
+            try await Task.detached {
+                let fileMgr = FileManager.default
+                try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                if fileMgr.fileExists(atPath: dest.path) {
+                    try? fileMgr.removeItem(at: dest)
+                }
+                try fileMgr.moveItem(at: tempURL, to: dest)
+                try LibraryPathResolver.shared.applyProtectionAndBackupExclusion(to: dest)
+            }.value
+
+            item.localStatus = .cached
+            item.sizeBytes = actualBytes
+            item.lastAccessedAt = Date()
+            self.totalBookmarkBytes += actualBytes
+            do {
+                try context.save()
+            } catch {
+                context.rollback()
+            }
+        } else {
+            throw CacheError.fileNotFound("No local or remote media available to store offline.")
+        }
+    }
+
+    /// Synchronizes remote bookmark manifests into SwiftData without downgrading localStatus
+    public func syncRemoteBookmarks(dtos: [BookmarkRemoteDTO]) async {
+        guard let container = modelContainer else { return }
+        let context = ModelContext(container)
+        let fm = FileManager.default
+
         do {
+            let descriptor = FetchDescriptor<BookmarkItem>()
+            let existingList = try context.fetch(descriptor)
+            var existingMap = Dictionary(uniqueKeysWithValues: existingList.map { ($0.reelID, $0) })
+
+            for dto in dtos {
+                let fileURL = pathResolver.bookmarkFileURL(for: dto.id)
+                let fileExists = fm.fileExists(atPath: fileURL.path)
+
+                if let existing = existingMap[dto.id] {
+                    // Update metadata only, never downgrade cached to evicted
+                    existing.creatorHandle = dto.creatorHandle
+                    existing.caption = dto.caption
+                    existing.videoUrlString = dto.videoUrl.absoluteString
+                    existing.thumbnailUrlString = dto.thumbnailUrl?.absoluteString
+                    if let sb = dto.sizeBytes, sb > 0 {
+                        existing.sizeBytes = sb
+                    }
+                    if fileExists {
+                        existing.localStatus = .cached
+                    }
+                } else {
+                    let newItem = BookmarkItem(
+                        reelID: dto.id,
+                        weekID: "bookmarks",
+                        creatorHandle: dto.creatorHandle,
+                        caption: dto.caption,
+                        rank: 1,
+                        videoUrl: dto.videoUrl,
+                        thumbnailUrl: dto.thumbnailUrl,
+                        localStatus: fileExists ? .cached : .evicted,
+                        sizeBytes: dto.sizeBytes ?? 0
+                    )
+                    context.insert(newItem)
+                    existingMap[dto.id] = newItem
+                }
+            }
+
             try context.save()
+            await reconcileBookmarkStorageLedger()
         } catch {
-            context.rollback()
+            // Bookmark sync failure gracefully handled
         }
     }
 

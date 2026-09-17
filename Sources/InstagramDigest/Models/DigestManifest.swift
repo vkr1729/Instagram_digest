@@ -105,3 +105,51 @@ public struct DigestManifest: Sendable, Codable {
         items.firstIndex { $0.id == id }
     }
 }
+
+/// Remote DTO returned as an unkeyed array from Cloudflare R2 worker at bookmarks/manifest.json
+public struct BookmarkRemoteDTO: Sendable, Codable {
+    public let id: String
+    public let creatorHandle: String
+    public let caption: String
+    public let category: String?
+    public let thumbnailUrl: URL?
+    public let videoUrl: URL
+    public let sizeBytes: Int64?
+    public let bookmarkedAt: String?
+    public let telegramMessageId: Int?
+
+    public init(
+        id: String,
+        creatorHandle: String,
+        caption: String,
+        category: String? = nil,
+        thumbnailUrl: URL? = nil,
+        videoUrl: URL,
+        sizeBytes: Int64? = nil,
+        bookmarkedAt: String? = nil,
+        telegramMessageId: Int? = nil
+    ) {
+        self.id = id
+        self.creatorHandle = creatorHandle
+        self.caption = caption
+        self.category = category
+        self.thumbnailUrl = thumbnailUrl
+        self.videoUrl = videoUrl
+        self.sizeBytes = sizeBytes
+        self.bookmarkedAt = bookmarkedAt
+        self.telegramMessageId = telegramMessageId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case creatorHandle = "creator_handle"
+        case caption
+        case category
+        case thumbnailUrl = "thumbnail_url"
+        case videoUrl = "video_url"
+        case sizeBytes = "size_bytes"
+        case bookmarkedAt = "bookmarked_at"
+        case telegramMessageId = "telegram_message_id"
+    }
+}
+

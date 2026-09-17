@@ -1,7 +1,10 @@
 import SwiftUI
 import AVFoundation
 
-/// Full-bleed overlay displaying metadata pills, progress bar, seek HUD, and bookmark pop.
+/// Full-bleed overlay strictly conforming to Mock 2 (Mobile PWA Standard).
+/// Features soft natural gradient scrim (rgba(0,0,0,0.45) down to transparent),
+/// bottom metadata HUD with @creatorHandle, orange #rank badge, interactive WhatsApp Share
+/// and Gold Bookmark buttons, 2-line expandable caption, and hairline progress bar.
 public struct ReelCardOverlayView: View {
     public let reel: ReelItem
     public let isLatched2x: Bool
@@ -11,6 +14,11 @@ public struct ReelCardOverlayView: View {
     public let duration: Double
     public let currentTime: Double
     public let showBookmarkPop: Bool
+    public let isCaptionExpanded: Bool
+    public var onTogglePlayPause: () -> Void
+    public var onTriggerBookmark: () -> Void
+    public var onTriggerShare: () -> Void
+    public var onToggleCaption: () -> Void
 
     public init(
         reel: ReelItem,
@@ -20,7 +28,12 @@ public struct ReelCardOverlayView: View {
         progress: Double = 0.0,
         duration: Double = 0.0,
         currentTime: Double = 0.0,
-        showBookmarkPop: Bool = false
+        showBookmarkPop: Bool = false,
+        isCaptionExpanded: Bool = false,
+        onTogglePlayPause: @escaping () -> Void = {},
+        onTriggerBookmark: @escaping () -> Void = {},
+        onTriggerShare: @escaping () -> Void = {},
+        onToggleCaption: @escaping () -> Void = {}
     ) {
         self.reel = reel
         self.isLatched2x = isLatched2x
@@ -30,27 +43,24 @@ public struct ReelCardOverlayView: View {
         self.duration = duration
         self.currentTime = currentTime
         self.showBookmarkPop = showBookmarkPop
+        self.isCaptionExpanded = isCaptionExpanded
+        self.onTogglePlayPause = onTogglePlayPause
+        self.onTriggerBookmark = onTriggerBookmark
+        self.onTriggerShare = onTriggerShare
+        self.onToggleCaption = onToggleCaption
     }
 
     public var body: some View {
         ZStack {
-            // 1. Subtle Gradient Overlays for Readability
+            // 1. Soft Natural Gradient Scrim at Bottom (Mock 2: rgba(0,0,0,0.45) -> transparent)
             VStack {
-                LinearGradient(
-                    colors: [Color.black.opacity(0.65), Color.clear],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 140)
-
                 Spacer()
-
                 LinearGradient(
-                    colors: [Color.clear, Color.black.opacity(0.85)],
+                    colors: [Color.clear, Color.black.opacity(0.48), Color.black.opacity(0.85)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(height: 240)
+                .frame(height: 180)
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -59,64 +69,26 @@ public struct ReelCardOverlayView: View {
             if showBookmarkPop {
                 VStack(spacing: 8) {
                     Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark.slash.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.yellow)
+                        .font(.system(size: 44))
+                        .foregroundColor(Color(red: 1.0, green: 0.8, blue: 0.25))
                     Text(isBookmarked ? "Saved to Bookmarks" : "Removed from Bookmarks")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundColor(.white)
                 }
-                .padding(24)
+                .padding(22)
                 .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .accessibilityIdentifier("BookmarkIndicator")
                 .transition(.scale.combined(with: .opacity))
                 .zIndex(20)
                 .allowsHitTesting(false)
             }
 
-            // 3. Metadata Overlays
-            VStack(alignment: .leading, spacing: 0) {
-                // Top Header: Creator Handle, Rank, and 2.0x Latch Pill
-                HStack(alignment: .center, spacing: 8) {
-                    // Creator Handle Pill
-                    HStack(spacing: 6) {
-                        Image(systemName: "person.crop.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.9))
-                        Text("@\(reel.creatorHandle)")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.ultraThinMaterial.opacity(0.8))
-                    .clipShape(Capsule())
-                    .accessibilityIdentifier("ReelCreatorHandle")
-
-                    // Rank Badge
-                    Text(reel.rankDisplay)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.white.opacity(0.2))
-                        .clipShape(Capsule())
-                        .accessibilityIdentifier("ReelRankBadge")
-
-                    // Discovery Pill for external reels
-                    if reel.isExternal {
-                        Text("Discovery")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.yellow)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.yellow.opacity(0.2))
-                            .clipShape(Capsule())
-                    }
-
-                    Spacer()
-
-                    // Latched 2.0x Badge
-                    if isLatched2x {
+            // 3. Latched 2.0x Indicator (Upper Right)
+            if isLatched2x {
+                VStack {
+                    HStack {
+                        Spacer()
                         HStack(spacing: 4) {
                             Image(systemName: "bolt.fill")
                                 .font(.system(size: 12))
@@ -126,87 +98,139 @@ public struct ReelCardOverlayView: View {
                         .foregroundColor(.yellow)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(Color.black.opacity(0.6))
+                        .background(Color.black.opacity(0.65))
                         .clipShape(Capsule())
                         .overlay(Capsule().stroke(Color.yellow.opacity(0.8), lineWidth: 1))
                         .accessibilityIdentifier("Latched2xBadge")
                     }
-
-                    // Bookmark indicator
-                    if isBookmarked {
-                        Image(systemName: "bookmark.fill")
-                            .font(.system(size: 15))
-                            .foregroundColor(.yellow)
-                            .padding(8)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                            .accessibilityIdentifier("BookmarkIndicator")
-                    }
+                    .padding(.trailing, 16)
+                    .padding(.top, 100)
+                    Spacer()
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 56)
                 .allowsHitTesting(false)
+            }
 
-                Spacer()
-
-                // Bottom Content: Category and Metrics Metadata
-                HStack(spacing: 12) {
-                    if let cat = reel.category {
-                        Text(cat.uppercased())
-                            .font(.system(size: 11, weight: .bold))
+            // 4. Seek HUD Preview (Center while scrubbing horizontally)
+            if let preview = seekFractionPreview, duration > 0 {
+                let targetSec = preview * duration
+                VStack {
+                    Spacer()
+                    VStack(spacing: 4) {
+                        Text(formatTime(targetSec))
+                            .font(.system(size: 24, weight: .heavy, design: .monospaced))
+                            .foregroundColor(.white)
+                        Text("/ \(formatTime(duration))")
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.white.opacity(0.7))
                     }
-                    if let views = reel.viewCount, views > 0 {
-                        Text("\(formatNumber(views)) views")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    Spacer()
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
                 .allowsHitTesting(false)
+            }
 
-                // 4. Seek HUD Preview (when user is scrubbing horizontally)
-                if let preview = seekFractionPreview, duration > 0 {
-                    let targetSec = preview * duration
-                    HStack {
-                        Spacer()
-                        VStack(spacing: 4) {
-                            Text(formatTime(targetSec))
-                                .font(.system(size: 20, weight: .heavy, design: .monospaced))
-                                .foregroundColor(.white)
-                            Text("/ \(formatTime(duration))")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        Spacer()
-                    }
-                    .padding(.bottom, 12)
-                    .allowsHitTesting(false)
-                }
+            // 5. Bottom Metadata HUD
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer()
 
-                // 5. Scrubbing Progress Bar
+                // Hairline Progress Bar
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        // Background track
                         Rectangle()
                             .fill(Color.white.opacity(0.25))
-                            .frame(height: 3)
+                            .frame(height: 2.5)
 
-                        // Progress fill
                         let displayFraction = seekFractionPreview ?? progress
                         Rectangle()
                             .fill(seekFractionPreview != nil ? Color.yellow : Color.white)
-                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(displayFraction))), height: 3)
+                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(displayFraction))), height: 2.5)
                     }
                 }
-                .frame(height: 3)
-                .padding(.bottom, 8)
+                .frame(height: 2.5)
+                .padding(.bottom, 10)
                 .allowsHitTesting(false)
+
+                // Creator & Action Row (Mock 2: @handle, #rank, Share, Save)
+                HStack(alignment: .center, spacing: 8) {
+                    // Creator Handle
+                    Text("@\(reel.creatorHandle)")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                        .accessibilityIdentifier("ReelCreatorHandle")
+
+                    // #rank Badge (Orange)
+                    Text(reel.rankDisplay)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.20))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.22))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().stroke(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.6), lineWidth: 0.8)
+                        )
+                        .accessibilityIdentifier("ReelRankBadge")
+
+                    Spacer()
+
+                    // WhatsApp Share Button (🟢 Share)
+                    Button(action: onTriggerShare) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrowshape.turn.up.right.fill")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("Share")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        .foregroundColor(Color(red: 0.25, green: 0.92, blue: 0.45))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 7)
+                        .background(Color(red: 0.15, green: 0.82, blue: 0.40).opacity(0.22))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().stroke(Color(red: 0.25, green: 0.92, blue: 0.45).opacity(0.6), lineWidth: 0.8)
+                        )
+                    }
+                    .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
+                    .accessibilityIdentifier("WhatsAppShareButton")
+
+                    // Bookmark Button (🔖 Save / 🔖 Saved)
+                    Button(action: onTriggerBookmark) {
+                        HStack(spacing: 4) {
+                            Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 11, weight: .bold))
+                            Text(isBookmarked ? "Saved" : "Save")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        .foregroundColor(Color(red: 1.0, green: 0.80, blue: 0.28))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 7)
+                        .background(Color(red: 0.95, green: 0.75, blue: 0.20).opacity(isBookmarked ? 0.38 : 0.18))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule().stroke(Color(red: 1.0, green: 0.80, blue: 0.28).opacity(0.6), lineWidth: 0.8)
+                        )
+                    }
+                    .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
+                    .accessibilityIdentifier("SaveBookmarkButton")
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+
+                // Caption Snippet (2 lines, tap to expand)
+                if !reel.caption.isEmpty {
+                    Text(reel.caption)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.92))
+                        .lineLimit(isCaptionExpanded ? 8 : 2)
+                        .multilineTextAlignment(.leading)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 12)
+                        .onTapGesture(perform: onToggleCaption)
+                        .accessibilityIdentifier("ReelCaptionText")
+                }
             }
         }
     }
@@ -217,15 +241,6 @@ public struct ReelCardOverlayView: View {
         let mins = total / 60
         let secs = total % 60
         return String(format: "%02d:%02d", mins, secs)
-    }
-
-    private func formatNumber(_ num: Int) -> String {
-        if num >= 1_000_000 {
-            return String(format: "%.1fM", Double(num) / 1_000_000)
-        } else if num >= 1_000 {
-            return String(format: "%.1fK", Double(num) / 1_000)
-        }
-        return "\(num)"
     }
 }
 
@@ -263,13 +278,13 @@ public final class PlayerContainerView: UIView {
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         backgroundColor = .black
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         backgroundColor = .black
     }
 }

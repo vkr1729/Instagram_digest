@@ -112,4 +112,42 @@ final class ModelTests: XCTestCase {
         let beyond = WatchedRules.unrecordedPredecessorIDs(items: items, targetIndex: 10, alreadyWatched: [])
         XCTAssertEqual(beyond, ["r0", "r1", "r2", "r3"])
     }
+
+    func testBookmarkRemoteDTODecoding() throws {
+        let json = """
+        [
+            {
+                "id": "DdE1YCxskjU",
+                "creator_handle": "foundmyfitness",
+                "caption": "Sauna post-resistance training",
+                "category": "health",
+                "thumbnail_url": "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/DdE1YCxskjU_portrait.jpg",
+                "video_url": "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/DdE1YCxskjU.mp4",
+                "size_bytes": 5408339,
+                "bookmarked_at": "2026-09-14T13:12:42.719Z",
+                "telegram_message_id": 10
+            }
+        ]
+        """.data(using: .utf8)!
+
+        let dtos = try JSONDecoder().decode([BookmarkRemoteDTO].self, from: json)
+        XCTAssertEqual(dtos.count, 1)
+        XCTAssertEqual(dtos[0].id, "DdE1YCxskjU")
+        XCTAssertEqual(dtos[0].creatorHandle, "foundmyfitness")
+        XCTAssertEqual(dtos[0].category, "health")
+        XCTAssertEqual(dtos[0].sizeBytes, 5408339)
+    }
+
+    func test300ReelsBundledManifestDecoding() throws {
+        // Anchor to this file's compile-time path: unit-test CWD is derived-data, not the repo root,
+        // so a relative "Resources/data.json" never resolves and the test would vacuously pass.
+        let thisFile = URL(fileURLWithPath: #filePath)
+        let repoRoot = thisFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fileURL = repoRoot.appendingPathComponent("Resources/data.json")
+        guard let data = try? Data(contentsOf: fileURL) else {
+            throw XCTSkip("Bundled data.json not found at \(fileURL.path)")
+        }
+        let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
+        XCTAssertEqual(manifest.items.count, 300, "Bundled data.json must contain exactly 300 reels")
+    }
 }

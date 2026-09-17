@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AVFoundation
+import Network
 
 @main
 struct InstagramDigestApp: App {
@@ -82,32 +83,43 @@ struct InstagramDigestApp: App {
     }
 }
 
-/// Main Feed screen hosting header navigation, feed pager, gesture overlays, and modals.
+/// Main Feed screen strictly conforming to locked Mock 2 (Mobile PWA Standard).
+/// Hosts cursive Instagram brand logo, Jump-to-N pill, Grid, Download, Bookmarks chip,
+/// 7-story category circles bar, uncropped video pager, bottom HUD with creator handle,
+/// WhatsApp share, Gold bookmark button, 2-line caption, and auto-immersive playback.
 struct FeedMainView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var pool = AVPlayerPool.shared
 
     @State private var manifest: DigestManifest?
+    @State private var allReels: [ReelItem] = []
     @State private var isLoading: Bool = true
     @State private var errorMessage: String?
 
     @State private var activeIndex: Int = 0
+    @State private var selectedCategoryId: String = "all"
     @State private var lastScrollEndTime: TimeInterval = 0
     @State private var seekPreviewFraction: Double? = nil
     @State private var showBookmarkPop: Bool = false
     @State private var isCaptionExpanded: Bool = false
+    @State private var isChromeVisible: Bool = true
 
     // Modals state
     @State private var showGridSheet: Bool = false
     @State private var showDownloadSheet: Bool = false
     @State private var showBookmarksSheet: Bool = false
+    @State private var showJumpModal: Bool = false
     @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
     @State private var showShareSheet: Bool = false
     @State private var shareItems: [Any] = []
 
-    // Watched reels and bookmarks set for instant HUD reflection
+    // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
-    @State private var bookmarkedReelIDs: Set<String> = []
+    @Query private var savedBookmarks: [BookmarkItem]
+
+    private var bookmarkedReelIDs: Set<String> {
+        Set(savedBookmarks.map { $0.reelID })
+    }
 
     var body: some View {
         ZStack {
@@ -141,13 +153,14 @@ struct FeedMainView: View {
                     .foregroundColor(.black)
                     .clipShape(Capsule())
                 }
-            } else if let items = manifest?.items, !items.isEmpty {
-                let currentReel = items[activeIndex]
+            } else if !pool.currentItems.isEmpty {
+                let safeIndex = min(max(0, activeIndex), pool.currentItems.count - 1)
+                let currentReel = pool.currentItems[safeIndex]
                 let isCurrentBookmarked = bookmarkedReelIDs.contains(currentReel.id)
 
-                // 1. Vertical Pager Container (UICollectionView with modern CellRegistration & integrated gestures)
+                // 1. Vertical Pager Container (UICollectionView with native uncropped aspect containment)
                 FeedPagerView(
-                    reels: items,
+                    reels: pool.currentItems,
                     currentIndex: $activeIndex,
                     onPageChanged: { newIndex in
                         isCaptionExpanded = false
@@ -164,6 +177,9 @@ struct FeedMainView: View {
                             pool.setLatched2x(false)
                         }
                         pool.togglePlayPause()
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            isChromeVisible = !pool.isPlaying
+                        }
                     },
                     onSeekPreview: { fraction in
                         seekPreviewFraction = fraction
@@ -175,35 +191,12 @@ struct FeedMainView: View {
                     onToggleLatched2x: {
                         pool.setLatched2x(!pool.isLatched2x)
                     },
-                    onTriggerBookmark: {
-                        toggleBookmarkCurrentReel()
-                    },
-                    onTriggerShare: {
-                        triggerShareCurrentReel()
-                    },
                     lastScrollEndTime: lastScrollEndTime,
                     currentProgress: pool.currentProgress
                 )
                 .ignoresSafeArea()
-                .overlay(alignment: .bottomLeading) {
-                    if !currentReel.caption.isEmpty {
-                        Text(currentReel.caption)
-                            .font(.system(size: 14))
-                            .foregroundColor(.white.opacity(0.95))
-                            .lineLimit(isCaptionExpanded ? 8 : 2)
-                            .multilineTextAlignment(.leading)
-                            .padding(.horizontal, 16)
-                            .accessibilityIdentifier("ReelCaptionText")
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    isCaptionExpanded.toggle()
-                                }
-                            }
-                            .offset(y: -56)
-                    }
-                }
 
-                // 2. Full-Bleed Live Overlay (Seek HUD, Progress, Pills, Bookmark Pop)
+                // 2. Full-Bleed Mock 2 Overlay (Natural Scrim, Progress, Creator, Buttons, Caption)
                 ReelCardOverlayView(
                     reel: currentReel,
                     isLatched2x: pool.isLatched2x,
@@ -212,79 +205,69 @@ struct FeedMainView: View {
                     progress: pool.currentProgress,
                     duration: pool.currentDuration,
                     currentTime: pool.currentTime,
-                    showBookmarkPop: showBookmarkPop
+                    showBookmarkPop: showBookmarkPop,
+                    isCaptionExpanded: isCaptionExpanded,
+                    onTogglePlayPause: {
+                        pool.togglePlayPause()
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            isChromeVisible = !pool.isPlaying
+                        }
+                    },
+                    onTriggerBookmark: {
+                        toggleBookmarkCurrentReel()
+                    },
+                    onTriggerShare: {
+                        triggerShareCurrentReel()
+                    },
+                    onToggleCaption: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isCaptionExpanded.toggle()
+                        }
+                    }
                 )
                 .ignoresSafeArea()
-                .allowsHitTesting(false) // Passes gestures to collection view below
+                .opacity(isChromeVisible ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
 
-                // 3. Top Navigation Header
-                VStack {
-                    HStack(spacing: 12) {
-                        // Playback Speed Cycler Pill
-                        Button {
-                            pool.cyclePlaybackRate()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "gauge.with.dots.needle.50percent")
-                                    .font(.system(size: 11))
-                                Text(String(format: "%.2fx", pool.effectiveRate))
-                                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            }
-                            .foregroundColor(pool.isLatched2x ? .yellow : .white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Capsule())
-                        }
-                        .accessibilityIdentifier("SpeedButton")
-
-                        Spacer()
-
-                        // Jump Grid Button
-                        Button {
+                // 3. Top Navigation Header & Story Category Circles Bar (Mock 2 Locked)
+                VStack(spacing: 0) {
+                    HeaderBarView(
+                        currentIndex: activeIndex,
+                        totalCount: pool.currentItems.count,
+                        bookmarkCount: savedBookmarks.count,
+                        onTapJump: {
+                            pool.pause()
+                            showJumpModal = true
+                        },
+                        onTapGrid: {
+                            pool.pause()
                             showGridSheet = true
-                        } label: {
-                            Image(systemName: "square.grid.3x3.fill")
-                                .font(.system(size: 15))
-                                .foregroundColor(.white)
-                                .padding(8)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Circle())
-                        }
-                        .accessibilityIdentifier("GridButton")
-
-                        // Download All Button
-                        Button {
+                        },
+                        onTapOffline: {
+                            pool.pause()
                             showDownloadSheet = true
-                        } label: {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 15))
-                                .foregroundColor(.white)
-                                .padding(8)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Circle())
-                        }
-                        .accessibilityIdentifier("DownloadAllButton")
-
-                        // Bookmarks Button
-                        Button {
+                        },
+                        onTapBookmarks: {
+                            pool.pause()
                             showBookmarksSheet = true
-                        } label: {
-                            Image(systemName: "bookmark.fill")
-                                .font(.system(size: 15))
-                                .foregroundColor(.white)
-                                .padding(8)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Circle())
                         }
-                        .accessibilityIdentifier("BookmarksButton")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
+                    )
+
+                    StoryCategoryBarView(
+                        totalCount: allReels.count,
+                        selectedCategoryId: selectedCategoryId,
+                        onSelectCategory: { newCat in
+                            selectedCategoryId = newCat
+                            guard let m = manifest else { return }
+                            pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId)
+                            activeIndex = 0
+                        }
+                    )
 
                     Spacer()
                 }
-
+                .opacity(isChromeVisible ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
             }
 
             // Mindful 50-reels Modal Overlay (Presented at top ZStack level)
@@ -307,17 +290,24 @@ struct FeedMainView: View {
                 .zIndex(30)
             }
         }
+        .sheet(isPresented: $showJumpModal) {
+            JumpToReelModalView(
+                totalCount: pool.currentItems.count,
+                currentNumber: activeIndex + 1,
+                onJump: { targetIndex in
+                    jumpToReel(at: targetIndex)
+                }
+            )
+        }
         .sheet(isPresented: $showGridSheet) {
-            if let items = manifest?.items {
-                GridView(
-                    reels: items,
-                    currentIndex: activeIndex,
-                    watchedReelIDs: watchedReelIDs,
-                    onSelectReel: { targetIndex in
-                        jumpToReel(at: targetIndex)
-                    }
-                )
-            }
+            GridView(
+                reels: pool.currentItems,
+                currentIndex: activeIndex,
+                watchedReelIDs: watchedReelIDs,
+                onSelectReel: { targetIndex in
+                    jumpToReel(at: targetIndex)
+                }
+            )
         }
         .sheet(isPresented: $showDownloadSheet) {
             if let m = manifest {
@@ -347,6 +337,7 @@ struct FeedMainView: View {
             do {
                 let fetched = try await DigestDataService.shared.fetchManifest()
                 self.manifest = fetched
+                self.allReels = fetched.items
                 self.isLoading = false
 
                 // Check AppState for weekly rollover and purge stale week cache
@@ -386,7 +377,13 @@ struct FeedMainView: View {
                 }
                 // Load historical watched state immediately after manifest arrives
                 refreshWatchedReels()
-                refreshBookmarks()
+
+                // Sync remote Cloudflare R2 bookmarks manifest (18 items)
+                Task {
+                    if let remoteBMs = try? await DigestDataService.shared.fetchRemoteBookmarks() {
+                        await MediaCacheManager.shared.syncRemoteBookmarks(dtos: remoteBMs)
+                    }
+                }
 
                 // Seed Mindful 50-reels modal in UI testing if requested
                 if ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful") {
@@ -472,9 +469,9 @@ struct FeedMainView: View {
         }
     }
 
-    /// Jump-to-N: Marks all predecessors (0 through targetIndex - 1) as watched in a single batch
+    /// Jump-to-N: Marks all predecessors as watched in a single batch
     private func jumpToReel(at targetIndex: Int) {
-        guard let items = manifest?.items, targetIndex >= 0, targetIndex < items.count else { return }
+        guard !pool.currentItems.isEmpty, targetIndex >= 0, targetIndex < pool.currentItems.count else { return }
         isCaptionExpanded = false
         let weekID = manifest?.weekId ?? "default_week"
 
@@ -485,7 +482,7 @@ struct FeedMainView: View {
         let alreadyWatched = Set((try? modelContext.fetch(descriptor))?.map { $0.reelID } ?? [])
 
         let unrecordedIDs = WatchedRules.unrecordedPredecessorIDs(
-            items: items,
+            items: pool.currentItems,
             targetIndex: targetIndex,
             alreadyWatched: alreadyWatched
         )
@@ -509,7 +506,6 @@ struct FeedMainView: View {
                 let daily = DailyProgress(dateString: todayStr, viewedCount: unrecordedCount)
                 modelContext.insert(daily)
             }
-            // Single batched save for all predecessors with rollback protection
             do {
                 try modelContext.save()
             } catch {
@@ -531,18 +527,11 @@ struct FeedMainView: View {
         }
     }
 
-    private func refreshBookmarks() {
-        let descriptor = FetchDescriptor<BookmarkItem>()
-        if let list = try? modelContext.fetch(descriptor) {
-            self.bookmarkedReelIDs = Set(list.map { $0.reelID })
-        }
-    }
-
     // MARK: - Bookmarks & Sharing
 
     private func toggleBookmarkCurrentReel() {
-        guard let items = manifest?.items, activeIndex >= 0, activeIndex < items.count else { return }
-        let reel = items[activeIndex]
+        guard !pool.currentItems.isEmpty, activeIndex >= 0, activeIndex < pool.currentItems.count else { return }
+        let reel = pool.currentItems[activeIndex]
         let weekID = manifest?.weekId ?? "default_week"
 
         let descriptor = FetchDescriptor<BookmarkItem>(
@@ -550,7 +539,6 @@ struct FeedMainView: View {
         )
 
         if let existing = try? modelContext.fetch(descriptor), let item = existing.first {
-            // Unbookmark: delete row and delete physical file via actor (avoids orphaned files)
             let reelID = item.reelID
             modelContext.delete(item)
             do {
@@ -558,7 +546,6 @@ struct FeedMainView: View {
             } catch {
                 modelContext.rollback()
             }
-            bookmarkedReelIDs.remove(reelID)
 
             Task {
                 await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
@@ -584,7 +571,6 @@ struct FeedMainView: View {
             } catch {
                 modelContext.rollback()
             }
-            bookmarkedReelIDs.insert(reel.id)
 
             if isLocal {
                 let rID = reel.id
@@ -614,18 +600,27 @@ struct FeedMainView: View {
     }
 
     private func triggerShareCurrentReel() {
-        guard let items = manifest?.items, activeIndex >= 0, activeIndex < items.count else { return }
-        let reel = items[activeIndex]
+        guard !pool.currentItems.isEmpty, activeIndex >= 0, activeIndex < pool.currentItems.count else { return }
+        let reel = pool.currentItems[activeIndex]
         let weekID = manifest?.weekId ?? "default_week"
 
-        let text = "Check out this reel by @\(reel.creatorHandle) from Instagram Digest"
+        let shareText = "Check out this reel by @\(reel.creatorHandle) on Instagram Digest: https://vkr1729.github.io/Instagram_digest/share/\(reel.id).html?v=3"
+        // Encode as a single `text=` query value: ? & + must not leak through as delimiters
+        let whatsappValueAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "?&+"))
+        let encoded = shareText.addingPercentEncoding(withAllowedCharacters: whatsappValueAllowed) ?? ""
 
-        // Clause: local file shared only when fully offline and available
+        // Try primary WhatsApp deep link
+        if let waURL = URL(string: "whatsapp://send?text=\(encoded)"), UIApplication.shared.canOpenURL(waURL) {
+            UIApplication.shared.open(waURL)
+            return
+        }
+
+        // Fallback: System UIActivityViewController
         let localFile = LibraryPathResolver.shared.localFileURL(for: weekID, reelID: reel.id)
         if FileManager.default.fileExists(atPath: localFile.path) && !Reachability.isConnectedToNetwork() {
-            shareItems = [text, localFile]
+            shareItems = [shareText, localFile]
         } else {
-            shareItems = [text, reel.videoUrl]
+            shareItems = [shareText, reel.videoUrl]
         }
         showShareSheet = true
     }
@@ -668,11 +663,22 @@ struct FeedMainView: View {
     }
 }
 
-/// Simple reachability helper for offline detection
-enum Reachability {
-    static func isConnectedToNetwork() -> Bool {
-        // Assume connected on modern iOS unless explicitly in airplane mode
-        true
+/// Network reachability helper backed by NWPathMonitor
+public final class Reachability: @unchecked Sendable {
+    public static let shared = Reachability()
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "ReachabilityQueue")
+    public private(set) var isConnected: Bool = true
+
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.isConnected = (path.status == .satisfied)
+        }
+        monitor.start(queue: queue)
+    }
+
+    public static func isConnectedToNetwork() -> Bool {
+        shared.isConnected
     }
 }
 

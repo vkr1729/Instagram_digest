@@ -4,7 +4,8 @@ import Foundation
 public actor DigestDataService {
     public static let shared = DigestDataService()
 
-    public static let defaultManifestURL = URL(string: "https://vkreddy1729-ops.github.io/Instagram_digest/data.json")!
+    public static let defaultManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data.json")!
+    public static let defaultBookmarksURL = URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/manifest.json")!
 
     private let session: URLSession
     private let pathResolver: LibraryPathResolver
@@ -79,5 +80,19 @@ public actor DigestDataService {
         }
 
         throw URLError(.cannotConnectToHost)
+    }
+
+    /// Fetches remote bookmarks manifest from Cloudflare R2 worker
+    public func fetchRemoteBookmarks(from url: URL = defaultBookmarksURL) async throws -> [BookmarkRemoteDTO] {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15.0
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+
+        return try JSONDecoder().decode([BookmarkRemoteDTO].self, from: data)
     }
 }

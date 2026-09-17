@@ -28,8 +28,6 @@ final class UITests: XCTestCase {
 
     enum SpatialZone {
         case upperRightSpeed
-        case lowerRightShare
-        case centerLowerBookmark
         case deadZone
     }
 
@@ -39,10 +37,6 @@ final class UITests: XCTestCase {
 
         if normX > 0.65 && normY <= 0.65 {
             return .upperRightSpeed
-        } else if normX > 0.65 && normY > 0.65 {
-            return .lowerRightShare
-        } else if normX >= 0.35 && normX <= 0.65 && normY > 0.65 {
-            return .centerLowerBookmark
         } else {
             return .deadZone
         }
@@ -55,11 +49,11 @@ final class UITests: XCTestCase {
         // Upper-Right: x = 300 (0.75w), y = 200 (0.25h) -> .upperRightSpeed
         XCTAssertEqual(resolveZone(x: 300, y: 200, width: w, height: h), .upperRightSpeed)
 
-        // Lower-Right: x = 300 (0.75w), y = 600 (0.75h) -> .lowerRightShare
-        XCTAssertEqual(resolveZone(x: 300, y: 600, width: w, height: h), .lowerRightShare)
+        // Lower-Right: x = 300 (0.75w), y = 600 (0.75h) -> .deadZone (handled by HUD button)
+        XCTAssertEqual(resolveZone(x: 300, y: 600, width: w, height: h), .deadZone)
 
-        // Center-Lower: x = 200 (0.50w), y = 600 (0.75h) -> .centerLowerBookmark
-        XCTAssertEqual(resolveZone(x: 200, y: 600, width: w, height: h), .centerLowerBookmark)
+        // Center-Lower: x = 200 (0.50w), y = 600 (0.75h) -> .deadZone (handled by HUD button)
+        XCTAssertEqual(resolveZone(x: 200, y: 600, width: w, height: h), .deadZone)
 
         // Dead Zone: x = 100 (0.25w), y = 200 (0.25h) -> .deadZone
         XCTAssertEqual(resolveZone(x: 100, y: 200, width: w, height: h), .deadZone)

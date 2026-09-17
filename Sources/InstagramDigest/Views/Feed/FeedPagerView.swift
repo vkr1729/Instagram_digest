@@ -138,18 +138,6 @@ public struct FeedPagerView: UIViewControllerRepresentable {
                     hapticGenerator.impactOccurred()
                     hapticGenerator.prepare()
                     parent.onToggleLatched2x()
-
-                } else if normX > 0.65 && normY > 0.65 {
-                    suppressNextTap = true
-                    hapticGenerator.impactOccurred()
-                    hapticGenerator.prepare()
-                    parent.onTriggerShare()
-
-                } else if normX >= 0.35 && normX <= 0.65 && normY > 0.65 {
-                    suppressNextTap = true
-                    hapticGenerator.impactOccurred()
-                    hapticGenerator.prepare()
-                    parent.onTriggerBookmark()
                 } else {
                     suppressNextTap = false
                 }

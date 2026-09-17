@@ -147,6 +147,35 @@ public final class AVPlayerPool: ObservableObject {
         setCurrentIndex(startIndex)
     }
 
+    /// Filters the playback pool to a specific category (e.g. "all", "entertainment", "finance", "ai_tech", "niche", "health", "food")
+    public func filterByCategory(_ categoryKey: String, allReels: [ReelItem], weekID: String) {
+        let filtered: [ReelItem]
+        if categoryKey == "all" {
+            filtered = allReels
+        } else if categoryKey == "entertainment" {
+            filtered = allReels.filter {
+                let cat = $0.category?.lowercased() ?? ""
+                return cat == "entertainment" || cat == "culture"
+            }
+        } else if categoryKey == "ai_tech" {
+            filtered = allReels.filter {
+                let cat = $0.category?.lowercased() ?? ""
+                return cat == "ai_tech" || cat == "tech" || cat == "technology"
+            }
+        } else if categoryKey == "niche" {
+            filtered = allReels.filter {
+                let cat = $0.category?.lowercased() ?? ""
+                return cat == "niche" || cat == "explainer"
+            }
+        } else {
+            filtered = allReels.filter {
+                ($0.category?.lowercased() ?? "") == categoryKey.lowercased()
+            }
+        }
+
+        setReels(filtered.isEmpty ? allReels : filtered, weekID: weekID, startIndex: 0)
+    }
+
     public func setCurrentIndex(_ newIndex: Int) {
         guard !currentItems.isEmpty, newIndex >= 0, newIndex < currentItems.count else { return }
 
@@ -217,17 +246,22 @@ public final class AVPlayerPool: ObservableObject {
         let slotItem = SlotItem(reel: item, localURL: resolvedLocal, remoteURL: item.videoUrl, isLocal: isLocal)
         slot.slotItem = slotItem
 
-        let asset = AVURLAsset(url: mediaURL)
+        let assetOptions: [String: Any]? = isLocal ? nil : [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+        let asset = AVURLAsset(url: mediaURL, options: assetOptions)
         inFlightTasks[slot.index]?.cancel()
         inFlightTasks[slot.index] = Task { @MainActor [weak self] in
             guard let self = self else { return }
             do {
-                _ = try await asset.load(.isPlayable, .duration)
+                if isLocal {
+                    _ = try await asset.load(.isPlayable, .duration)
+                }
                 guard self.poolGeneration == generation else { return }
 
                 let playerItem = AVPlayerItem(asset: asset)
                 playerItem.audioTimePitchAlgorithm = .timeDomain
-                playerItem.automaticallyPreservesTimeOffsetFromLive = true
+                if !isLocal {
+                    playerItem.preferredForwardBufferDuration = 8.0
+                }
 
                 // Dual-branch stalling configuration
                 slot.player.automaticallyWaitsToMinimizeStalling = !isLocal
@@ -273,12 +307,15 @@ public final class AVPlayerPool: ObservableObject {
         let slotItem = SlotItem(reel: item, localURL: resolvedLocal, remoteURL: item.videoUrl, isLocal: isLocal)
         slot.slotItem = slotItem
 
-        let asset = AVURLAsset(url: mediaURL)
+        let assetOptions: [String: Any]? = isLocal ? nil : [AVURLAssetPreferPreciseDurationAndTimingKey: false]
+        let asset = AVURLAsset(url: mediaURL, options: assetOptions)
         inFlightTasks[slot.index]?.cancel()
         inFlightTasks[slot.index] = Task { @MainActor [weak self] in
             guard let self = self else { return }
             do {
-                _ = try await asset.load(.isPlayable, .duration)
+                if isLocal {
+                    _ = try await asset.load(.isPlayable, .duration)
+                }
                 guard self.poolGeneration == generation else { return }
 
                 let playerItem = AVPlayerItem(asset: asset)
