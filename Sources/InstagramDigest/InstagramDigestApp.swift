@@ -15,11 +15,12 @@ struct InstagramDigestApp: App {
                 AppState.self
             ])
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-            self.modelContainer = try ModelContainer(for: schema, configurations: [config])
+            let container = try ModelContainer(for: schema, configurations: [config])
+            self.modelContainer = container
 
             // Wire container to MediaCacheManager actor
             Task {
-                await MediaCacheManager.shared.setModelContainer(self.modelContainer)
+                await MediaCacheManager.shared.setModelContainer(container)
                 await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
 
                 // Wire download suspension handler for Free Local Storage
