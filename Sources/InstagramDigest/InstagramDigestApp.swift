@@ -110,6 +110,12 @@ struct FeedMainView: View {
     @State private var showDownloadSheet: Bool = false
     @State private var showBookmarksSheet: Bool = false
     @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
+    // Set while a category switch resets activeIndex to 0 so the transient
+    // reset is not persisted as the user's resume position.
+    @State private var suppressNextResumeSave: Bool = false
+    // Captured when a sheet pauses playback so dismiss without selection can
+    // resume instead of stranding the feed paused.
+    @State private var wasPlayingBeforeSheet: Bool = false
 
     // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
@@ -240,14 +246,17 @@ struct FeedMainView: View {
                         totalCount: pool.currentItems.count,
                         bookmarkCount: savedBookmarks.count,
                         onTapGrid: {
+                            wasPlayingBeforeSheet = pool.isPlaying
                             pool.pause()
                             showGridSheet = true
                         },
                         onTapOffline: {
+                            wasPlayingBeforeSheet = pool.isPlaying
                             pool.pause()
                             showDownloadSheet = true
                         },
                         onTapBookmarks: {
+                            wasPlayingBeforeSheet = pool.isPlaying
                             pool.pause()
                             showBookmarksSheet = true
                         }
@@ -260,6 +269,10 @@ struct FeedMainView: View {
                             selectedCategoryId = newCat
                             guard let m = manifest else { return }
                             pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId)
+                            // The reset to 0 is a view-filter artifact, not a
+                            // watched position: suppress its resume persist so
+                            // it cannot overwrite the saved full-list position.
+                            suppressNextResumeSave = true
                             activeIndex = 0
                         }
                     )
@@ -309,7 +322,20 @@ struct FeedMainView: View {
             BookmarksSheet()
         }
         .onChange(of: activeIndex) { _, newIndex in
+            if suppressNextResumeSave {
+                suppressNextResumeSave = false
+                return
+            }
             saveLastActiveReel(index: newIndex)
+        }
+        .onChange(of: showGridSheet) { _, isPresented in
+            resumeFeedAfterSheet(isPresented: isPresented)
+        }
+        .onChange(of: showDownloadSheet) { _, isPresented in
+            resumeFeedAfterSheet(isPresented: isPresented)
+        }
+        .onChange(of: showBookmarksSheet) { _, isPresented in
+            resumeFeedAfterSheet(isPresented: isPresented)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             saveLastActiveReel(index: activeIndex)
@@ -353,6 +379,8 @@ struct FeedMainView: View {
                         }
                         UserDefaults.standard.removeObject(forKey: "lastActiveReelID_\(oldWeek)")
                         UserDefaults.standard.removeObject(forKey: "lastActiveIndex_\(oldWeek)")
+                        UserDefaults.standard.removeObject(forKey: "lastActiveReelID_global")
+                        UserDefaults.standard.removeObject(forKey: "lastActiveIndex_global")
                         Task {
                             await MediaCacheManager.shared.purgeOldWeekDirectory(oldWeekID: oldWeek)
                         }
@@ -363,16 +391,6 @@ struct FeedMainView: View {
                                 try self.modelContext.save()
                             } catch {
                                 self.modelContext.rollback()
-                            }
-                        }
-                        // Resume at last active reel
-                        if let lastID = state.lastActiveReelID ?? UserDefaults.standard.string(forKey: "lastActiveReelID_\(fetched.weekId)"),
-                           let idx = fetched.items.firstIndex(where: { $0.id == lastID }) {
-                            resumeIndex = idx
-                        } else {
-                            let savedIdx = UserDefaults.standard.integer(forKey: "lastActiveIndex_\(fetched.weekId)")
-                            if savedIdx >= 0 && savedIdx < fetched.items.count {
-                                resumeIndex = savedIdx
                             }
                         }
                     }
@@ -396,6 +414,21 @@ struct FeedMainView: View {
                         try? self.modelContext.save()
                     }
                     self.watchedReelIDs.removeAll()
+                    resumeIndex = 0
+                } else {
+                    let savedID = appState?.lastActiveReelID
+                        ?? UserDefaults.standard.string(forKey: "lastActiveReelID_\(fetched.weekId)")
+                        ?? UserDefaults.standard.string(forKey: "lastActiveReelID_global")
+                    let savedIdx = (UserDefaults.standard.object(forKey: "lastActiveIndex_\(fetched.weekId)") as? Int)
+                        ?? (UserDefaults.standard.object(forKey: "lastActiveIndex_global") as? Int)
+
+                    resumeIndex = WatchedRules.resolveResumeIndex(
+                        currentWeekID: fetched.weekId,
+                        previousWeekID: appState?.currentWeekID,
+                        savedReelID: savedID,
+                        savedIndex: savedIdx,
+                        items: fetched.items
+                    )
                 }
 
                 self.activeIndex = resumeIndex
@@ -462,6 +495,20 @@ struct FeedMainView: View {
         }
         UserDefaults.standard.set(reel.id, forKey: "lastActiveReelID_\(weekID)")
         UserDefaults.standard.set(index, forKey: "lastActiveIndex_\(weekID)")
+        UserDefaults.standard.set(reel.id, forKey: "lastActiveReelID_global")
+        UserDefaults.standard.set(index, forKey: "lastActiveIndex_global")
+    }
+
+    /// Resumes feed playback after a sheet is dismissed without selection.
+    /// Grid selection already resumes via jumpToReel; this covers Done/Close.
+    private func resumeFeedAfterSheet(isPresented: Bool) {
+        guard !isPresented else { return }
+        guard wasPlayingBeforeSheet else { return }
+        wasPlayingBeforeSheet = false
+        // All three sheets are mutually exclusive, so any dismiss resumes.
+        if !showGridSheet && !showDownloadSheet && !showBookmarksSheet {
+            pool.play()
+        }
     }
 
     // MARK: - Watched Rules Engine
@@ -777,6 +824,14 @@ public enum ShareSheetPresenter {
         var topVC = rootVC
         while let presented = topVC.presentedViewController {
             topVC = presented
+        }
+
+        // Re-entrancy guard: a rapid double-tap on Share must not attempt a
+        // second present over the already-presented activity sheet (UIKit
+        // logs "Attempt to present ... while already presenting" and drops
+        // the second sheet).
+        if topVC is UIActivityViewController || topVC.presentedViewController is UIActivityViewController {
+            return
         }
 
         let activityVC = UIActivityViewController(activityItems: items, applicationActivities: nil)

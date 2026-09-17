@@ -258,6 +258,7 @@ public final class AVPlayerPool: ObservableObject {
             slot.playerLayer?.videoGravity = .resizeAspect
             applyPlaybackRate()
             self.isPlaying = true
+            AudioSessionCoordinator.shared.activateSession()
             return
         }
 

@@ -150,4 +150,95 @@ final class ModelTests: XCTestCase {
         let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
         XCTAssertEqual(manifest.items.count, 300, "Bundled data.json must contain exactly 300 reels")
     }
+
+    // MARK: - Resume at Last Active Reel & Weekly Rollover Rules
+
+    func testResolveResumeIndexRule() {
+        let items = [
+            ReelItem(id: "r0", creatorHandle: "a", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/0.mp4")!),
+            ReelItem(id: "r1", creatorHandle: "b", caption: "", rank: 2, videoUrl: URL(string: "https://example.com/1.mp4")!),
+            ReelItem(id: "r2", creatorHandle: "c", caption: "", rank: 3, videoUrl: URL(string: "https://example.com/2.mp4")!),
+            ReelItem(id: "r3", creatorHandle: "d", caption: "", rank: 4, videoUrl: URL(string: "https://example.com/3.mp4")!)
+        ]
+
+        // 1. Weekly rollover: previous week ("2026-09-07") != current week ("2026-09-14") -> must reset to 0 (Reel 1)
+        let rolloverIndex = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-07",
+            savedReelID: "r2",
+            savedIndex: 2,
+            items: items
+        )
+        XCTAssertEqual(rolloverIndex, 0, "Weekly rollover must start with Reel 1 (index 0)")
+
+        // 2. Same week: matching savedReelID -> resolves to matching reel index
+        let sameWeekMatchID = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-14",
+            savedReelID: "r2",
+            savedIndex: nil,
+            items: items
+        )
+        XCTAssertEqual(sameWeekMatchID, 2, "Same-week launch must resume at saved reel index")
+
+        // 3. Same week: savedReelID not found or nil, valid savedIndex fallback
+        let sameWeekFallbackIndex = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-14",
+            savedReelID: nil,
+            savedIndex: 3,
+            items: items
+        )
+        XCTAssertEqual(sameWeekFallbackIndex, 3, "Same-week launch must fallback to savedIndex")
+
+        // 4. Out-of-bounds savedIndex falls back to 0
+        let outOfBoundsIndex = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-14",
+            savedReelID: nil,
+            savedIndex: 99,
+            items: items
+        )
+        XCTAssertEqual(outOfBoundsIndex, 0, "Out-of-bounds savedIndex must fallback to 0")
+
+        // 5. Empty items array returns 0 safely
+        let emptyItemsIndex = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-14",
+            savedReelID: "r2",
+            savedIndex: 2,
+            items: []
+        )
+        XCTAssertEqual(emptyItemsIndex, 0, "Empty items array must return 0")
+
+        // 6. Saved reel ID wins over a conflicting saved index (reordered list)
+        let idPrecedence = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-14",
+            savedReelID: "r1",
+            savedIndex: 3,
+            items: items
+        )
+        XCTAssertEqual(idPrecedence, 1, "savedReelID match must take precedence over savedIndex")
+
+        // 7. Negative saved index falls back to 0
+        let negativeIndex = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: "2026-09-14",
+            savedReelID: nil,
+            savedIndex: -1,
+            items: items
+        )
+        XCTAssertEqual(negativeIndex, 0, "Negative savedIndex must fallback to 0")
+
+        // 8. First launch (no previous week, no saved state) starts at Reel 1
+        let firstLaunch = WatchedRules.resolveResumeIndex(
+            currentWeekID: "2026-09-14",
+            previousWeekID: nil,
+            savedReelID: nil,
+            savedIndex: nil,
+            items: items
+        )
+        XCTAssertEqual(firstLaunch, 0, "First launch must start with Reel 1 (index 0)")
+    }
 }

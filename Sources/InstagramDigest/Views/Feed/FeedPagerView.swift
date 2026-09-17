@@ -67,7 +67,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
     public func updateUIViewController(_ uiViewController: FeedCollectionViewController, context: Context) {
         context.coordinator.parent = self
         uiViewController.coordinator = context.coordinator
-        uiViewController.updateReelsIfNeeded(reels)
+        uiViewController.updateReelsIfNeeded(reels, targetIndex: currentIndex)
         uiViewController.scrollToCurrentIndexIfNeeded(currentIndex)
         uiViewController.updateCurrentIndex(currentIndex)
     }
@@ -262,6 +262,9 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
                 guard !self.parent.reels.isEmpty else { return }
+                if let vc = self.viewController, vc.pendingInitialScrollIndex != nil {
+                    return
+                }
                 let height = scrollView.bounds.height
                 guard height > 0 else { return }
 
@@ -304,6 +307,8 @@ public final class FeedCollectionViewController: UICollectionViewController {
     private var lastScrolledIndex: Int = -1
     private var currentAttachedIndex: Int = -1
     private var notificationTokens: [NSObjectProtocol] = []
+    private var lastLayoutHeight: CGFloat = 0
+    public var pendingInitialScrollIndex: Int?
 
     public override func viewDidLoad() {
         super.viewDidLoad()
@@ -366,6 +371,36 @@ public final class FeedCollectionViewController: UICollectionViewController {
 
     public override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        let boundsHeight = collectionView.bounds.height
+        if boundsHeight > 0, let pending = pendingInitialScrollIndex, !currentReels.isEmpty {
+            // Clamp: a stale pending index (e.g. category filter shortened the
+            // list) must land on the nearest valid page, never keep a stale
+            // offset beyond content.
+            let clamped = max(0, min(pending, currentReels.count - 1))
+            pendingInitialScrollIndex = nil
+            lastScrolledIndex = clamped
+            coordinator?.lastActiveIndex = clamped
+            let targetOffsetY = CGFloat(clamped) * boundsHeight
+            collectionView.setContentOffset(CGPoint(x: 0, y: targetOffsetY), animated: false)
+            currentAttachedIndex = clamped
+        } else if boundsHeight > 0, pendingInitialScrollIndex != nil, currentReels.isEmpty {
+            // List is empty: retain pending until items arrive; do not drop it.
+        } else if boundsHeight > 0, pendingInitialScrollIndex == nil {
+            // Rotation / safe-area change: cell height changed, so re-align the
+            // offset to the attached page instead of stranding between pages.
+            if lastLayoutHeight > 0, abs(boundsHeight - lastLayoutHeight) > 0.5,
+               currentAttachedIndex >= 0, currentAttachedIndex < currentReels.count,
+               !collectionView.isDragging, !collectionView.isDecelerating {
+                let expectedY = CGFloat(currentAttachedIndex) * boundsHeight
+                if abs(collectionView.contentOffset.y - expectedY) > 1.0 {
+                    collectionView.setContentOffset(CGPoint(x: 0, y: expectedY), animated: false)
+                    lastScrolledIndex = currentAttachedIndex
+                }
+            }
+        }
+        if boundsHeight > 0 {
+            lastLayoutHeight = boundsHeight
+        }
         reattachPlayerToVisibleCells()
     }
 
@@ -403,13 +438,24 @@ public final class FeedCollectionViewController: UICollectionViewController {
     }
 
     /// Only reloads data when reels collection identity actually changes (prevents reloadData churn)
-    public func updateReelsIfNeeded(_ newReels: [ReelItem]) {
+    public func updateReelsIfNeeded(_ newReels: [ReelItem], targetIndex: Int? = nil) {
         if currentReels != newReels {
             self.currentReels = newReels
-            self.currentAttachedIndex = -1
+            self.currentAttachedIndex = targetIndex ?? -1
             // Reset so scrollToCurrentIndexIfNeeded(0) fires on category switch
             // even when the previous list was already parked at index 0.
             self.lastScrolledIndex = -1
+            // Always refresh pending on list identity change (even for target
+            // 0): otherwise a stale pending index from launch survives a
+            // category switch and scrolls the new filtered list to the wrong
+            // page. scrollToCurrentIndexIfNeeded clears it again when it can
+            // scroll immediately; viewDidLayoutSubviews consumes the deferred
+            // remainder.
+            if let target = targetIndex {
+                self.pendingInitialScrollIndex = target
+            } else {
+                self.pendingInitialScrollIndex = nil
+            }
             collectionView.reloadData()
         }
     }
@@ -422,12 +468,30 @@ public final class FeedCollectionViewController: UICollectionViewController {
     }
 
     public func scrollToCurrentIndexIfNeeded(_ index: Int) {
-        guard index != lastScrolledIndex, index >= 0, index < currentReels.count else { return }
+        guard index >= 0, index < currentReels.count else { return }
+        let boundsHeight = collectionView.bounds.height
+        if boundsHeight <= 0 || collectionView.numberOfItems(inSection: 0) == 0 {
+            // Collection view has not performed layout or reload yet: defer scroll until viewDidLayoutSubviews
+            self.pendingInitialScrollIndex = index
+            self.currentAttachedIndex = index
+            return
+        }
+
+        guard index != lastScrolledIndex else {
+            // Already parked: no stale pending may linger, otherwise the
+            // settle guard would keep swallowing genuine user scrolls.
+            pendingInitialScrollIndex = nil
+            return
+        }
         let shouldAnimate = (lastScrolledIndex >= 0 && abs(index - lastScrolledIndex) == 1)
         lastScrolledIndex = index
         coordinator?.lastActiveIndex = index
-        let indexPath = IndexPath(item: index, section: 0)
-        collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: shouldAnimate)
+        // Immediate scroll succeeded: consume any pending marker so the
+        // settle guard re-arms for real user scrolls. Only the deferred
+        // (bounds == 0) path may leave pending set.
+        pendingInitialScrollIndex = nil
+        let targetOffsetY = CGFloat(index) * boundsHeight
+        collectionView.setContentOffset(CGPoint(x: 0, y: targetOffsetY), animated: shouldAnimate)
         updateCurrentIndex(index)
     }
 

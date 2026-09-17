@@ -110,6 +110,69 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(cell1 is FeedCell)
     }
 
+    // MARK: - Resume pending-index lifecycle (launch-at-last-reel fix)
+
+    @MainActor
+    func testPendingInitialScrollRefreshesOnListChange() {
+        let layout = UICollectionViewFlowLayout()
+        let vc = FeedCollectionViewController(collectionViewLayout: layout)
+        vc.loadViewIfNeeded()
+
+        let full = (0..<5).map {
+            ReelItem(id: "r\($0)", creatorHandle: "c", caption: "", rank: $0 + 1, videoUrl: URL(string: "https://example.com/\($0).mp4")!)
+        }
+        let filtered = (0..<2).map {
+            ReelItem(id: "f\($0)", creatorHandle: "c", caption: "", rank: $0 + 1, videoUrl: URL(string: "https://example.com/f\($0).mp4")!)
+        }
+
+        // Launch parks pending at the resume target…
+        vc.updateReelsIfNeeded(full, targetIndex: 4)
+        XCTAssertEqual(vc.pendingInitialScrollIndex, 4)
+
+        // …but a category switch to target 0 must not leave the stale 4 behind.
+        vc.updateReelsIfNeeded(filtered, targetIndex: 0)
+        XCTAssertEqual(vc.pendingInitialScrollIndex, 0, "Stale pending index must be refreshed on list change")
+    }
+
+    @MainActor
+    func testPendingInitialScrollClampsOutOfRangeIndex() {
+        let reels = (0..<3).map {
+            ReelItem(id: "r\($0)", creatorHandle: "c", caption: "", rank: $0 + 1, videoUrl: URL(string: "https://example.com/\($0).mp4")!)
+        }
+        var currentIndex = 0
+        let binding = Binding<Int>(get: { currentIndex }, set: { currentIndex = $0 })
+        let pagerView = FeedPagerView(
+            reels: reels,
+            currentIndex: binding,
+            onPageChanged: { _ in },
+            onScrollEnded: { _ in },
+            onForwardScrollPast: { _ in }
+        )
+        let coordinator = FeedPagerView.Coordinator(pagerView)
+
+        let layout = UICollectionViewFlowLayout()
+        layout.scrollDirection = .vertical
+        layout.minimumLineSpacing = 0
+        let vc = FeedCollectionViewController(collectionViewLayout: layout)
+        vc.coordinator = coordinator
+        coordinator.viewController = vc
+        vc.loadViewIfNeeded()
+        vc.collectionView.dataSource = coordinator
+        vc.collectionView.delegate = coordinator
+        vc.collectionView.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        vc.collectionView.layoutIfNeeded()
+
+        vc.updateReelsIfNeeded(reels, targetIndex: 0)
+        vc.collectionView.layoutIfNeeded()
+        // Simulate a stale oversized pending (e.g. resume 15 vs a 3-item filter).
+        vc.pendingInitialScrollIndex = 99
+        vc.viewDidLayoutSubviews()
+
+        XCTAssertNil(vc.pendingInitialScrollIndex, "Pending marker must be consumed by layout")
+        XCTAssertEqual(vc.collectionView.contentOffset.y, CGFloat(2 * 844), accuracy: 1.0,
+                       "Out-of-range pending must clamp to the last page, never strand beyond content")
+    }
+
     @MainActor
     func testIdleCoordinatorSurvivesPlaybackToggleWithoutLeavingIdle() async throws {
         let coordinator = DownloadAllCoordinator.shared
