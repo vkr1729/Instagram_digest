@@ -98,6 +98,9 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         }
 
         self.currentWeekID = weekID
+        self.watchdogResumeTask?.cancel()
+        self.watchdogResumeTask = nil
+        self.isSuspended = false
         let pending = reels.filter {
             !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id)
         }
@@ -113,9 +116,6 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         self.completedInBatch = 0
         self.failedInBatch = 0
         self.retryCounts.removeAll()
-        self.watchdogResumeTask?.cancel()
-        self.watchdogResumeTask = nil
-        self.isSuspended = false
         self.state = .downloading(completed: 0, total: totalInBatch, currentReelID: nil)
         self.overallProgress = 0.0
 

@@ -145,6 +145,7 @@ public final class FeedCollectionViewController: UICollectionViewController {
     private var currentReels: [ReelItem] = []
     private var lastScrolledIndex: Int = -1
     private var currentAttachedIndex: Int = -1
+    private var notificationTokens: [NSObjectProtocol] = []
 
     public override func viewDidLoad() {
         super.viewDidLoad()
@@ -156,20 +157,30 @@ public final class FeedCollectionViewController: UICollectionViewController {
         collectionView.delegate = coordinator
         collectionView.prefetchDataSource = coordinator
 
-        NotificationCenter.default.addObserver(
-            forName: AVPlayerPool.didEnterForegroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.reattachPlayerToVisibleCell()
-        }
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: AVPlayerPool.didEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reattachPlayerToVisibleCell()
+            }
+        )
 
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.willEnterForegroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.reattachPlayerToVisibleCell()
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reattachPlayerToVisibleCell()
+            }
+        )
+    }
+
+    deinit {
+        for token in notificationTokens {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 
@@ -312,17 +323,24 @@ public final class FeedCell: UICollectionViewCell {
 public final class ImagePipeline: @unchecked Sendable {
     public static let shared = ImagePipeline()
     private let cache = NSCache<NSURL, UIImage>()
+    private var memoryWarningToken: NSObjectProtocol?
 
     private init() {
         cache.countLimit = 150
         cache.totalCostLimit = 50 * 1024 * 1024 // 50 MB decoded image memory cache
 
-        NotificationCenter.default.addObserver(
+        memoryWarningToken = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.cache.removeAllObjects()
+        }
+    }
+
+    deinit {
+        if let token = memoryWarningToken {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 
@@ -350,7 +368,7 @@ public final class ImagePipeline: @unchecked Sendable {
                 rawImage.draw(at: .zero)
             }
 
-            let cost = Int(decompressed.size.width * decompressed.size.height * 4)
+            let cost = Int(rawImage.size.width * rawImage.scale * rawImage.size.height * rawImage.scale * 4)
             self?.cache.setObject(decompressed, forKey: url as NSURL, cost: cost)
 
             Task { @MainActor in

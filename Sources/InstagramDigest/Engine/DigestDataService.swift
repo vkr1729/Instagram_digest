@@ -21,10 +21,14 @@ public actor DigestDataService {
     public func fetchManifest(from url: URL = defaultManifestURL) async throws -> DigestManifest {
         let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent("manifest_cache.json")
 
-        // 1. If url is a local file URL, load directly
+        // 1. If url is a local file URL, load directly; on corrupt file fall through to fallbacks
         if url.isFileURL {
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(DigestManifest.self, from: data)
+            do {
+                let data = try Data(contentsOf: url)
+                return try JSONDecoder().decode(DigestManifest.self, from: data)
+            } catch {
+                // Corrupt/unreadable file URL — fall through to cache/bundle fallback below
+            }
         }
 
         // 2. Attempt network fetch
