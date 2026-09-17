@@ -213,10 +213,22 @@ public actor MediaCacheManager {
         }
     }
 
-    /// Keep Offline action for a bookmark: ensures space and copies media file to Bookmarks directory
-    public func keepBookmarkOffline(item: BookmarkItem) async throws {
+    /// Keep Offline action for a bookmark by ID: ensures space and copies media file to Bookmarks directory.
+    /// Operates completely within actor context to avoid non-Sendable @Model crossing actor boundaries.
+    public func keepBookmarkOffline(weekID: String, reelID: String, fallbackSizeBytes: Int64 = 0) async throws {
         let fm = FileManager.default
-        let bookmarkDestURL = pathResolver.bookmarkFileURL(for: item.reelID)
+        let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
+
+        guard let container = modelContainer else {
+            throw CacheError.insufficientStorage("ModelContainer not configured")
+        }
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<BookmarkItem>(
+            predicate: #Predicate { $0.reelID == reelID }
+        )
+        guard let item = (try? context.fetch(descriptor))?.first else {
+            throw CacheError.fileNotFound("Bookmark row not found in database.")
+        }
 
         if fm.fileExists(atPath: bookmarkDestURL.path) {
             if item.localStatus != .cached {
@@ -226,18 +238,19 @@ public actor MediaCacheManager {
                     item.sizeBytes = size
                     self.totalBookmarkBytes += size
                 }
+                try? context.save()
             }
             return
         }
 
-        // Locate existing media file from feed or download
-        let feedURL = pathResolver.localFileURL(for: item.weekID, reelID: item.reelID)
+        // Locate existing media file from feed
+        let feedURL = pathResolver.localFileURL(for: weekID, reelID: reelID)
         guard fm.fileExists(atPath: feedURL.path) else {
             throw CacheError.fileNotFound("Local media not available to store offline. Download first.")
         }
 
         let attrs = try fm.attributesOfItem(atPath: feedURL.path)
-        let fileSize = attrs[.size] as? Int64 ?? item.sizeBytes
+        let fileSize = attrs[.size] as? Int64 ?? (item.sizeBytes > 0 ? item.sizeBytes : fallbackSizeBytes)
 
         // Ensure space under 1.5 GB cap
         try await ensureSpaceForBookmark(incomingBytes: fileSize)
@@ -250,6 +263,20 @@ public actor MediaCacheManager {
         item.sizeBytes = fileSize
         item.lastAccessedAt = Date()
         self.totalBookmarkBytes += fileSize
+        try? context.save()
+    }
+
+    /// Serialized deletion of a bookmark's offline file (avoids orphaned files on unbookmark or delete)
+    public func deleteBookmarkFile(reelID: String) {
+        let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: bookmarkDestURL.path) {
+            if let attrs = try? fm.attributesOfItem(atPath: bookmarkDestURL.path),
+               let size = attrs[.size] as? Int64 {
+                self.totalBookmarkBytes = max(0, self.totalBookmarkBytes - size)
+            }
+            try? fm.removeItem(at: bookmarkDestURL)
+        }
     }
 
     // MARK: - Free Local Storage Action
