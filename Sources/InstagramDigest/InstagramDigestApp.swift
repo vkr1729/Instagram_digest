@@ -82,6 +82,7 @@ struct FeedMainView: View {
     @State private var lastScrollEndTime: TimeInterval = 0
     @State private var seekPreviewFraction: Double? = nil
     @State private var showBookmarkPop: Bool = false
+    @State private var isCaptionExpanded: Bool = false
 
     // Modals state
     @State private var showGridSheet: Bool = false
@@ -136,6 +137,7 @@ struct FeedMainView: View {
                     reels: items,
                     currentIndex: $activeIndex,
                     onPageChanged: { newIndex in
+                        isCaptionExpanded = false
                         pool.setCurrentIndex(newIndex)
                     },
                     onScrollEnded: { uptime in
@@ -170,6 +172,23 @@ struct FeedMainView: View {
                     currentProgress: pool.currentProgress
                 )
                 .ignoresSafeArea()
+                .overlay(alignment: .bottomLeading) {
+                    if !currentReel.caption.isEmpty {
+                        Text(currentReel.caption)
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.95))
+                            .lineLimit(isCaptionExpanded ? 8 : 2)
+                            .multilineTextAlignment(.leading)
+                            .padding(.horizontal, 16)
+                            .accessibilityIdentifier("ReelCaptionText")
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    isCaptionExpanded.toggle()
+                                }
+                            }
+                            .offset(y: -56)
+                    }
+                }
 
                 // 2. Full-Bleed Live Overlay (Seek HUD, Progress, Pills, Bookmark Pop)
                 ReelCardOverlayView(
@@ -354,6 +373,23 @@ struct FeedMainView: View {
                 // Load historical watched state immediately after manifest arrives
                 refreshWatchedReels()
                 refreshBookmarks()
+
+                // Seed Mindful 50-reels modal in UI testing if requested
+                if ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful") {
+                    let todayStr = getTodayDateString()
+                    let dailyDescriptor = FetchDescriptor<DailyProgress>(
+                        predicate: #Predicate { $0.dateString == todayStr }
+                    )
+                    if let existing = (try? modelContext.fetch(dailyDescriptor))?.first {
+                        existing.viewedCount = 50
+                        existing.snoozeUntil = nil
+                    } else {
+                        let daily = DailyProgress(dateString: todayStr, viewedCount: 50, snoozeUntil: nil)
+                        modelContext.insert(daily)
+                    }
+                    try? modelContext.save()
+                    self.showMindfulModal = true
+                }
             } catch {
                 self.errorMessage = "Unable to connect to digest: \(error.localizedDescription)"
                 self.isLoading = false
@@ -425,6 +461,7 @@ struct FeedMainView: View {
     /// Jump-to-N: Marks all predecessors (0 through targetIndex - 1) as watched in a single batch
     private func jumpToReel(at targetIndex: Int) {
         guard let items = manifest?.items, targetIndex >= 0, targetIndex < items.count else { return }
+        isCaptionExpanded = false
         let weekID = manifest?.weekId ?? "default_week"
 
         // 1. Single query for existing watched items in this week
@@ -433,16 +470,19 @@ struct FeedMainView: View {
         )
         let alreadyWatched = Set((try? modelContext.fetch(descriptor))?.map { $0.reelID } ?? [])
 
-        var unrecordedCount = 0
-        for i in 0..<targetIndex {
-            let predID = items[i].id
-            if !alreadyWatched.contains(predID) {
-                let event = WatchedEvent(reelID: predID, weekID: weekID)
-                modelContext.insert(event)
-                watchedReelIDs.insert(predID)
-                unrecordedCount += 1
-            }
+        let unrecordedIDs = WatchedRules.unrecordedPredecessorIDs(
+            items: items,
+            targetIndex: targetIndex,
+            alreadyWatched: alreadyWatched
+        )
+
+        for predID in unrecordedIDs {
+            let event = WatchedEvent(reelID: predID, weekID: weekID)
+            modelContext.insert(event)
+            watchedReelIDs.insert(predID)
         }
+
+        let unrecordedCount = unrecordedIDs.count
 
         if unrecordedCount > 0 {
             let todayStr = getTodayDateString()

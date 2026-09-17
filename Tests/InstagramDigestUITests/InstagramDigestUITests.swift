@@ -190,11 +190,11 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(feedView.waitForExistence(timeout: 8.0))
 
         // Center-Lower Bookmark zone: normX in [0.35, 0.65], normY > 0.65
-        let centerLowerCoord = feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.75))
+        let centerLowerCoord = feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
         centerLowerCoord.press(forDuration: 0.7)
 
         // Verify bookmark indicator appears
-        let bookmarkIndicator = app.images["BookmarkIndicator"]
+        let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
         XCTAssertTrue(bookmarkIndicator.waitForExistence(timeout: 3.0), "BookmarkIndicator should appear after bookmarking")
 
         // Open Bookmarks sheet to verify persistence
@@ -252,6 +252,22 @@ final class InstagramDigestUITests: XCTestCase {
         let speedButton = app.buttons["SpeedButton"]
         speedButton.tap()
         XCTAssertFalse(latchedBadge.exists, "Tapping speed button must clear 2.0x latch")
+
+        // Latch 2.0x again and verify swipe to next reel resets latch (Contract §1.5)
+        Thread.sleep(forTimeInterval: 0.5)
+        upperRightCoord.press(forDuration: 0.7)
+        XCTAssertTrue(latchedBadge.waitForExistence(timeout: 3.0))
+
+        feedView.swipeUp(velocity: .fast)
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        let rankPredicate = NSPredicate(format: "label CONTAINS '#02'")
+        let rankExpectation = XCTNSPredicateExpectation(predicate: rankPredicate, object: rankBadge)
+        let rankResult = XCTWaiter.wait(for: [rankExpectation], timeout: 5.0)
+        XCTAssertEqual(rankResult, .completed, "Rank should advance to #02")
+
+        let badgeGoneExpectation = XCTNSPredicateExpectation(predicate: badgePredicate, object: latchedBadge)
+        let badgeGoneResult = XCTWaiter.wait(for: [badgeGoneExpectation], timeout: 4.0)
+        XCTAssertEqual(badgeGoneResult, .completed, "Latched2xBadge should dismiss upon changing reels")
     }
 
     // MARK: - 9. Vertical Feed Swipe Paging (Forward, Backward)
@@ -303,5 +319,128 @@ final class InstagramDigestUITests: XCTestCase {
 
         let speedButton = app.buttons["SpeedButton"]
         XCTAssertTrue(speedButton.waitForExistence(timeout: 5.0), "Feed controls should be active after share dismiss")
+    }
+
+    // MARK: - 11. Caption Expansion Toggle (P0 Hit-Testing Fix)
+
+    func testCaptionExpansionToggle() throws {
+        let caption = app.staticTexts["ReelCaptionText"]
+        XCTAssertTrue(caption.waitForExistence(timeout: 8.0), "ReelCaptionText should exist on feed")
+
+        let initialHeight = caption.frame.height
+        XCTAssertGreaterThan(initialHeight, 0, "Initial caption height should be non-zero")
+
+        // Tap caption to expand from 2 lines to 8 lines
+        caption.tap()
+        Thread.sleep(forTimeInterval: 0.5) // Wait for 0.2s animation to complete
+
+        let expandedHeight = caption.frame.height
+        XCTAssertGreaterThan(expandedHeight, initialHeight + 10.0, "Caption height should expand by at least 10pt upon tap")
+
+        // Tap caption again to collapse back
+        caption.tap()
+        Thread.sleep(forTimeInterval: 0.5)
+
+        let collapsedHeight = caption.frame.height
+        XCTAssertLessThanOrEqual(abs(collapsedHeight - initialHeight), 5.0, "Caption should collapse back to initial height")
+
+        // Verify feed gestures pass through around the caption by swiping to next reel
+        let feedView = app.collectionViews["FeedCollectionView"]
+        feedView.swipeUp(velocity: .fast)
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        let rankPredicate = NSPredicate(format: "label CONTAINS '#02'")
+        let rankExpectation = XCTNSPredicateExpectation(predicate: rankPredicate, object: rankBadge)
+        let rankResult = XCTWaiter.wait(for: [rankExpectation], timeout: 5.0)
+        XCTAssertEqual(rankResult, .completed, "Feed should page to reel #02 after caption interaction")
+
+        // Assert feed controls remain alive and responsive
+        let speedButton = app.buttons["SpeedButton"]
+        XCTAssertTrue(speedButton.exists, "SpeedButton should remain visible and functional")
+    }
+
+    // MARK: - 12. Bookmarks Sheet Row Swipe-to-Delete (Candidate E1)
+
+    func testBookmarkRowSwipeToDelete() throws {
+        let feedView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(feedView.waitForExistence(timeout: 8.0))
+
+        // Bookmark reel 1 using Center-Lower long-press
+        let centerLowerCoord = feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.72))
+        centerLowerCoord.press(forDuration: 0.7)
+
+        let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
+        XCTAssertTrue(bookmarkIndicator.waitForExistence(timeout: 3.0), "BookmarkIndicator should appear")
+
+        // Open Bookmarks sheet
+        let bookmarksButton = app.buttons["BookmarksButton"]
+        XCTAssertTrue(bookmarksButton.exists)
+        bookmarksButton.tap()
+
+        let bookmarksTitle = app.staticTexts["Saved Bookmarks"]
+        XCTAssertTrue(bookmarksTitle.waitForExistence(timeout: 5.0))
+
+        // Query row via descendants
+        let row = app.descendants(matching: .any)["BookmarkRow_reel_01"]
+        XCTAssertTrue(row.waitForExistence(timeout: 3.0), "BookmarkRow_reel_01 should exist in list")
+
+        // Swipe left to delete
+        row.swipeLeft()
+        let deleteButton = app.buttons["Delete"]
+        XCTAssertTrue(deleteButton.waitForExistence(timeout: 3.0))
+        deleteButton.tap()
+
+        // Verify empty state text reappears
+        let emptyStateText = app.staticTexts["BookmarksEmptyStateText"]
+        XCTAssertTrue(emptyStateText.waitForExistence(timeout: 5.0), "Empty state should appear after deleting bookmark")
+
+        // Predicate wait for count label update to 0
+        let countLabel = app.staticTexts["BookmarksCountLabel"]
+        let countPredicate = NSPredicate(format: "label CONTAINS '0 saved reels'")
+        let countExpectation = XCTNSPredicateExpectation(predicate: countPredicate, object: countLabel)
+        let countResult = XCTWaiter.wait(for: [countExpectation], timeout: 5.0)
+        XCTAssertEqual(countResult, .completed, "Bookmarks count should update to 0 saved reels")
+
+        let doneButton = app.buttons["BookmarksDoneButton"]
+        doneButton.tap()
+        XCTAssertTrue(bookmarksButton.waitForExistence(timeout: 3.0))
+    }
+
+    // MARK: - 13. Mindful Daily Modal (Candidate D)
+
+    func testMindfulDailyModalInteraction() throws {
+        // Relaunch app with seeded 50-reels viewed milestone
+        app?.terminate()
+        let seededApp = XCUIApplication()
+        seededApp.launchArguments = ["-ui-testing", "-ui-testing-seed-mindful"]
+        seededApp.launch()
+        self.app = seededApp
+
+        let modal = seededApp.descendants(matching: .any)["MindfulDailyModal"]
+        XCTAssertTrue(modal.waitForExistence(timeout: 8.0), "MindfulDailyModal should appear when 50 reels reached")
+
+        let snoozeButton = seededApp.buttons["MindfulSnoozeButton"]
+        XCTAssertTrue(snoozeButton.waitForExistence(timeout: 3.0), "MindfulSnoozeButton should exist")
+
+        let takeBreakButton = seededApp.buttons["MindfulTakeBreakButton"]
+        XCTAssertTrue(takeBreakButton.waitForExistence(timeout: 3.0), "MindfulTakeBreakButton should exist")
+
+        let continueButton = seededApp.buttons["MindfulContinueButton"]
+        XCTAssertTrue(continueButton.waitForExistence(timeout: 3.0), "MindfulContinueButton should exist")
+
+        // Verify modal message displays seeded count
+        let milestoneText = modal.staticTexts.containing(NSPredicate(format: "label CONTAINS '50 reels'")).firstMatch
+        XCTAssertTrue(milestoneText.waitForExistence(timeout: 3.0), "Modal should display 50 reels milestone text")
+
+        // Tap Snooze for Today to dismiss modal
+        snoozeButton.tap()
+
+        // Verify modal dismisses
+        let modalGonePredicate = NSPredicate(format: "exists == false")
+        let modalExpectation = XCTNSPredicateExpectation(predicate: modalGonePredicate, object: modal)
+        let modalResult = XCTWaiter.wait(for: [modalExpectation], timeout: 5.0)
+        XCTAssertEqual(modalResult, .completed, "MindfulDailyModal should dismiss after tapping Snooze")
+
+        let speedButton = seededApp.buttons["SpeedButton"]
+        XCTAssertTrue(speedButton.waitForExistence(timeout: 5.0), "Feed controls should return after dismissing mindful modal")
     }
 }

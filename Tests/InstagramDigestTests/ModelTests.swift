@@ -83,4 +83,33 @@ final class ModelTests: XCTestCase {
         let event = WatchedEvent(reelID: "reel_01", weekID: "2026-09-17")
         XCTAssertEqual(event.compoundKey, "2026-09-17\u{1F}reel_01")
     }
+
+    func testJumpToReelPredecessorMarking() {
+        let items = [
+            ReelItem(id: "r0", creatorHandle: "a", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/0.mp4")!),
+            ReelItem(id: "r1", creatorHandle: "b", caption: "", rank: 2, videoUrl: URL(string: "https://example.com/1.mp4")!),
+            ReelItem(id: "r2", creatorHandle: "c", caption: "", rank: 3, videoUrl: URL(string: "https://example.com/2.mp4")!),
+            ReelItem(id: "r3", creatorHandle: "d", caption: "", rank: 4, videoUrl: URL(string: "https://example.com/3.mp4")!)
+        ]
+
+        // 1. Target 0: no predecessors
+        let atZero = WatchedRules.unrecordedPredecessorIDs(items: items, targetIndex: 0, alreadyWatched: [])
+        XCTAssertTrue(atZero.isEmpty)
+
+        // 2. Target 2 with none already watched: marks r0, r1
+        let atTwo = WatchedRules.unrecordedPredecessorIDs(items: items, targetIndex: 2, alreadyWatched: [])
+        XCTAssertEqual(atTwo, ["r0", "r1"])
+
+        // 3. Partial overlap: r0 is already watched, target is 3: marks r1, r2
+        let partial = WatchedRules.unrecordedPredecessorIDs(items: items, targetIndex: 3, alreadyWatched: ["r0"])
+        XCTAssertEqual(partial, ["r1", "r2"])
+
+        // 4. All predecessors already watched: returns empty
+        let allWatched = WatchedRules.unrecordedPredecessorIDs(items: items, targetIndex: 2, alreadyWatched: ["r0", "r1"])
+        XCTAssertTrue(allWatched.isEmpty)
+
+        // 5. Clamped beyond count
+        let beyond = WatchedRules.unrecordedPredecessorIDs(items: items, targetIndex: 10, alreadyWatched: [])
+        XCTAssertEqual(beyond, ["r0", "r1", "r2", "r3"])
+    }
 }

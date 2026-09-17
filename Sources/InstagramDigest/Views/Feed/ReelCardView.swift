@@ -12,8 +12,6 @@ public struct ReelCardOverlayView: View {
     public let currentTime: Double
     public let showBookmarkPop: Bool
 
-    @State private var isCaptionExpanded: Bool = false
-
     public init(
         reel: ReelItem,
         isLatched2x: Bool = false,
@@ -72,6 +70,7 @@ public struct ReelCardOverlayView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 20))
                 .transition(.scale.combined(with: .opacity))
                 .zIndex(20)
+                .allowsHitTesting(false)
             }
 
             // 3. Metadata Overlays
@@ -146,40 +145,26 @@ public struct ReelCardOverlayView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 56)
+                .allowsHitTesting(false)
 
                 Spacer()
 
-                // Bottom Content: Caption, Category, and Metrics
-                VStack(alignment: .leading, spacing: 8) {
-                    if !reel.caption.isEmpty {
-                        Text(reel.caption)
-                            .font(.system(size: 14))
-                            .foregroundColor(.white.opacity(0.95))
-                            .lineLimit(isCaptionExpanded ? 8 : 2)
-                            .multilineTextAlignment(.leading)
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    isCaptionExpanded.toggle()
-                                }
-                            }
+                // Bottom Content: Category and Metrics Metadata
+                HStack(spacing: 12) {
+                    if let cat = reel.category {
+                        Text(cat.uppercased())
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
                     }
-
-                    // Metadata Row
-                    HStack(spacing: 12) {
-                        if let cat = reel.category {
-                            Text(cat.uppercased())
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                        if let views = reel.viewCount, views > 0 {
-                            Text("\(formatNumber(views)) views")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
+                    if let views = reel.viewCount, views > 0 {
+                        Text("\(formatNumber(views)) views")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
+                .allowsHitTesting(false)
 
                 // 4. Seek HUD Preview (when user is scrubbing horizontally)
                 if let preview = seekFractionPreview, duration > 0 {
@@ -201,6 +186,7 @@ public struct ReelCardOverlayView: View {
                         Spacer()
                     }
                     .padding(.bottom, 12)
+                    .allowsHitTesting(false)
                 }
 
                 // 5. Scrubbing Progress Bar
@@ -220,6 +206,7 @@ public struct ReelCardOverlayView: View {
                 }
                 .frame(height: 3)
                 .padding(.bottom, 8)
+                .allowsHitTesting(false)
             }
         }
     }

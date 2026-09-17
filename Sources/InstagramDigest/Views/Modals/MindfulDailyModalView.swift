@@ -77,6 +77,7 @@ public struct MindfulDailyModalView: View {
                         .foregroundColor(.black)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
+                    .accessibilityIdentifier("MindfulTakeBreakButton")
 
                     // Secondary Action: Snooze For Today
                     Button {
@@ -93,6 +94,7 @@ public struct MindfulDailyModalView: View {
                         .foregroundColor(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
+                    .accessibilityIdentifier("MindfulSnoozeButton")
 
                     // Tertiary Action: Continue
                     Button {
@@ -103,6 +105,7 @@ public struct MindfulDailyModalView: View {
                             .foregroundColor(.white.opacity(0.6))
                     }
                     .padding(.top, 4)
+                    .accessibilityIdentifier("MindfulContinueButton")
                 }
                 .padding(.horizontal, 24)
             }
@@ -110,6 +113,7 @@ public struct MindfulDailyModalView: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 24))
             .padding(.horizontal, 20)
+            .accessibilityIdentifier("MindfulDailyModal")
         }
     }
 }
