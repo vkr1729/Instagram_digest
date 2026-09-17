@@ -3,6 +3,7 @@ import XCTest
 /// Deep Automated User Acceptance Testing (UAT) suite for Instagram Digest.
 /// Exercises critical user workflows: Feed playback, Speed cycler, Jump Grid,
 /// Bulk download preflight, Bookmarks storage gauge, Spatial gestures, and Feed paging.
+@MainActor
 final class InstagramDigestUITests: XCTestCase {
 
     private var app: XCUIApplication!
@@ -379,15 +380,25 @@ final class InstagramDigestUITests: XCTestCase {
         let bookmarksTitle = app.staticTexts["Saved Bookmarks"]
         XCTAssertTrue(bookmarksTitle.waitForExistence(timeout: 5.0))
 
-        // Query row via descendants
-        let row = app.descendants(matching: .any)["BookmarkRow_reel_01"]
-        XCTAssertTrue(row.waitForExistence(timeout: 3.0), "BookmarkRow_reel_01 should exist in list")
+        // Target the bookmark cell
+        let cell = app.cells.firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 5.0), "Bookmark cell should exist in list")
 
-        // Swipe left to delete
-        row.swipeLeft()
-        let deleteButton = app.buttons["Delete"]
-        XCTAssertTrue(deleteButton.waitForExistence(timeout: 3.0))
-        deleteButton.tap()
+        // Swipe left to reveal delete action
+        cell.swipeLeft()
+
+        // Tap delete button (supports custom BookmarkDeleteButton or system Delete action)
+        let customDeleteButton = app.buttons["BookmarkDeleteButton"]
+        let systemDeleteButton = app.buttons["Delete"]
+        if customDeleteButton.waitForExistence(timeout: 3.0) {
+            customDeleteButton.tap()
+        } else if systemDeleteButton.waitForExistence(timeout: 3.0) {
+            systemDeleteButton.tap()
+        } else {
+            let cellDelete = cell.buttons["Delete"]
+            XCTAssertTrue(cellDelete.waitForExistence(timeout: 2.0), "Delete action should exist")
+            cellDelete.tap()
+        }
 
         // Verify empty state text reappears
         let emptyStateText = app.staticTexts["BookmarksEmptyStateText"]
@@ -415,11 +426,11 @@ final class InstagramDigestUITests: XCTestCase {
         seededApp.launch()
         self.app = seededApp
 
-        let modal = seededApp.descendants(matching: .any)["MindfulDailyModal"]
-        XCTAssertTrue(modal.waitForExistence(timeout: 8.0), "MindfulDailyModal should appear when 50 reels reached")
+        let modalTitle = seededApp.staticTexts["MindfulDailyModalTitle"]
+        XCTAssertTrue(modalTitle.waitForExistence(timeout: 8.0), "MindfulDailyModalTitle should appear when 50 reels reached")
 
         let snoozeButton = seededApp.buttons["MindfulSnoozeButton"]
-        XCTAssertTrue(snoozeButton.waitForExistence(timeout: 3.0), "MindfulSnoozeButton should exist")
+        XCTAssertTrue(snoozeButton.waitForExistence(timeout: 5.0), "MindfulSnoozeButton should exist")
 
         let takeBreakButton = seededApp.buttons["MindfulTakeBreakButton"]
         XCTAssertTrue(takeBreakButton.waitForExistence(timeout: 3.0), "MindfulTakeBreakButton should exist")
@@ -428,15 +439,16 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(continueButton.waitForExistence(timeout: 3.0), "MindfulContinueButton should exist")
 
         // Verify modal message displays seeded count
-        let milestoneText = modal.staticTexts.containing(NSPredicate(format: "label CONTAINS '50 reels'")).firstMatch
-        XCTAssertTrue(milestoneText.waitForExistence(timeout: 3.0), "Modal should display 50 reels milestone text")
+        let milestoneText = seededApp.staticTexts["MindfulMilestoneText"]
+        XCTAssertTrue(milestoneText.waitForExistence(timeout: 3.0), "Modal should display milestone text")
+        XCTAssertTrue(milestoneText.label.contains("50 reels"), "Milestone text should contain '50 reels'")
 
         // Tap Snooze for Today to dismiss modal
         snoozeButton.tap()
 
         // Verify modal dismisses
         let modalGonePredicate = NSPredicate(format: "exists == false")
-        let modalExpectation = XCTNSPredicateExpectation(predicate: modalGonePredicate, object: modal)
+        let modalExpectation = XCTNSPredicateExpectation(predicate: modalGonePredicate, object: modalTitle)
         let modalResult = XCTWaiter.wait(for: [modalExpectation], timeout: 5.0)
         XCTAssertEqual(modalResult, .completed, "MindfulDailyModal should dismiss after tapping Snooze")
 

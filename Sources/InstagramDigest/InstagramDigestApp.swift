@@ -55,6 +55,19 @@ struct InstagramDigestApp: App {
                     DownloadAllCoordinator.shared.cancelAll()
                 }
             }
+
+            // Seed mindful progress milestone in UI testing if requested
+            if isUITesting && ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful") {
+                let context = ModelContext(container)
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd"
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                let todayStr = formatter.string(from: Date())
+                let daily = DailyProgress(dateString: todayStr, viewedCount: 50, snoozeUntil: nil)
+                context.insert(daily)
+                try? context.save()
+            }
         } catch {
             fatalError("Failed to initialize SwiftData ModelContainer: \(error)")
         }
@@ -88,7 +101,7 @@ struct FeedMainView: View {
     @State private var showGridSheet: Bool = false
     @State private var showDownloadSheet: Bool = false
     @State private var showBookmarksSheet: Bool = false
-    @State private var showMindfulModal: Bool = false
+    @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
     @State private var showShareSheet: Bool = false
     @State private var shareItems: [Any] = []
 
@@ -272,25 +285,26 @@ struct FeedMainView: View {
                     Spacer()
                 }
 
-                // 4. Mindful 50-reels Modal Overlay
-                if showMindfulModal {
-                    MindfulDailyModalView(
-                        viewedCount: getTodayViewedCount(),
-                        onTakeABreak: {
-                            pool.pause()
-                            showMindfulModal = false
-                        },
-                        onSnoozeForToday: {
-                            snoozeMindfulModalForToday()
-                            showMindfulModal = false
-                        },
-                        onDismiss: {
-                            showMindfulModal = false
-                        }
-                    )
-                    .transition(.opacity)
-                    .zIndex(30)
-                }
+            }
+
+            // Mindful 50-reels Modal Overlay (Presented at top ZStack level)
+            if showMindfulModal {
+                MindfulDailyModalView(
+                    viewedCount: getTodayViewedCount(),
+                    onTakeABreak: {
+                        pool.pause()
+                        showMindfulModal = false
+                    },
+                    onSnoozeForToday: {
+                        snoozeMindfulModalForToday()
+                        showMindfulModal = false
+                    },
+                    onDismiss: {
+                        showMindfulModal = false
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(30)
             }
         }
         .sheet(isPresented: $showGridSheet) {

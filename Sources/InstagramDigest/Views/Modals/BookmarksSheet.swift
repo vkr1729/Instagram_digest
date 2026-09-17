@@ -119,7 +119,15 @@ public struct BookmarksSheet: View {
                                         }
                                     }
                                 )
-                                .accessibilityIdentifier("BookmarkRow_\(bookmark.reelID)")
+                                // Note: Do not attach container-level .accessibilityIdentifier here; in SwiftUI it propagates to child elements.
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        deleteBookmark(bookmark)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    .accessibilityIdentifier("BookmarkDeleteButton")
+                                }
                                 .listRowBackground(Color.clear)
                                 .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             }
@@ -162,15 +170,12 @@ public struct BookmarksSheet: View {
         }
     }
 
-    private func deleteBookmarks(at offsets: IndexSet) {
-        for index in offsets {
-            let item = bookmarks[index]
-            let reelID = item.reelID
-            Task {
-                await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
-            }
-            modelContext.delete(item)
+    private func deleteBookmark(_ item: BookmarkItem) {
+        let reelID = item.reelID
+        Task {
+            await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
         }
+        modelContext.delete(item)
         do {
             try modelContext.save()
         } catch {
@@ -178,6 +183,13 @@ public struct BookmarksSheet: View {
         }
         Task {
             await refreshLedger()
+        }
+    }
+
+    private func deleteBookmarks(at offsets: IndexSet) {
+        for index in offsets {
+            let item = bookmarks[index]
+            deleteBookmark(item)
         }
     }
 

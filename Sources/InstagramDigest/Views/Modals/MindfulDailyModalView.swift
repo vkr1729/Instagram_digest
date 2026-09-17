@@ -53,12 +53,14 @@ public struct MindfulDailyModalView: View {
                     Text("Daily Milestone Reached")
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(.white)
+                        .accessibilityIdentifier("MindfulDailyModalTitle")
 
                     Text("You've watched \(viewedCount) reels today. Consider stepping away to recharge.")
                         .font(.system(size: 15))
                         .foregroundColor(.white.opacity(0.8))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
+                        .accessibilityIdentifier("MindfulMilestoneText")
                 }
 
                 VStack(spacing: 12) {
@@ -113,7 +115,7 @@ public struct MindfulDailyModalView: View {
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 24))
             .padding(.horizontal, 20)
-            .accessibilityIdentifier("MindfulDailyModal")
+            // Note: Keep container free of .accessibilityIdentifier to avoid masking child button identifiers in XCUITest.
         }
     }
 }
