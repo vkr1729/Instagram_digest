@@ -114,7 +114,8 @@ MAX_PER_CREATOR = _env_int("MAX_PER_CREATOR", 4, 1, 50)
 # One-sided flood guard: no single category may exceed this share of the digest.
 # (Replaces the old fixed 40/15/15/10/10/10 percentage targets.)
 MAX_CATEGORY_SHARE = _env_float("MAX_CATEGORY_SHARE", 0.50)
-R2_STORAGE_QUOTA_BYTES = 8 * 1024 * 1024 * 1024  # 8 GB ceiling: ~3.1 GB weekly + 3.5 GB bookmarks cap + 1.4 GB buffer (of 10 GB free)
+MAX_FEED_BATCH_BYTES = _env_int("MAX_FEED_BATCH_BYTES", int(5.8 * 1024 * 1024 * 1024))  # 5.8 GB ceiling on weekly feed batch
+R2_STORAGE_QUOTA_BYTES = 8 * 1024 * 1024 * 1024  # 8 GB ceiling: up to 5.8 GB weekly feed + 2.0 GB bookmarks cap + 200 MB buffer (under 10 GB free)
 
 # Playback & UI Defaults
 DEFAULT_PLAYBACK_SPEED = _env_float("DEFAULT_PLAYBACK_SPEED", 1.0)

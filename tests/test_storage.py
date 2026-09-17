@@ -48,7 +48,7 @@ def test_purge_expired_local_videos(tmp_path, monkeypatch):
 
 
 def test_check_preflight_quota_logic(monkeypatch):
-    # Quota is 8 GB: ~3.1 GB weekly digest + 3.5 GB bookmarks cap + buffer (of 10 GB free).
+    # Quota is 8 GB: up to 5.8 GB weekly digest + 2.0 GB bookmarks cap + buffer (of 10 GB free).
     import storage_r2
     monkeypatch.setattr(storage_r2, "get_bucket_storage_usage", lambda: (int(7.5 * 1024 * 1024 * 1024), 500))
 
@@ -58,6 +58,6 @@ def test_check_preflight_quota_logic(monkeypatch):
     # A 100 MB new batch would be 7.6 GB (under 8 GB quota) -> should return True
     assert check_preflight_quota(estimated_new_bytes=int(100 * 1024 * 1024)) is True
 
-    # Design peak (~3.1 GB weekly + 3.5 GB bookmarks) plus a 1 GB batch must still pass.
-    monkeypatch.setattr(storage_r2, "get_bucket_storage_usage", lambda: (int(6.6 * 1024 * 1024 * 1024), 600))
-    assert check_preflight_quota(estimated_new_bytes=int(1.0 * 1024 * 1024 * 1024)) is True
+    # When JIT purge runs, bucket only holds bookmarks (<= 2.0 GB). A 5.5 GB batch must pass.
+    monkeypatch.setattr(storage_r2, "get_bucket_storage_usage", lambda: (int(2.0 * 1024 * 1024 * 1024), 200))
+    assert check_preflight_quota(estimated_new_bytes=int(5.5 * 1024 * 1024 * 1024)) is True

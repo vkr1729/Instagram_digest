@@ -8,7 +8,7 @@
 // multipart straight from R2 (the Worker never holds the video in memory).
 
 const MAX_ITEMS = 300;
-const MAX_BYTES = 3.5 * 1024 * 1024 * 1024;
+const MAX_BYTES = 2.0 * 1024 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024;   // Telegram Bot API multipart ceiling
 const TG_URL_FETCH_MAX = 20 * 1024 * 1024;  // Telegram fetches at most 20 MB by URL itself
 const MAX_THUMB_BYTES = 2 * 1024 * 1024;
@@ -83,7 +83,7 @@ async function regenManifest(env) {
   return rows;
 }
 
-// Enforce 300-item / 3.5 GB cap. Returns evicted ids. Runs a re-check pass so
+// Enforce 300-item / 2.0 GB cap. Returns evicted ids. Runs a re-check pass so
 // two concurrent requests that each overshoot by a row self-heal.
 async function enforceCap(env) {
   const evicted = [];

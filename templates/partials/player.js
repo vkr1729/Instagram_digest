@@ -394,7 +394,51 @@
       showToast(`Speed reset to ${currentSpeed}x`);
     }
 
-    function armHoldTimer(card) {
+    function triggerHapticFeedback() {
+      if ('vibrate' in navigator && typeof navigator.vibrate === 'function') {
+        try { navigator.vibrate(50); } catch (e) {}
+      }
+    }
+
+    function showGestureIconPop(icon, x, y) {
+      const pop = document.createElement('div');
+      pop.className = 'gesture-pop-icon';
+      pop.textContent = icon;
+      const safeX = Math.max(30, Math.min(window.innerWidth - 30, (typeof x === 'number') ? x : (window.innerWidth / 2)));
+      const safeY = Math.max(30, Math.min(window.innerHeight - 30, (typeof y === 'number') ? y : (window.innerHeight * 0.8)));
+      pop.style.left = `${safeX}px`;
+      pop.style.top = `${safeY}px`;
+      document.body.appendChild(pop);
+      pop.addEventListener('animationend', () => {
+        if (pop.parentNode) pop.remove();
+      });
+      setTimeout(() => {
+        if (pop.parentNode) pop.remove();
+      }, 800);
+    }
+
+    async function triggerGestureBookmark(card, x, y) {
+      const reelId = card ? card.dataset.id : '';
+      if (!reelId) return;
+      triggerHapticFeedback();
+      showGestureIconPop('🔖', x, y);
+      await toggleBookmark(reelId, card);
+    }
+
+    function triggerGestureShare(card, x, y) {
+      const reelId = card ? card.dataset.id : '';
+      if (!reelId) return;
+      const shareBtn = card.querySelector('.whatsapp-share-btn');
+      const badge = card.querySelector('.creator-badge');
+      const handle = shareBtn ? (shareBtn.dataset.handle || '') : (badge ? badge.textContent.replace(/^@/, '').trim() : '');
+
+      triggerHapticFeedback();
+      showGestureIconPop('↗️', x, y);
+      showToast('Opening share options...');
+      shareReelWhatsApp(reelId, handle);
+    }
+
+    function armHoldTimer(card, startX, startY) {
       cancelHold();
       if (pendingSingleTapTimer) {
         clearTimeout(pendingSingleTapTimer);
@@ -405,10 +449,31 @@
         holdTimer = null;
         if (currentActiveCard !== card) return;
         const video = card.querySelector('.reel-video');
-        if (!video || video.paused) return;
-        engageBoost(card, video);
-        // Swallow the finger-up click so release never pauses or double-taps.
-        suppressNextClick = true;
+        if (!video) return;
+
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const x = (typeof startX === 'number') ? startX : (w * 0.8);
+        const y = (typeof startY === 'number') ? startY : (h * 0.5);
+
+        const isLower = y > h * 0.65;
+        const isRight = x > w * HOLD_ZONE;
+        const isCenter = x >= w * 0.35 && x <= w * HOLD_ZONE;
+
+        if (isRight && !isLower) {
+          // Upper/Middle Right: 2x speed boost (only when video is playing)
+          if (video.paused) return;
+          engageBoost(card, video);
+          suppressNextClick = true;
+        } else if (isRight && isLower) {
+          // Lower Right: Automatic share
+          triggerGestureShare(card, x, y);
+          suppressNextClick = true;
+        } else if (isCenter && isLower) {
+          // Center Lower: Automatic bookmark
+          triggerGestureBookmark(card, x, y);
+          suppressNextClick = true;
+        }
       }, HOLD_MS);
     }
 
@@ -752,11 +817,18 @@
       isPointerDown = true;
       pointerStartX = e.clientX;
       pointerStartY = e.clientY;
-      // Arm press-and-hold 2x for the rightmost 35% — never on controls.
-      if (e.clientX > window.innerWidth * HOLD_ZONE && currentActiveCard &&
+      // Arm press-and-hold: right zone (2x boost or share) or center-lower (bookmark) — never on controls.
+      if (currentActiveCard &&
           !e.target.closest('button') && !e.target.closest('.creator-meta') &&
           !e.target.closest('.caption-snippet') && !e.target.closest('.mute-pill')) {
-        armHoldTimer(currentActiveCard);
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const isRight = e.clientX > w * HOLD_ZONE;
+        const isCenter = e.clientX >= w * 0.35 && e.clientX <= w * HOLD_ZONE;
+        const isLower = e.clientY > h * 0.65;
+        if (isRight || (isCenter && isLower)) {
+          armHoldTimer(currentActiveCard, e.clientX, e.clientY);
+        }
       }
     }, { passive: true });
     window.addEventListener('pointermove', (e) => {
@@ -785,7 +857,7 @@
 
     // Long-press reliability: never let the OS callout steal the hold gesture.
     feed.addEventListener('contextmenu', (e) => {
-      if (e.target.closest('.reel-video')) e.preventDefault();
+      if (e.target.closest('.reel-video') || e.target.closest('.reel-card')) e.preventDefault();
     });
 
     // Horizontal Touch Gesture Video Seeking & Vertical Swipe Isolation
@@ -817,6 +889,7 @@
 
       if (dist > 10) {
         isTouchSwiping = true;
+        cancelHold();
         if (pendingSingleTapTimer) {
           clearTimeout(pendingSingleTapTimer);
           pendingSingleTapTimer = null;
@@ -2165,7 +2238,8 @@
     }
 
     async function toggleBookmark(reelId, e) {
-      if (e) { e.stopPropagation(); e.preventDefault(); }
+      if (e && typeof e.stopPropagation === 'function') { e.stopPropagation(); }
+      if (e && typeof e.preventDefault === 'function') { e.preventDefault(); }
       if (!reelId) return;
       if (typeof isOwnerDevice === 'function' && !isOwnerDevice()) {
         const entered = window.prompt('Enter your Owner Key to enable bookmarking on this device:');
@@ -2178,7 +2252,9 @@
           return;
         }
       }
-      const card = (e && e.target && e.target.closest) ? e.target.closest('.reel-card') : null;
+      const card = (e && e.target && e.target.closest) ? e.target.closest('.reel-card')
+        : (e && e.closest ? e.closest('.reel-card')
+        : (currentActiveCard && currentActiveCard.dataset.id === reelId ? currentActiveCard : document.querySelector(`.reel-card[data-id="${(window.CSS && CSS.escape) ? CSS.escape(reelId) : reelId}"]`)));
       const meta = card ? reelMetaFromCard(card) : { id: reelId };
       const ids = snapshotIds();
       const adding = !ids.has(reelId);
@@ -2186,6 +2262,7 @@
       const snap = getBookmarkSnapshot().filter(r => r.id !== reelId);
       if (adding) snap.push({ ...meta, bookmarked_at: new Date().toISOString() });
       setBookmarkSnapshot(snap);
+      showToast(adding ? '🔖 Saved to Bookmarks' : '🔖 Removed from Bookmarks');
       // Queue op; private-mode (no IDB) falls back to direct fetch.
       try {
         const db = await openIdb();

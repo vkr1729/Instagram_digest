@@ -268,6 +268,62 @@ def purge_unreferenced_r2_videos() -> list[str]:
         return []
 
 
+def purge_previous_weeks_videos(current_week_id: str) -> list[str]:
+    """
+    Purge previous weeks' video objects on Cloudflare R2 immediately before uploading a new batch.
+
+    Option A (Just-In-Time Purge): Ensures the previous week's feed videos (~3.5 GB)
+    and the incoming week's feed videos (~3.5 GB) never overlap in R2 simultaneously,
+    preventing pre-flight quota aborts under the 8 GB safety quota.
+
+    Safety Invariants:
+    1. NEVER purges keys under bookmarks/ (governed exclusively by Worker/D1 cap).
+    2. NEVER purges keys under videos/{current_week_id}/ (keeps new/resumed files safe).
+    3. Strictly scoped to prefix "videos/".
+    """
+    s3 = get_s3_client()
+    if not s3:
+        logger.info("R2 credentials not active; skipping JIT previous-week purge.")
+        return []
+
+    if not current_week_id:
+        logger.warning("No current_week_id provided; aborting previous-week purge.")
+        return []
+
+    keep_prefix = f"videos/{current_week_id}/"
+    stale_keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+
+    try:
+        for page in paginator.paginate(Bucket=config.R2_BUCKET_NAME, Prefix="videos/"):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key", "")
+                if not key.startswith("videos/") or key.startswith("bookmarks/"):
+                    continue
+                if key.startswith(keep_prefix):
+                    continue
+                stale_keys.append(key)
+
+        purged: list[str] = []
+        for i in range(0, len(stale_keys), 1000):
+            chunk = stale_keys[i : i + 1000]
+            logger.info("JIT batch deleting %d previous-week R2 video objects...", len(chunk))
+            resp = s3.delete_objects(
+                Bucket=config.R2_BUCKET_NAME,
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": False},
+            )
+            for err in resp.get("Errors") or []:
+                logger.error("Failed deleting previous-week object %s: %s", err.get("Key"), err.get("Message"))
+            purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []])
+
+        if purged:
+            logger.info("JIT Purged %d previous-week objects from Cloudflare R2.", len(purged))
+        return purged
+    except ClientError as e:
+        logger.warning("Error during JIT previous-week purge: %s", e)
+        return []
+
+
 def get_existing_r2_keys(prefix: str = "videos/") -> set[str]:
     """List all existing keys on R2 with given prefix in a single/paginated scan."""
     s3 = get_s3_client()

@@ -252,14 +252,13 @@ def _run_full_sync(
         logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s)...",
                     week_id, days_back, dry_run)
 
-    # 1. Pre-flight cleanup & quota check on Cloudflare R2
+    # 1. Pre-flight cleanup & connectivity check on Cloudflare R2
     if not dry_run and config.R2_ACCOUNT_ID:
         storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
         storage_r2.purge_unreferenced_r2_videos()
-        if not storage_r2.check_preflight_quota(
-            estimated_new_bytes=storage_r2.estimate_weekly_batch_bytes()
-        ):
-            logger.error("Pre-flight quota check failed. Aborting to protect Cloudflare free limits.")
+        usage_bytes, _ = storage_r2.get_bucket_storage_usage()
+        if usage_bytes < 0:
+            logger.error("CRITICAL: cannot verify R2 usage (outage?); refusing to start sync.")
             return 1
 
     # 2. Load tracked and curated creators
@@ -799,23 +798,22 @@ def _run_full_sync(
         _alert_sync_abort("no qualifying reels", "Top Digest selection came back empty")
         return 2
 
-    # 5. Media Download and R2 Upload (Multi-threaded B1, C4 closed browser session)
+    # 5. Media Download, Budget Check, JIT Purge, and R2 Upload
     uploaded_url_map: dict[str, str] = {}
     if not dry_run:
         week_videos_dir = config.VIDEOS_DIR / week_id
         week_videos_dir.mkdir(parents=True, exist_ok=True)
 
-        existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+        # 5A: Download all ranked reels to local disk first
+        logger.info("Phase 5A: Downloading Top %d reels to local disk...", len(ranked_reels))
 
-        logger.info("Downloading and syncing Top %d reels with worker pool...", len(ranked_reels))
-
-        def process_reel(reel: dict[str, Any]) -> tuple[str, str]:
+        def download_reel(reel: dict[str, Any]) -> tuple[str, Path | None]:
             reel_id = _safe_component(reel["id"], "")
             handle = _safe_component(reel["creator_handle"], "creator")
             rank = reel.get("rank", 1)
             if not reel_id:
                 logger.warning("Skipping reel with unusable id %r", reel.get("id"))
-                return (str(reel.get("id")), "")
+                return (str(reel.get("id")), None)
             filename = f"{rank:02d}_{handle}_{reel_id}.mp4"
             local_video_path = week_videos_dir / filename
 
@@ -839,9 +837,67 @@ def _run_full_sync(
                 )
                 if not success:
                     logger.warning("Skipping upload for failed download %s", reel_id)
-                    return (reel_id, "")
+                    return (reel_id, None)
 
-            # Upload to Cloudflare R2 (or fallback to local if R2 not configured)
+            return (reel_id, local_video_path)
+
+        downloaded_paths: dict[str, Path] = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_id = {executor.submit(download_reel, r): r["id"] for r in ranked_reels}
+            download_done = 0
+            for future in as_completed(future_to_id):
+                try:
+                    rid, pth = future.result()
+                    if pth and pth.exists():
+                        downloaded_paths[rid] = pth
+                except Exception as exc:
+                    rid = future_to_id[future]
+                    logger.warning("Worker error downloading reel %s: %s", rid, exc)
+                download_done += 1
+
+        # Drop reels whose downloads failed
+        ranked_reels = [r for r in ranked_reels if r["id"] in downloaded_paths]
+
+        # 5B: 5.8 GB Byte-Budget Guard
+        # If reels balloon in size (e.g. 4K/high bitrate), cap the batch at the highest-scoring
+        # viral reels that fit within the 6.0 GB R2 headroom (5.8 GB limit leaves 200 MB margin).
+        max_feed_bytes = getattr(config, "MAX_FEED_BATCH_BYTES", int(5.8 * 1024 * 1024 * 1024))
+        budgeted_reels: list[dict[str, Any]] = []
+        total_batch_bytes = 0
+        for r in ranked_reels:
+            fpath = downloaded_paths.get(r["id"])
+            fsize = fpath.stat().st_size if fpath and fpath.exists() else 0
+            if total_batch_bytes + fsize > max_feed_bytes and len(budgeted_reels) >= MIN_DEPLOY_ITEMS:
+                logger.warning(
+                    "Byte budget reached: capping digest at %d reels (%.1f MB / max %.1f MB) to protect 6 GB R2 headroom.",
+                    len(budgeted_reels), total_batch_bytes / (1024 * 1024), max_feed_bytes / (1024 * 1024)
+                )
+                break
+            total_batch_bytes += fsize
+            budgeted_reels.append(r)
+
+        ranked_reels = budgeted_reels
+
+        # 5C & 5D: Just-In-Time Purge & Pre-Flight Quota Check
+        if config.R2_ACCOUNT_ID:
+            # Option A: Purge previous weeks' feed videos from R2 immediately before upload
+            storage_r2.purge_previous_weeks_videos(current_week_id=week_id)
+            # Pre-flight quota check against actual known batch size
+            if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
+                logger.error("Pre-flight quota check failed before upload. Aborting to protect Cloudflare free limits.")
+                _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
+                return 1
+
+        # 5E: Parallel R2 Upload Phase
+        existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+        logger.info("Phase 5E: Syncing %d reels (%.1f MB) to Cloudflare R2...", len(ranked_reels), total_batch_bytes / (1024 * 1024))
+
+        def upload_reel(reel: dict[str, Any]) -> tuple[str, str]:
+            reel_id = reel["id"]
+            local_video_path = downloaded_paths.get(reel_id)
+            if not local_video_path or not local_video_path.exists():
+                return (reel_id, "")
+            filename = local_video_path.name
             public_url = storage_r2.upload_reel_to_r2(
                 local_video_path,
                 week_id=week_id,
@@ -851,7 +907,7 @@ def _run_full_sync(
             return (reel_id, public_url)
 
         with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_id = {executor.submit(process_reel, r): r["id"] for r in ranked_reels}
+            future_to_id = {executor.submit(upload_reel, r): r["id"] for r in ranked_reels}
             published_done = 0
             for future in as_completed(future_to_id):
                 try:
@@ -860,7 +916,7 @@ def _run_full_sync(
                         uploaded_url_map[rid] = url
                 except Exception as exc:
                     rid = future_to_id[future]
-                    logger.warning("Worker error processing reel %s: %s", rid, exc)
+                    logger.warning("Worker error uploading reel %s: %s", rid, exc)
                 published_done += 1
                 _write_sync_progress("publishing", {
                     "ranked": ranked_reels,
