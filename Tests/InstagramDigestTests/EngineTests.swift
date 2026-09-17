@@ -23,6 +23,7 @@ final class EngineTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testPreflightStorageCalculation() {
         let coordinator = DownloadAllCoordinator.shared
         let reels = [
