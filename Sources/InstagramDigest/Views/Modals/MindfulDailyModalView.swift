@@ -3,13 +3,16 @@ import SwiftUI
 /// Mindful completion sheet triggered upon crossing 50 watched reels in a day.
 /// Provides a pause trigger and per-day snooze keyed to the local calendar date (YYYY-MM-DD).
 public struct MindfulDailyModalView: View {
+    /// Product constant: mindful milestone fires after this many reels/day.
+    public static let dailyLimit: Int = 50
+
     public let viewedCount: Int
     public var onTakeABreak: () -> Void
     public var onSnoozeForToday: () -> Void
     public var onDismiss: () -> Void
 
     public init(
-        viewedCount: Int = 50,
+        viewedCount: Int = dailyLimit,
         onTakeABreak: @escaping () -> Void,
         onSnoozeForToday: @escaping () -> Void,
         onDismiss: @escaping () -> Void

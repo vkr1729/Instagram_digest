@@ -9,6 +9,7 @@ public struct JumpToReelModalView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var inputNumberText: String = ""
     @State private var errorMessage: String? = nil
+    @FocusState private var isInputFocused: Bool
 
     public init(
         totalCount: Int,
@@ -65,6 +66,9 @@ public struct JumpToReelModalView: View {
                     VStack(spacing: 8) {
                         TextField("\(currentNumber)", text: $inputNumberText)
                             .keyboardType(.numberPad)
+                            .focused($isInputFocused)
+                            .submitLabel(.go)
+                            .onSubmit { submitInput() }
                             .font(.system(size: 32, weight: .heavy, design: .monospaced))
                             .multilineTextAlignment(.center)
                             .foregroundColor(.white)
@@ -77,6 +81,10 @@ public struct JumpToReelModalView: View {
                                     .stroke(Color.orange.opacity(0.5), lineWidth: 1)
                             )
                             .accessibilityIdentifier("JumpToReelTextField")
+                            .onChange(of: inputNumberText) { _, _ in
+                                // Clear the stale inline error as soon as the user edits.
+                                errorMessage = nil
+                            }
 
                         if let err = errorMessage {
                             Text(err)
@@ -112,13 +120,7 @@ public struct JumpToReelModalView: View {
 
                     // Action Button
                     Button {
-                        if let parsed = Int(inputNumberText.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                            performJump(to: parsed)
-                        } else if inputNumberText.isEmpty {
-                            performJump(to: currentNumber)
-                        } else {
-                            errorMessage = "Please enter a valid number"
-                        }
+                        submitInput()
                     } label: {
                         Text("Jump to Reel")
                             .font(.system(size: 16, weight: .bold))
@@ -142,11 +144,35 @@ public struct JumpToReelModalView: View {
                     }
                     .foregroundColor(.white.opacity(0.8))
                 }
+                // numberPad has no Return key: keyboard Done dismisses it.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        isInputFocused = false
+                    }
+                    .foregroundColor(.orange)
+                    .accessibilityIdentifier("JumpKeyboardDoneButton")
+                }
             }
             .onAppear {
                 inputNumberText = "\(currentNumber)"
             }
         }
+    }
+
+    /// Validates the text field: empty, non-numeric, zero, negative, and
+    /// over-range inputs all surface an inline error instead of jumping.
+    private func submitInput() {
+        let trimmed = inputNumberText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Please enter a reel number"
+            return
+        }
+        guard let parsed = Int(trimmed) else {
+            errorMessage = "Please enter a valid number"
+            return
+        }
+        performJump(to: parsed)
     }
 
     private func performJump(to number: Int) {

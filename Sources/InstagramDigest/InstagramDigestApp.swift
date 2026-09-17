@@ -65,7 +65,7 @@ struct InstagramDigestApp: App {
                 formatter.calendar = Calendar(identifier: .gregorian)
                 formatter.locale = Locale(identifier: "en_US_POSIX")
                 let todayStr = formatter.string(from: Date())
-                let daily = DailyProgress(dateString: todayStr, viewedCount: 50, snoozeUntil: nil)
+                let daily = DailyProgress(dateString: todayStr, viewedCount: MindfulDailyModalView.dailyLimit, snoozeUntil: nil)
                 context.insert(daily)
                 try? context.save()
             }
@@ -392,10 +392,11 @@ struct FeedMainView: View {
                         predicate: #Predicate { $0.dateString == todayStr }
                     )
                     if let existing = (try? modelContext.fetch(dailyDescriptor))?.first {
-                        existing.viewedCount = 50
+                        existing.viewedCount = MindfulDailyModalView.dailyLimit
                         existing.snoozeUntil = nil
+
                     } else {
-                        let daily = DailyProgress(dateString: todayStr, viewedCount: 50, snoozeUntil: nil)
+                        let daily = DailyProgress(dateString: todayStr, viewedCount: MindfulDailyModalView.dailyLimit, snoozeUntil: nil)
                         modelContext.insert(daily)
                     }
                     try? modelContext.save()
@@ -453,8 +454,8 @@ struct FeedMainView: View {
             modelContext.rollback()
         }
 
-        // Check Mindful 50-reels threshold
-        if daily.viewedCount >= 50 {
+        // Check Mindful daily-reels threshold (single product constant)
+        if daily.viewedCount >= MindfulDailyModalView.dailyLimit {
             let isSnoozed: Bool
             if let snooze = daily.snoozeUntil {
                 isSnoozed = Date() < snooze
@@ -640,7 +641,8 @@ struct FeedMainView: View {
         let descriptor = FetchDescriptor<DailyProgress>(
             predicate: #Predicate { $0.dateString == todayStr }
         )
-        return (try? modelContext.fetch(descriptor))?.first?.viewedCount ?? 50
+        // No row yet today means zero reels watched — never a pre-seeded limit.
+        return (try? modelContext.fetch(descriptor))?.first?.viewedCount ?? 0
     }
 
     private func snoozeMindfulModalForToday() {
@@ -668,11 +670,20 @@ public final class Reachability: @unchecked Sendable {
     public static let shared = Reachability()
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "ReachabilityQueue")
-    public private(set) var isConnected: Bool = true
+    private let lock = NSLock()
+    private var _isConnected: Bool = true
+    public var isConnected: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isConnected
+    }
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.isConnected = (path.status == .satisfied)
+            guard let self = self else { return }
+            self.lock.lock()
+            self._isConnected = (path.status == .satisfied)
+            self.lock.unlock()
         }
         monitor.start(queue: queue)
     }

@@ -231,6 +231,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             settleWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
+                guard !self.parent.reels.isEmpty else { return }
                 let height = scrollView.bounds.height
                 guard height > 0 else { return }
 
@@ -255,6 +256,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             }
             settleWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
+
         }
 
         // MARK: - Prefetching
@@ -349,6 +351,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
         if currentReels != newReels {
             self.currentReels = newReels
             self.currentAttachedIndex = -1
+            // Reset so scrollToCurrentIndexIfNeeded(0) fires on category switch
+            // even when the previous list was already parked at index 0.
+            self.lastScrolledIndex = -1
             collectionView.reloadData()
         }
     }

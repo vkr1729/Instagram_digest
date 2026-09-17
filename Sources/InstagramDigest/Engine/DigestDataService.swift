@@ -93,6 +93,7 @@ public actor DigestDataService {
             throw URLError(.badServerResponse)
         }
 
-        return try JSONDecoder().decode([BookmarkRemoteDTO].self, from: data)
+        // Lossy decode: one malformed R2 entry must not invalidate the whole list.
+        return try LossyBookmarkList.decode(from: data)
     }
 }

@@ -44,7 +44,7 @@ public struct HeaderBarView: View {
 
             // 2. Action Controls Group
             HStack(spacing: 6) {
-                // Jump Pill (# 233 / 300)
+                // Jump Pill (# N / total, counts fully dynamic)
                 Button(action: onTapJump) {
                     HStack(spacing: 3) {
                         Text(String(format: "# %d / %d", currentIndex + 1, totalCount))
@@ -59,6 +59,7 @@ public struct HeaderBarView: View {
                         Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
                     )
                 }
+                .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
                 .accessibilityIdentifier("JumpPillButton")
 
                 // Grid View Button (⊞)
@@ -72,6 +73,7 @@ public struct HeaderBarView: View {
                         .overlay(
                             Circle().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
                         )
+                        .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 }
                 .accessibilityIdentifier("GridIconButton")
 
@@ -86,6 +88,7 @@ public struct HeaderBarView: View {
                         .overlay(
                             Circle().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
                         )
+                        .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 }
                 .accessibilityIdentifier("OfflineIconButton")
 
@@ -107,6 +110,7 @@ public struct HeaderBarView: View {
                         Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
                     )
                 }
+                .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
                 .accessibilityIdentifier("BookmarksChipButton")
             }
         }

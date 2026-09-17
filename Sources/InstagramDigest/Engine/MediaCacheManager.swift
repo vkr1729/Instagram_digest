@@ -66,8 +66,7 @@ public actor MediaCacheManager {
             for bookmark in bookmarks {
                 let fileURL = pathResolver.bookmarkFileURL(for: bookmark.reelID)
                 if FileManager.default.fileExists(atPath: fileURL.path) {
-                    if let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-                       let size = attrs[.size] as? Int64, size > 0 {
+                    if let size = Self.diskFileSize(atPath: fileURL.path), size > 0 {
                         // Only count and keep cached if it was intentionally cached
                         if bookmark.localStatus == .cached {
                             bookmark.sizeBytes = size
@@ -208,8 +207,7 @@ public actor MediaCacheManager {
             var sizeToDeduct: Int64 = candidate.sizeBytes
 
             if fm.fileExists(atPath: fileURL.path) {
-                if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
-                   let actualSize = attrs[.size] as? Int64 {
+                if let actualSize = Self.diskFileSize(atPath: fileURL.path) {
                     sizeToDeduct = actualSize
                 }
                 do {
@@ -252,8 +250,7 @@ public actor MediaCacheManager {
         if fm.fileExists(atPath: bookmarkDestURL.path) {
             if item.localStatus != .cached {
                 item.localStatus = .cached
-                if let attrs = try? fm.attributesOfItem(atPath: bookmarkDestURL.path),
-                   let size = attrs[.size] as? Int64 {
+                if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
                     item.sizeBytes = size
                     self.totalBookmarkBytes += size
                 }
@@ -266,7 +263,7 @@ public actor MediaCacheManager {
         let feedURL = pathResolver.localFileURL(for: weekID, reelID: reelID)
         if fm.fileExists(atPath: feedURL.path) {
             let attrs = try fm.attributesOfItem(atPath: feedURL.path)
-            let fileSize = attrs[.size] as? Int64 ?? (item.sizeBytes > 0 ? item.sizeBytes : fallbackSizeBytes)
+            let fileSize = Self.diskFileSize(atPath: feedURL.path) ?? (item.sizeBytes > 0 ? item.sizeBytes : fallbackSizeBytes)
 
             // Ensure space under 1.5 GB cap
             try await ensureSpaceForBookmark(incomingBytes: fileSize)
@@ -300,7 +297,7 @@ public actor MediaCacheManager {
 
             let (tempURL, _) = try await URLSession.shared.download(from: remoteURL)
             let dest = bookmarkDestURL
-            let actualBytes: Int64 = (try? fm.attributesOfItem(atPath: tempURL.path)[.size] as? Int64) ?? estimatedBytes
+            let actualBytes: Int64 = Self.diskFileSize(atPath: tempURL.path) ?? estimatedBytes
 
             try await Task.detached {
                 let fileMgr = FileManager.default
@@ -335,7 +332,14 @@ public actor MediaCacheManager {
         do {
             let descriptor = FetchDescriptor<BookmarkItem>()
             let existingList = try context.fetch(descriptor)
-            var existingMap = Dictionary(uniqueKeysWithValues: existingList.map { ($0.reelID, $0) })
+            // Duplicate-safe map: pre-existing duplicate reelIDs must never fatalError.
+            var existingMap: [String: BookmarkItem] = [:]
+            existingMap.reserveCapacity(existingList.count)
+            for item in existingList {
+                if existingMap[item.reelID] == nil {
+                    existingMap[item.reelID] = item
+                }
+            }
 
             for dto in dtos {
                 let fileURL = pathResolver.bookmarkFileURL(for: dto.id)
@@ -382,8 +386,7 @@ public actor MediaCacheManager {
         let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
         let fm = FileManager.default
         if fm.fileExists(atPath: bookmarkDestURL.path) {
-            if let attrs = try? fm.attributesOfItem(atPath: bookmarkDestURL.path),
-               let size = attrs[.size] as? Int64 {
+            if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
                 self.totalBookmarkBytes = max(0, self.totalBookmarkBytes - size)
             }
             try? fm.removeItem(at: bookmarkDestURL)
@@ -428,8 +431,7 @@ public actor MediaCacheManager {
             // Never delete or flip an actively bound reel
             if activeVideoPoolReelIDs.contains(bookmark.reelID) {
                 let fileURL = pathResolver.bookmarkFileURL(for: bookmark.reelID)
-                if let attrs = try? fm.attributesOfItem(atPath: fileURL.path),
-                   let size = attrs[.size] as? Int64 {
+                if let size = Self.diskFileSize(atPath: fileURL.path) {
                     remainingBytes += size
                 }
                 continue
@@ -469,7 +471,7 @@ public actor MediaCacheManager {
         }
 
         let attrs = try fm.attributesOfItem(atPath: temporaryURL.path)
-        let actualSize = attrs[.size] as? Int64 ?? 0
+        let actualSize = (attrs[.size] as? NSNumber)?.int64Value ?? 0
 
         guard actualSize > 0 else {
             try? fm.removeItem(at: temporaryURL)
@@ -496,6 +498,14 @@ public actor MediaCacheManager {
         try pathResolver.applyProtectionAndBackupExclusion(to: destinationURL)
 
         return destinationURL
+    }
+
+    /// Reads a file's byte size via NSNumber bridging (FileManager reports sizes as
+    /// NSNumber; a direct `as? Int64` conditional cast is not guaranteed to succeed).
+    public static func diskFileSize(atPath path: String) -> Int64? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let number = attrs[.size] as? NSNumber else { return nil }
+        return number.int64Value
     }
 
     public enum CacheError: Error, LocalizedError {

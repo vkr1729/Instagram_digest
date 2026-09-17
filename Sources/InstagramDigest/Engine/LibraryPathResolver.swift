@@ -103,8 +103,8 @@ public struct LibraryPathResolver: Sendable {
     public func localFileSize(for weekID: String, reelID: String) -> Int64? {
         if let url = resolvedLocalFileURL(for: weekID, reelID: reelID),
            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let size = attrs[.size] as? Int64 {
-            return size
+           let number = attrs[.size] as? NSNumber {
+            return number.int64Value
         }
         return nil
     }
@@ -113,8 +113,8 @@ public struct LibraryPathResolver: Sendable {
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue {
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-               let size = attrs[.size] as? Int64 {
-                return size > 0
+               let number = attrs[.size] as? NSNumber {
+                return number.int64Value > 0
             }
             return true
         }

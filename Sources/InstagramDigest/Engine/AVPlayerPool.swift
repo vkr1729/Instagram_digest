@@ -144,7 +144,21 @@ public final class AVPlayerPool: ObservableObject {
         self.currentItems = items
         self.currentWeekID = weekID
         self.watchedLatchedReelIDs.removeAll()
-        setCurrentIndex(startIndex)
+        guard !items.isEmpty else {
+            // Empty playlist: park the pool in a defined state instead of
+            // leaving currentIndex stale on a previous list.
+            poolGeneration &+= 1
+            cancelAllInFlightTasks()
+            slotPrev.teardown()
+            slotCurrent.teardown()
+            slotNext.teardown()
+            self.currentIndex = -1
+            self.isLatched2x = false
+            self.isPlaying = false
+            return
+        }
+        // Clamp: an out-of-range startIndex must never leave currentIndex stale.
+        setCurrentIndex(min(max(0, startIndex), items.count - 1))
     }
 
     /// Filters the playback pool to a specific category (e.g. "all", "entertainment", "finance", "ai_tech", "niche", "health", "food")
@@ -320,6 +334,9 @@ public final class AVPlayerPool: ObservableObject {
 
                 let playerItem = AVPlayerItem(asset: asset)
                 playerItem.audioTimePitchAlgorithm = .timeDomain
+                if !isLocal {
+                    playerItem.preferredForwardBufferDuration = 8.0
+                }
 
                 slot.player.automaticallyWaitsToMinimizeStalling = !isLocal
                 slot.player.isMuted = true
@@ -467,6 +484,7 @@ public final class AVPlayerPool: ObservableObject {
                     guard let self = self, self.poolGeneration == itemGen else { return }
                     let playerItem = AVPlayerItem(asset: remoteAsset)
                     playerItem.audioTimePitchAlgorithm = .timeDomain
+                    playerItem.preferredForwardBufferDuration = 8.0
                     self.slotCurrent.player.automaticallyWaitsToMinimizeStalling = true
                     self.slotCurrent.currentItem = playerItem
                     self.slotCurrent.looper = AVPlayerLooper(player: self.slotCurrent.player, templateItem: playerItem)

@@ -13,6 +13,7 @@ public struct BookmarksSheet: View {
     @State private var isPurgingStorage: Bool = false
     @State private var errorMessage: String?
     @State private var selectedBookmarkForPlayback: BookmarkItem?
+    @State private var pendingDeleteIDs: [String] = []
 
     public init() {}
 
@@ -124,7 +125,7 @@ public struct BookmarksSheet: View {
                                 // instead of racing a full-swipe auto-delete (which deletes the row before the button query runs).
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
-                                        deleteBookmark(bookmark)
+                                        pendingDeleteIDs = [bookmark.reelID]
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
@@ -153,6 +154,24 @@ public struct BookmarksSheet: View {
             }
             .sheet(item: $selectedBookmarkForPlayback) { bookmark in
                 EphemeralPlayerSheet(bookmark: bookmark)
+            }
+            .confirmationDialog(
+                "Delete the selected bookmark?",
+                isPresented: Binding(
+                    get: { !pendingDeleteIDs.isEmpty },
+                    set: { if !$0 { pendingDeleteIDs = [] } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    confirmPendingDeletes()
+                }
+                .accessibilityIdentifier("BookmarkDeleteConfirmButton")
+                Button("Cancel", role: .cancel) {
+                    pendingDeleteIDs = []
+                }
+            } message: {
+                Text("Removes the saved reel and its offline file. This cannot be undone.")
             }
             .task {
                 await refreshLedger()
@@ -190,8 +209,21 @@ public struct BookmarksSheet: View {
     }
 
     private func deleteBookmarks(at offsets: IndexSet) {
-        for index in offsets {
-            let item = bookmarks[index]
+        pendingDeleteIDs = offsets.compactMap { index in
+            guard index < bookmarks.count else { return nil as String? }
+            return bookmarks[index].reelID
+        }
+    }
+
+    /// Executes a confirmed deletion round by reelID lookup (never by a stale
+    /// row reference, which SwiftData may already have invalidated).
+    private func confirmPendingDeletes() {
+        let ids = Set(pendingDeleteIDs)
+        pendingDeleteIDs = []
+        guard !ids.isEmpty else { return }
+        let descriptor = FetchDescriptor<BookmarkItem>()
+        let all = (try? modelContext.fetch(descriptor)) ?? []
+        for item in all where ids.contains(item.reelID) {
             deleteBookmark(item)
         }
     }
@@ -329,9 +361,14 @@ public struct EphemeralPlayerSheet: View {
                 return
             }
 
+            let isLocal = (mediaURL == localURL)
             let asset = AVURLAsset(url: mediaURL)
             let item = AVPlayerItem(asset: asset)
+            if !isLocal {
+                item.preferredForwardBufferDuration = 8.0
+            }
             let queuePlayer = AVQueuePlayer()
+            queuePlayer.automaticallyWaitsToMinimizeStalling = !isLocal
             self.looper = AVPlayerLooper(player: queuePlayer, templateItem: item)
             self.player = queuePlayer
             queuePlayer.play()
