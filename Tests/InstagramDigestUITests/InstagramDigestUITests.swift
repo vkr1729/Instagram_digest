@@ -377,32 +377,63 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(bookmarksButton.exists)
         bookmarksButton.tap()
 
-        let bookmarksTitle = app.staticTexts["Saved Bookmarks"]
-        XCTAssertTrue(bookmarksTitle.waitForExistence(timeout: 5.0))
+        let bookmarksNavBar = app.navigationBars["Saved Bookmarks"]
+        XCTAssertTrue(bookmarksNavBar.waitForExistence(timeout: 5.0), "Saved Bookmarks nav bar should appear")
 
-        // Target the bookmark cell
-        let cell = app.cells.firstMatch
+        // Scope to the sheet's list. Never use app.cells.firstMatch: the feed's
+        // FeedCollectionView cells remain in the hierarchy behind the sheet and
+        // firstMatch can return a feed cell instead of the bookmark row.
+        // SwiftUI List may expose as Table or CollectionView depending on iOS version.
+        let bookmarksTable = app.tables["BookmarksList"]
+        let bookmarksCollection = app.collectionViews["BookmarksList"]
+        let cell: XCUIElement
+        if bookmarksTable.waitForExistence(timeout: 5.0) {
+            cell = bookmarksTable.cells.firstMatch
+        } else if bookmarksCollection.waitForExistence(timeout: 2.0) {
+            cell = bookmarksCollection.cells.firstMatch
+        } else {
+            // Fallback: first table in hierarchy (the sheet's list, not the feed)
+            cell = app.tables.firstMatch.cells.firstMatch
+        }
         XCTAssertTrue(cell.waitForExistence(timeout: 5.0), "Bookmark cell should exist in list")
 
-        // Swipe left to reveal delete action
-        cell.swipeLeft()
-
-        // Tap delete button (supports custom BookmarkDeleteButton or system Delete action)
-        let customDeleteButton = app.buttons["BookmarkDeleteButton"]
-        let systemDeleteButton = app.buttons["Delete"]
-        if customDeleteButton.waitForExistence(timeout: 3.0) {
-            customDeleteButton.tap()
-        } else if systemDeleteButton.waitForExistence(timeout: 3.0) {
-            systemDeleteButton.tap()
-        } else {
-            let cellDelete = cell.buttons["Delete"]
-            XCTAssertTrue(cellDelete.waitForExistence(timeout: 2.0), "Delete action should exist")
-            cellDelete.tap()
-        }
+        // Reveal the delete action with a controlled drag (not cell.swipeLeft()).
+        // swipeLeft() at default velocity triggers a full-swipe auto-delete when
+        // allowsFullSwipe is true, deleting the row before the button query runs.
+        // A press-then-drag stops at the revealed button. Start at dx 0.75 to
+        // avoid grabbing the trailing Play button; end short of full width.
+        let dragStart = cell.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5))
+        let dragEnd = cell.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        dragStart.press(forDuration: 0.15, thenDragTo: dragEnd)
 
         // Verify empty state text reappears
         let emptyStateText = app.staticTexts["BookmarksEmptyStateText"]
-        XCTAssertTrue(emptyStateText.waitForExistence(timeout: 5.0), "Empty state should appear after deleting bookmark")
+
+        // Defensive: if iOS still full-swipe auto-deleted the row, the empty
+        // state is already showing and there is no button to tap. Accept that
+        // outcome instead of failing the button query.
+        if emptyStateText.waitForExistence(timeout: 2.0) {
+            // Already deleted via full-swipe; proceed to count verification below.
+        } else {
+            // Tap delete button: cell-scoped queries first (most specific),
+            // then app-wide; custom identifier first, system label as fallback.
+            let candidates: [XCUIElement] = [
+                cell.buttons["BookmarkDeleteButton"],
+                app.buttons["BookmarkDeleteButton"],
+                cell.buttons["Delete"],
+                app.buttons["Delete"]
+            ]
+            var tappedDelete = false
+            for candidate in candidates {
+                if candidate.waitForExistence(timeout: 2.0) {
+                    candidate.tap()
+                    tappedDelete = true
+                    break
+                }
+            }
+            XCTAssertTrue(tappedDelete, "Delete action should exist after swipe")
+            XCTAssertTrue(emptyStateText.waitForExistence(timeout: 5.0), "Empty state should appear after deleting bookmark")
+        }
 
         // Predicate wait for count label update to 0
         let countLabel = app.staticTexts["BookmarksCountLabel"]

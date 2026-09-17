@@ -119,8 +119,10 @@ public struct BookmarksSheet: View {
                                         }
                                     }
                                 )
-                                // Note: Do not attach container-level .accessibilityIdentifier here; in SwiftUI it propagates to child elements.
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                // Note: Do not attach container-level .accessibilityIdentifier to the row here; in SwiftUI it propagates to child elements.
+                                // allowsFullSwipe is intentionally false so XCUITest can reliably reveal and tap the Delete button
+                                // instead of racing a full-swipe auto-delete (which deletes the row before the button query runs).
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
                                         deleteBookmark(bookmark)
                                     } label: {
@@ -133,6 +135,7 @@ public struct BookmarksSheet: View {
                             }
                             .onDelete(perform: deleteBookmarks)
                         }
+                        .accessibilityIdentifier("BookmarksList")
                         .listStyle(.plain)
                     }
                 }
