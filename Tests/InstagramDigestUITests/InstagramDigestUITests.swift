@@ -32,8 +32,8 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(downloadButton.exists, "DownloadAllButton must exist")
         XCTAssertTrue(bookmarksButton.exists, "BookmarksButton must exist")
 
-        // Verify initial playback speed default is 1.00x
-        XCTAssertTrue(speedButton.label.contains("1.00x"), "Default speed must be 1.00x, got: \(speedButton.label)")
+        // Verify initial playback speed default is 1.25x per architecture spec
+        XCTAssertTrue(speedButton.label.contains("1.25x"), "Default speed must be 1.25x, got: \(speedButton.label)")
 
         // Verify first reel metadata loaded from bundle
         let creatorHandle = app.staticTexts["ReelCreatorHandle"]
@@ -41,7 +41,7 @@ final class InstagramDigestUITests: XCTestCase {
 
         XCTAssertTrue(creatorHandle.waitForExistence(timeout: 5.0), "Creator handle must appear")
         XCTAssertTrue(creatorHandle.label.contains("mkbhd"), "First creator should be mkbhd, got: \(creatorHandle.label)")
-        XCTAssertTrue(rankBadge.label.contains("#1"), "First reel should be rank #1, got: \(rankBadge.label)")
+        XCTAssertTrue(rankBadge.label.contains("#01"), "First reel should be rank #01, got: \(rankBadge.label)")
     }
 
     // MARK: - 2. Playback Speed Cycler Pill
@@ -49,23 +49,23 @@ final class InstagramDigestUITests: XCTestCase {
     func testPlaybackSpeedCyclerPill() throws {
         let speedButton = app.buttons["SpeedButton"]
         XCTAssertTrue(speedButton.waitForExistence(timeout: 8.0))
-        XCTAssertTrue(speedButton.label.contains("1.00x"))
+        XCTAssertTrue(speedButton.label.contains("1.25x"))
 
-        // Tap 1: 1.00x -> 1.25x
-        speedButton.tap()
-        XCTAssertTrue(speedButton.label.contains("1.25x"), "Speed should advance to 1.25x, got: \(speedButton.label)")
-
-        // Tap 2: 1.25x -> 1.50x
+        // Tap 1: 1.25x -> 1.50x
         speedButton.tap()
         XCTAssertTrue(speedButton.label.contains("1.50x"), "Speed should advance to 1.50x, got: \(speedButton.label)")
 
-        // Tap 3: 1.50x -> 2.00x
+        // Tap 2: 1.50x -> 2.00x
         speedButton.tap()
         XCTAssertTrue(speedButton.label.contains("2.00x"), "Speed should advance to 2.00x, got: \(speedButton.label)")
 
-        // Tap 4: 2.00x -> 1.00x (wrap-around)
+        // Tap 3: 2.00x -> 1.00x (wrap-around)
         speedButton.tap()
         XCTAssertTrue(speedButton.label.contains("1.00x"), "Speed should cycle back to 1.00x, got: \(speedButton.label)")
+
+        // Tap 4: 1.00x -> 1.25x
+        speedButton.tap()
+        XCTAssertTrue(speedButton.label.contains("1.25x"), "Speed should advance to 1.25x, got: \(speedButton.label)")
     }
 
     // MARK: - 3. Jump Grid Navigation
@@ -85,13 +85,13 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(reelItem1.waitForExistence(timeout: 3.0), "Grid item 1 should be selectable")
         reelItem1.tap()
 
-        // Verify sheet dismissed and current reel jumped to #2
+        // Verify sheet dismissed and current reel jumped to #02
         let creatorHandle = app.staticTexts["ReelCreatorHandle"]
         XCTAssertTrue(creatorHandle.waitForExistence(timeout: 5.0))
         XCTAssertTrue(creatorHandle.label.contains("hubermanlab"), "Current reel should be hubermanlab, got: \(creatorHandle.label)")
 
         let rankBadge = app.staticTexts["ReelRankBadge"]
-        XCTAssertTrue(rankBadge.label.contains("#2"), "Rank should be #2, got: \(rankBadge.label)")
+        XCTAssertTrue(rankBadge.label.contains("#02"), "Rank should be #02, got: \(rankBadge.label)")
     }
 
     // MARK: - 4. Download All Sheet & Preflight
@@ -129,8 +129,12 @@ final class InstagramDigestUITests: XCTestCase {
         bookmarksButton.tap()
 
         // Verify Bookmarks navigation bar
-        let bookmarksTitle = app.navigationBars.staticTexts["Bookmarks (0)"]
-        XCTAssertTrue(bookmarksTitle.waitForExistence(timeout: 5.0), "Bookmarks (0) should appear in navigation")
+        let bookmarksTitle = app.navigationBars["Saved Bookmarks"]
+        XCTAssertTrue(bookmarksTitle.waitForExistence(timeout: 5.0), "Saved Bookmarks should appear in navigation")
+
+        // Verify empty state text
+        let emptyText = app.staticTexts["BookmarksEmptyStateText"]
+        XCTAssertTrue(emptyText.waitForExistence(timeout: 3.0), "BookmarksEmptyStateText should appear")
 
         // Verify 0.0 MB / 1.5 GB gauge label
         let storageGauge = app.staticTexts["StorageGaugeLabel"]
@@ -153,17 +157,17 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 6. Feed Single Tap Play/Pause
 
     func testFeedTapPlayPauseToggle() throws {
-        let gestureOverlay = app.otherElements["FeedGestureOverlayView"]
-        XCTAssertTrue(gestureOverlay.waitForExistence(timeout: 8.0))
+        let feedView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(feedView.waitForExistence(timeout: 8.0))
 
         // First tap: pauses playback
-        gestureOverlay.tap()
+        feedView.tap()
 
         // Wait past the 500ms scroll / 350ms swipe debounce guard
         Thread.sleep(forTimeInterval: 0.6)
 
         // Second tap: resumes playback
-        gestureOverlay.tap()
+        feedView.tap()
 
         // Verify feed controls remain visible and functional
         let speedButton = app.buttons["SpeedButton"]
@@ -173,11 +177,11 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 7. Spatial Gestures: Long Press Bookmark Zone
 
     func testBookmarkSpatialZoneToggle() throws {
-        let gestureOverlay = app.otherElements["FeedGestureOverlayView"]
-        XCTAssertTrue(gestureOverlay.waitForExistence(timeout: 8.0))
+        let feedView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(feedView.waitForExistence(timeout: 8.0))
 
         // Center-Lower Bookmark zone: normX in [0.35, 0.65], normY > 0.65
-        let centerLowerCoord = gestureOverlay.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.75))
+        let centerLowerCoord = feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.50, dy: 0.75))
         centerLowerCoord.press(forDuration: 0.7)
 
         // Verify bookmark indicator appears
@@ -188,8 +192,9 @@ final class InstagramDigestUITests: XCTestCase {
         let bookmarksButton = app.buttons["BookmarksButton"]
         bookmarksButton.tap()
 
-        let bookmarksCountTitle = app.navigationBars.staticTexts["Bookmarks (1)"]
-        XCTAssertTrue(bookmarksCountTitle.waitForExistence(timeout: 5.0), "Bookmarks sheet should now show Bookmarks (1)")
+        let bookmarksCountLabel = app.staticTexts["BookmarksCountLabel"]
+        XCTAssertTrue(bookmarksCountLabel.waitForExistence(timeout: 5.0), "BookmarksCountLabel should appear in sheet")
+        XCTAssertTrue(bookmarksCountLabel.label.contains("1 saved reels"), "Bookmarks count should show 1 saved reels, got: \(bookmarksCountLabel.label)")
 
         let doneButton = app.buttons["BookmarksDoneButton"]
         doneButton.tap()
@@ -198,20 +203,20 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 8. Spatial Gestures: Long Press Latched 2.0x Zone
 
     func testLatched2xSpatialZoneToggle() throws {
-        let gestureOverlay = app.otherElements["FeedGestureOverlayView"]
-        XCTAssertTrue(gestureOverlay.waitForExistence(timeout: 8.0))
+        let feedView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(feedView.waitForExistence(timeout: 8.0))
 
         // Upper-Right Latched 2.0x zone: normX > 0.65, normY <= 0.65
-        let upperRightCoord = gestureOverlay.coordinate(withNormalizedOffset: CGVector(dx: 0.80, dy: 0.35))
+        let upperRightCoord = feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.80, dy: 0.35))
         upperRightCoord.press(forDuration: 0.7)
 
         // Verify latched 2.0x badge appears
-        let latchedBadge = app.otherElements["Latched2xBadge"]
+        let latchedBadge = app.descendants(matching: .any)["Latched2xBadge"]
         XCTAssertTrue(latchedBadge.waitForExistence(timeout: 3.0), "Latched2xBadge should appear")
 
         // Per contract: single tap resets latched 2.0x speed
         Thread.sleep(forTimeInterval: 0.6)
-        gestureOverlay.tap()
+        feedView.tap()
 
         // Verify latched badge dismisses
         let badgePredicate = NSPredicate(format: "exists == false")
@@ -240,6 +245,6 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertEqual(result, .completed, "Feed should page to hubermanlab on swipe up")
 
         let rankBadge = app.staticTexts["ReelRankBadge"]
-        XCTAssertTrue(rankBadge.label.contains("#2"), "Rank should update to #2 on swipe up")
+        XCTAssertTrue(rankBadge.label.contains("#02"), "Rank should update to #02 on swipe up")
     }
 }

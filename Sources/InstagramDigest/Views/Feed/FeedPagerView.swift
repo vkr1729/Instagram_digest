@@ -9,19 +9,43 @@ public struct FeedPagerView: UIViewControllerRepresentable {
     public var onPageChanged: (Int) -> Void
     public var onScrollEnded: (TimeInterval) -> Void
     public var onForwardScrollPast: (ReelItem) -> Void
+    public var onTogglePlayPause: () -> Void
+    public var onSeekPreview: (Double?) -> Void
+    public var onSeekCommit: (Double) -> Void
+    public var onToggleLatched2x: () -> Void
+    public var onTriggerBookmark: () -> Void
+    public var onTriggerShare: () -> Void
+    public var lastScrollEndTime: TimeInterval
+    public var currentProgress: Double
 
     public init(
         reels: [ReelItem],
         currentIndex: Binding<Int>,
         onPageChanged: @escaping (Int) -> Void,
         onScrollEnded: @escaping (TimeInterval) -> Void,
-        onForwardScrollPast: @escaping (ReelItem) -> Void
+        onForwardScrollPast: @escaping (ReelItem) -> Void,
+        onTogglePlayPause: @escaping () -> Void = {},
+        onSeekPreview: @escaping (Double?) -> Void = { _ in },
+        onSeekCommit: @escaping (Double) -> Void = { _ in },
+        onToggleLatched2x: @escaping () -> Void = {},
+        onTriggerBookmark: @escaping () -> Void = {},
+        onTriggerShare: @escaping () -> Void = {},
+        lastScrollEndTime: TimeInterval = 0,
+        currentProgress: Double = 0.0
     ) {
         self.reels = reels
         self._currentIndex = currentIndex
         self.onPageChanged = onPageChanged
         self.onScrollEnded = onScrollEnded
         self.onForwardScrollPast = onForwardScrollPast
+        self.onTogglePlayPause = onTogglePlayPause
+        self.onSeekPreview = onSeekPreview
+        self.onSeekCommit = onSeekCommit
+        self.onToggleLatched2x = onToggleLatched2x
+        self.onTriggerBookmark = onTriggerBookmark
+        self.onTriggerShare = onTriggerShare
+        self.lastScrollEndTime = lastScrollEndTime
+        self.currentProgress = currentProgress
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -42,6 +66,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
 
     public func updateUIViewController(_ uiViewController: FeedCollectionViewController, context: Context) {
         context.coordinator.parent = self
+        uiViewController.coordinator = context.coordinator
         uiViewController.updateReelsIfNeeded(reels)
         uiViewController.scrollToCurrentIndexIfNeeded(currentIndex)
         uiViewController.updateCurrentIndex(currentIndex)
@@ -50,22 +75,136 @@ public struct FeedPagerView: UIViewControllerRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    public final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout, UICollectionViewDataSourcePrefetching {
+    public final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout, UICollectionViewDataSourcePrefetching, UIGestureRecognizerDelegate {
         var parent: FeedPagerView
         weak var viewController: FeedCollectionViewController?
         private var settleWorkItem: DispatchWorkItem?
         public var lastActiveIndex: Int = 0
         private(set) var cellRegistration: UICollectionView.CellRegistration<FeedCell, ReelItem>!
 
+        private let hapticGenerator = UIImpactFeedbackGenerator(style: .medium)
+        private var suppressNextTap: Bool = false
+        private var lastSwipeTime: TimeInterval = 0
+        private var seekStartLocationX: CGFloat = 0
+        private var initialSeekFraction: Double = 0
+        private var currentSeekFraction: Double = 0
+
         init(_ parent: FeedPagerView) {
             self.parent = parent
             self.lastActiveIndex = parent.currentIndex
             super.init()
+            hapticGenerator.prepare()
             self.cellRegistration = UICollectionView.CellRegistration<FeedCell, ReelItem> { [weak self] cell, indexPath, reel in
                 guard let self = self else { return }
                 let isCurrent = indexPath.item == self.parent.currentIndex
                 cell.configure(reel: reel, isCurrent: isCurrent)
             }
+        }
+
+        // MARK: - Gesture Handlers
+
+        @objc func handleTap(_ sender: UITapGestureRecognizer) {
+            if suppressNextTap {
+                suppressNextTap = false
+                return
+            }
+
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - parent.lastScrollEndTime < 0.50 || now - lastSwipeTime < 0.35 {
+                return
+            }
+
+            if AVPlayerPool.shared.isLatched2x {
+                AVPlayerPool.shared.setLatched2x(false)
+            }
+
+            parent.onTogglePlayPause()
+        }
+
+        @objc func handleLongPress(_ sender: UILongPressGestureRecognizer) {
+            guard let view = sender.view else { return }
+            let location = sender.location(in: view)
+            let width = view.bounds.width
+            let height = view.bounds.height
+            guard width > 0, height > 0 else { return }
+
+            let normX = location.x / width
+            let normY = location.y / height
+
+            switch sender.state {
+            case .began:
+                if normX > 0.65 && normY <= 0.65 {
+                    suppressNextTap = true
+                    hapticGenerator.impactOccurred()
+                    hapticGenerator.prepare()
+                    parent.onToggleLatched2x()
+
+                } else if normX > 0.65 && normY > 0.65 {
+                    suppressNextTap = true
+                    hapticGenerator.impactOccurred()
+                    hapticGenerator.prepare()
+                    parent.onTriggerShare()
+
+                } else if normX >= 0.35 && normX <= 0.65 && normY > 0.65 {
+                    suppressNextTap = true
+                    hapticGenerator.impactOccurred()
+                    hapticGenerator.prepare()
+                    parent.onTriggerBookmark()
+                } else {
+                    suppressNextTap = false
+                }
+
+            case .ended, .cancelled:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.suppressNextTap = false
+                }
+            default:
+                break
+            }
+        }
+
+        @objc func handleSeekPan(_ sender: SeekPanGestureRecognizer) {
+            guard let view = sender.view else { return }
+            let location = sender.location(in: view)
+            let width = view.bounds.width
+            guard width > 0 else { return }
+
+            switch sender.state {
+            case .began:
+                seekStartLocationX = location.x
+                initialSeekFraction = parent.currentProgress
+                currentSeekFraction = initialSeekFraction
+                parent.onSeekPreview(initialSeekFraction)
+
+            case .changed:
+                let deltaX = location.x - seekStartLocationX
+                let fractionChange = Double(deltaX / width)
+                let targetFraction = max(0.0, min(1.0, initialSeekFraction + fractionChange))
+                currentSeekFraction = targetFraction
+                parent.onSeekPreview(targetFraction)
+
+            case .ended:
+                parent.onSeekCommit(currentSeekFraction)
+                parent.onSeekPreview(nil)
+                lastSwipeTime = ProcessInfo.processInfo.systemUptime
+
+            case .cancelled, .failed:
+                parent.onSeekPreview(nil)
+            default:
+                break
+            }
+        }
+
+        // MARK: - UIGestureRecognizerDelegate
+
+        public func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            if gestureRecognizer is SeekPanGestureRecognizer || otherGestureRecognizer is SeekPanGestureRecognizer {
+                return false
+            }
+            return false
         }
 
         // MARK: - UICollectionViewDataSource
@@ -139,7 +278,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
 }
 
 public final class FeedCollectionViewController: UICollectionViewController {
-    weak var coordinator: FeedPagerView.Coordinator?
+    var coordinator: FeedPagerView.Coordinator?
     private var currentReels: [ReelItem] = []
     private var lastScrolledIndex: Int = -1
     private var currentAttachedIndex: Int = -1
@@ -155,6 +294,27 @@ public final class FeedCollectionViewController: UICollectionViewController {
         collectionView.dataSource = coordinator
         collectionView.delegate = coordinator
         collectionView.prefetchDataSource = coordinator
+
+        if let coord = coordinator {
+            let tapGesture = UITapGestureRecognizer(target: coord, action: #selector(FeedPagerView.Coordinator.handleTap(_:)))
+            tapGesture.numberOfTapsRequired = 1
+            tapGesture.delegate = coord
+
+            let longPressGesture = UILongPressGestureRecognizer(target: coord, action: #selector(FeedPagerView.Coordinator.handleLongPress(_:)))
+            longPressGesture.minimumPressDuration = 0.5
+            longPressGesture.allowableMovement = 10.0
+            longPressGesture.delegate = coord
+
+            let seekPanGesture = SeekPanGestureRecognizer(target: coord, action: #selector(FeedPagerView.Coordinator.handleSeekPan(_:)))
+            seekPanGesture.delegate = coord
+
+            tapGesture.require(toFail: longPressGesture)
+            seekPanGesture.require(toFail: longPressGesture)
+
+            collectionView.addGestureRecognizer(tapGesture)
+            collectionView.addGestureRecognizer(longPressGesture)
+            collectionView.addGestureRecognizer(seekPanGesture)
+        }
 
         notificationTokens.append(
             NotificationCenter.default.addObserver(

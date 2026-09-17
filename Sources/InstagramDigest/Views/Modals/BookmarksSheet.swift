@@ -44,6 +44,7 @@ public struct BookmarksSheet: View {
                             Text("\(bookmarks.count) saved reels")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.5))
+                                .accessibilityIdentifier("BookmarksCountLabel")
                             Spacer()
 
                             // Free Local Storage Action Button
@@ -87,6 +88,7 @@ public struct BookmarksSheet: View {
                             Text("No saved bookmarks yet")
                                 .font(.system(size: 16, weight: .medium))
                                 .foregroundColor(.white.opacity(0.6))
+                                .accessibilityIdentifier("BookmarksEmptyStateText")
                             Spacer()
                         }
                     } else {

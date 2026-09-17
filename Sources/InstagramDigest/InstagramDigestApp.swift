@@ -41,6 +41,14 @@ struct InstagramDigestApp: App {
             Task { @MainActor in
                 AudioSessionCoordinator.shared.configureAudioSession()
             }
+
+            // Reset download state in UI testing
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                Task { @MainActor in
+                    DownloadAllCoordinator.shared.cancelAll()
+                    DownloadAllCoordinator.shared.overallProgress = 0.0
+                }
+            }
         } catch {
             fatalError("Failed to initialize SwiftData ModelContainer: \(error)")
         }
@@ -117,7 +125,7 @@ struct FeedMainView: View {
                 let currentReel = items[activeIndex]
                 let isCurrentBookmarked = bookmarkedReelIDs.contains(currentReel.id)
 
-                // 1. Vertical Pager Container (UICollectionView with modern CellRegistration)
+                // 1. Vertical Pager Container (UICollectionView with modern CellRegistration & integrated gestures)
                 FeedPagerView(
                     reels: items,
                     currentIndex: $activeIndex,
@@ -129,28 +137,7 @@ struct FeedMainView: View {
                     },
                     onForwardScrollPast: { departedReel in
                         recordWatched(reel: departedReel)
-                    }
-                )
-                .ignoresSafeArea()
-
-                // 2. Full-Bleed Live Overlay (Seek HUD, Progress, Pills, Bookmark Pop)
-                ReelCardOverlayView(
-                    reel: currentReel,
-                    isLatched2x: pool.isLatched2x,
-                    isBookmarked: isCurrentBookmarked,
-                    seekFractionPreview: seekPreviewFraction,
-                    progress: pool.currentProgress,
-                    duration: pool.currentDuration,
-                    currentTime: pool.currentTime,
-                    showBookmarkPop: showBookmarkPop
-                )
-                .ignoresSafeArea()
-                .allowsHitTesting(false) // Passes gestures to overlay below
-
-                // 3. Gesture Overlay Stack
-                FeedGestureOverlay(
-                    lastScrollEndTime: lastScrollEndTime,
-                    currentProgress: pool.currentProgress,
+                    },
                     onTogglePlayPause: {
                         if pool.isLatched2x {
                             pool.setLatched2x(false)
@@ -172,11 +159,27 @@ struct FeedMainView: View {
                     },
                     onTriggerShare: {
                         triggerShareCurrentReel()
-                    }
+                    },
+                    lastScrollEndTime: lastScrollEndTime,
+                    currentProgress: pool.currentProgress
                 )
                 .ignoresSafeArea()
 
-                // 4. Top Navigation Header
+                // 2. Full-Bleed Live Overlay (Seek HUD, Progress, Pills, Bookmark Pop)
+                ReelCardOverlayView(
+                    reel: currentReel,
+                    isLatched2x: pool.isLatched2x,
+                    isBookmarked: isCurrentBookmarked,
+                    seekFractionPreview: seekPreviewFraction,
+                    progress: pool.currentProgress,
+                    duration: pool.currentDuration,
+                    currentTime: pool.currentTime,
+                    showBookmarkPop: showBookmarkPop
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false) // Passes gestures to collection view below
+
+                // 3. Top Navigation Header
                 VStack {
                     HStack(spacing: 12) {
                         // Playback Speed Cycler Pill
@@ -244,7 +247,7 @@ struct FeedMainView: View {
                     Spacer()
                 }
 
-                // 5. Mindful 50-reels Modal Overlay
+                // 4. Mindful 50-reels Modal Overlay
                 if showMindfulModal {
                     MindfulDailyModalView(
                         viewedCount: getTodayViewedCount(),
