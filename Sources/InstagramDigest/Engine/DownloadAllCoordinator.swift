@@ -132,6 +132,12 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         }
         inFlightTasks.removeAll()
         queue.removeAll()
+        totalInBatch = 0
+        completedInBatch = 0
+        failedInBatch = 0
+        retryCounts.removeAll()
+        currentWeekID = ""
+        overallProgress = 0.0
         state = .idle
         UIApplication.shared.isIdleTimerDisabled = false
     }
@@ -174,6 +180,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     private func drainQueue() {
         guard !isSuspended else { return }
+        guard state != .idle else { return }
 
         let targetConcurrency = computeTargetConcurrency()
 
@@ -201,6 +208,11 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
         let finishedCount = completedInBatch + failedInBatch
         if inFlightTasks.isEmpty && queue.isEmpty {
+            guard totalInBatch > 0 else {
+                state = .idle
+                overallProgress = 0.0
+                return
+            }
             if failedInBatch > 0 && completedInBatch == 0 {
                 state = .failed("All downloads failed in this batch.")
             } else {
@@ -332,11 +344,13 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     private func setupAdaptiveConcurrencyObservers() {
         AVPlayerPool.shared.$isPlaying
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                guard let self = self else { return }
-                self.activeConcurrency = self.computeTargetConcurrency()
-                self.drainQueue()
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.activeConcurrency = self.computeTargetConcurrency()
+                    self.drainQueue()
+                }
             }
             .store(in: &cancellables)
 

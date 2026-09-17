@@ -15,6 +15,7 @@ final class InstagramDigestUITests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        app?.terminate()
         app = nil
     }
 
@@ -92,6 +93,14 @@ final class InstagramDigestUITests: XCTestCase {
 
         let rankBadge = app.staticTexts["ReelRankBadge"]
         XCTAssertTrue(rankBadge.label.contains("#02"), "Rank should be #02, got: \(rankBadge.label)")
+
+        // Verify opening Grid and dismissing via Done button without selection
+        gridButton.tap()
+        XCTAssertTrue(gridTitle.waitForExistence(timeout: 5.0))
+        let gridDoneButton = app.buttons["GridDoneButton"]
+        XCTAssertTrue(gridDoneButton.exists)
+        gridDoneButton.tap()
+        XCTAssertTrue(gridButton.waitForExistence(timeout: 3.0))
     }
 
     // MARK: - 4. Download All Sheet & Preflight
@@ -174,7 +183,7 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(speedButton.exists, "SpeedButton should remain visible and functional")
     }
 
-    // MARK: - 7. Spatial Gestures: Long Press Bookmark Zone
+    // MARK: - 7. Spatial Gestures: Long Press Bookmark Zone & Unbookmark Toggle
 
     func testBookmarkSpatialZoneToggle() throws {
         let feedView = app.collectionViews["FeedCollectionView"]
@@ -198,9 +207,19 @@ final class InstagramDigestUITests: XCTestCase {
 
         let doneButton = app.buttons["BookmarksDoneButton"]
         doneButton.tap()
+
+        // Unbookmark via second long press in same zone
+        Thread.sleep(forTimeInterval: 0.5)
+        centerLowerCoord.press(forDuration: 0.7)
+
+        // Verify bookmark indicator dismisses
+        let indicatorGonePredicate = NSPredicate(format: "exists == false")
+        let indicatorExpectation = XCTNSPredicateExpectation(predicate: indicatorGonePredicate, object: bookmarkIndicator)
+        let indicatorResult = XCTWaiter.wait(for: [indicatorExpectation], timeout: 4.0)
+        XCTAssertEqual(indicatorResult, .completed, "BookmarkIndicator should dismiss upon unbookmarking")
     }
 
-    // MARK: - 8. Spatial Gestures: Long Press Latched 2.0x Zone
+    // MARK: - 8. Spatial Gestures: Long Press Latched 2.0x Zone & Speed Cycler Clearing
 
     func testLatched2xSpatialZoneToggle() throws {
         let feedView = app.collectionViews["FeedCollectionView"]
@@ -223,9 +242,19 @@ final class InstagramDigestUITests: XCTestCase {
         let expectation = XCTNSPredicateExpectation(predicate: badgePredicate, object: latchedBadge)
         let result = XCTWaiter.wait(for: [expectation], timeout: 4.0)
         XCTAssertEqual(result, .completed, "Latched2xBadge should dismiss upon single tap")
+
+        // Latch 2.0x again
+        Thread.sleep(forTimeInterval: 0.5)
+        upperRightCoord.press(forDuration: 0.7)
+        XCTAssertTrue(latchedBadge.waitForExistence(timeout: 3.0))
+
+        // Tap speed button: must clear latch and advance speed
+        let speedButton = app.buttons["SpeedButton"]
+        speedButton.tap()
+        XCTAssertFalse(latchedBadge.exists, "Tapping speed button must clear 2.0x latch")
     }
 
-    // MARK: - 9. Vertical Feed Swipe Paging
+    // MARK: - 9. Vertical Feed Swipe Paging (Forward, Backward)
 
     func testVerticalFeedPaging() throws {
         let creatorHandle = app.staticTexts["ReelCreatorHandle"]
@@ -246,5 +275,33 @@ final class InstagramDigestUITests: XCTestCase {
 
         let rankBadge = app.staticTexts["ReelRankBadge"]
         XCTAssertTrue(rankBadge.label.contains("#02"), "Rank should update to #02 on swipe up")
+
+        // Swipe down to return to reel 1
+        collectionView.swipeDown(velocity: .fast)
+        let prevCreatorPredicate = NSPredicate(format: "label CONTAINS 'mkbhd'")
+        let prevExpectation = XCTNSPredicateExpectation(predicate: prevCreatorPredicate, object: creatorHandle)
+        let prevResult = XCTWaiter.wait(for: [prevExpectation], timeout: 5.0)
+        XCTAssertEqual(prevResult, .completed, "Feed should page back to mkbhd on swipe down")
+        XCTAssertTrue(rankBadge.label.contains("#01"))
+    }
+
+    // MARK: - 10. Spatial Gestures: Long Press Share Zone
+
+    func testShareSheetSpatialTrigger() throws {
+        let feedView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(feedView.waitForExistence(timeout: 8.0))
+
+        // Lower-Right Share zone: normX > 0.65, normY > 0.65
+        let lowerRightCoord = feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.80, dy: 0.80))
+        lowerRightCoord.press(forDuration: 0.7)
+
+        // Wait for sheet presentation animation
+        Thread.sleep(forTimeInterval: 1.0)
+
+        // Dismiss share sheet by tapping outside
+        feedView.coordinate(withNormalizedOffset: CGVector(dx: 0.10, dy: 0.10)).tap()
+
+        let speedButton = app.buttons["SpeedButton"]
+        XCTAssertTrue(speedButton.waitForExistence(timeout: 5.0), "Feed controls should be active after share dismiss")
     }
 }

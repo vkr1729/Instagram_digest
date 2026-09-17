@@ -9,6 +9,13 @@ struct InstagramDigestApp: App {
     init() {
         LibraryPathResolver.shared.ensureApplicationSupportExists()
 
+        let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing")
+
+        if isUITesting {
+            try? FileManager.default.removeItem(at: LibraryPathResolver.shared.mediaCacheBaseURL)
+            try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.mediaCacheBaseURL)
+        }
+
         do {
             let schema = Schema([
                 WatchedEvent.self,
@@ -16,7 +23,7 @@ struct InstagramDigestApp: App {
                 DailyProgress.self,
                 AppState.self
             ])
-            let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+            let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isUITesting)
             let container = try ModelContainer(for: schema, configurations: [config])
             self.modelContainer = container
 
@@ -43,10 +50,9 @@ struct InstagramDigestApp: App {
             }
 
             // Reset download state in UI testing
-            if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+            if isUITesting {
                 Task { @MainActor in
                     DownloadAllCoordinator.shared.cancelAll()
-                    DownloadAllCoordinator.shared.overallProgress = 0.0
                 }
             }
         } catch {

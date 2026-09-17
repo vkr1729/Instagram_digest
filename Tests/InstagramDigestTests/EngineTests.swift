@@ -91,4 +91,31 @@ final class EngineTests: XCTestCase {
         XCTAssertNotNil(cell1)
         XCTAssertTrue(cell1 is FeedCell)
     }
+
+    @MainActor
+    func testIdleCoordinatorSurvivesPlaybackToggleWithoutLeavingIdle() async throws {
+        let coordinator = DownloadAllCoordinator.shared
+        let pool = AVPlayerPool.shared
+
+        // Reset to known clean state
+        coordinator.cancelAll()
+        pool.isPlaying = false
+
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertEqual(coordinator.overallProgress, 0.0)
+
+        // Toggle playback: playing = true
+        pool.isPlaying = true
+        try await Task.sleep(nanoseconds: 100_000_000) // 100ms for Combine delivery on main queue
+
+        XCTAssertEqual(coordinator.state, .idle, "Coordinator must stay .idle when playback starts")
+        XCTAssertEqual(coordinator.overallProgress, 0.0)
+
+        // Toggle playback: playing = false
+        pool.isPlaying = false
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(coordinator.state, .idle, "Coordinator must stay .idle when playback stops")
+        XCTAssertEqual(coordinator.overallProgress, 0.0)
+    }
 }

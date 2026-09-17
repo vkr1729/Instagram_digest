@@ -38,6 +38,7 @@ jobs:
             -project InstagramDigest.xcodeproj \
             -scheme InstagramDigest \
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -derivedDataPath build/DerivedData \
             -only-testing:InstagramDigestTests \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
@@ -50,6 +51,7 @@ jobs:
             -project InstagramDigest.xcodeproj \
             -scheme InstagramDigest \
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -derivedDataPath build/DerivedData \
             -only-testing:InstagramDigestUITests \
             -resultBundlePath UATResults.xcresult \
             -configuration Debug \
