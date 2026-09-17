@@ -150,6 +150,7 @@ public struct BookmarksSheet: View {
                             }
                             .padding(.vertical, 2)
                         }
+                        .scrollBounceBehavior(.always)
                         .accessibilityIdentifier("BookmarksGrid")
                     }
                 }
@@ -243,14 +244,13 @@ public struct BookmarkPlayerOverlay: View {
     public var onDeleteBookmark: (BookmarkItem) -> Void
 
     @State private var currentIndex: Int
+    @State private var scrolledReelID: String?
     @State private var player: AVPlayer?
     @State private var isPlaying: Bool = true
     @State private var isChromeVisible: Bool = true
     @State private var isCaptionExpanded: Bool = false
     @State private var hideChromeWorkItem: DispatchWorkItem?
     @State private var endObserverToken: NSObjectProtocol?
-    @State private var shareItems: [Any] = []
-    @State private var showShareSheet: Bool = false
 
     public init(
         bookmarks: [BookmarkItem],
@@ -261,6 +261,8 @@ public struct BookmarkPlayerOverlay: View {
         self.bookmarks = bookmarks
         self.initialIndex = initialIndex
         self._currentIndex = State(initialValue: initialIndex)
+        let initialID = (initialIndex >= 0 && initialIndex < bookmarks.count) ? bookmarks[initialIndex].reelID : nil
+        self._scrolledReelID = State(initialValue: initialID)
         self.onClose = onClose
         self.onDeleteBookmark = onDeleteBookmark
     }
@@ -274,18 +276,39 @@ public struct BookmarkPlayerOverlay: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let p = player {
-                BookmarkVideoContainer(player: p)
-                    .ignoresSafeArea()
-            }
-
-            // Video tap background layer for play/pause toggle (isolated from chrome buttons)
-            Color.clear
-                .contentShape(Rectangle())
-                .ignoresSafeArea()
-                .onTapGesture {
-                    togglePlayPause()
+            // Vertical Paging Pager (iOS 17 native)
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
+                        ZStack {
+                            Color.black
+                            if index == currentIndex, let p = player {
+                                BookmarkVideoContainer(player: p)
+                            }
+                        }
+                        .containerRelativeFrame([.horizontal, .vertical])
+                        .id(bookmark.reelID)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            togglePlayPause()
+                        }
+                    }
                 }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $scrolledReelID)
+            .ignoresSafeArea()
+            .onChange(of: scrolledReelID) { _, newID in
+                guard let newID = newID,
+                      let idx = bookmarks.firstIndex(where: { $0.reelID == newID }),
+                      idx != currentIndex else { return }
+                currentIndex = idx
+                isCaptionExpanded = false
+                if let bm = currentBookmark {
+                    loadVideo(for: bm)
+                }
+            }
 
             // Natural background scrim for chrome readability
             if isChromeVisible {
@@ -408,23 +431,9 @@ public struct BookmarkPlayerOverlay: View {
                 .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
             }
         }
-        .gesture(
-            DragGesture(minimumDistance: 30)
-                .onEnded { value in
-                    if value.translation.height < -50 {
-                        // Swiped up -> next bookmark
-                        advanceToNextBookmark()
-                    } else if value.translation.height > 50 {
-                        // Swiped down -> previous bookmark
-                        retreatToPreviousBookmark()
-                    }
-                }
-        )
-        .sheet(isPresented: $showShareSheet) {
-            ActivityViewController(activityItems: shareItems)
-        }
         .onAppear {
             AVPlayerPool.shared.pause()
+            scrolledReelID = currentBookmark?.reelID
             if let bm = currentBookmark {
                 loadVideo(for: bm)
             }
@@ -439,6 +448,7 @@ public struct BookmarkPlayerOverlay: View {
                 onClose()
             } else if currentIndex >= newCount {
                 currentIndex = max(0, newCount - 1)
+                scrolledReelID = currentBookmark?.reelID
                 isCaptionExpanded = false
                 if let bm = currentBookmark {
                     loadVideo(for: bm)
@@ -534,6 +544,7 @@ public struct BookmarkPlayerOverlay: View {
         guard currentIndex + 1 < bookmarks.count else { return }
         isCaptionExpanded = false
         currentIndex += 1
+        scrolledReelID = bookmarks[currentIndex].reelID
         if let bm = currentBookmark {
             loadVideo(for: bm)
         }
@@ -543,6 +554,7 @@ public struct BookmarkPlayerOverlay: View {
         guard currentIndex > 0 else { return }
         isCaptionExpanded = false
         currentIndex -= 1
+        scrolledReelID = bookmarks[currentIndex].reelID
         if let bm = currentBookmark {
             loadVideo(for: bm)
         }
@@ -558,6 +570,7 @@ public struct BookmarkPlayerOverlay: View {
         } else {
             let nextIndex = min(currentIndex, remaining.count - 1)
             currentIndex = nextIndex
+            scrolledReelID = remaining[nextIndex].reelID
             loadVideo(for: remaining[nextIndex])
         }
     }
@@ -568,15 +581,13 @@ public struct BookmarkPlayerOverlay: View {
 
         let localURL = LibraryPathResolver.shared.bookmarkFileURL(for: bookmark.reelID)
         if FileManager.default.fileExists(atPath: localURL.path) {
-            self.shareItems = [localURL, shareCaption]
-            self.showShareSheet = true
+            ShareSheetPresenter.present(items: [localURL, shareCaption])
             return
         }
 
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(bookmark.reelID).mp4")
         if FileManager.default.fileExists(atPath: tempFile.path) {
-            self.shareItems = [tempFile, shareCaption]
-            self.showShareSheet = true
+            ShareSheetPresenter.present(items: [tempFile, shareCaption])
             return
         }
 
@@ -589,13 +600,11 @@ public struct BookmarkPlayerOverlay: View {
                 }
                 try FileManager.default.moveItem(at: downloadedURL, to: tempFile)
                 await MainActor.run {
-                    self.shareItems = [tempFile, shareCaption]
-                    self.showShareSheet = true
+                    ShareSheetPresenter.present(items: [tempFile, shareCaption])
                 }
             } catch {
                 await MainActor.run {
-                    self.shareItems = [videoURL, shareCaption]
-                    self.showShareSheet = true
+                    ShareSheetPresenter.present(items: [videoURL, shareCaption])
                 }
             }
         }

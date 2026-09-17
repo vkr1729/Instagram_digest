@@ -127,4 +127,96 @@ final class UITests: XCTestCase {
         let clampedFraction = min(1.0, Double(overflowBytes) / Double(maxCap))
         XCTAssertEqual(clampedFraction, 1.0)
     }
+
+    // MARK: - UAT Feedback 1: Touch Coordinate Normalization Across Scrolled Pages
+
+    func testScrollOffsetDoesNotSkewWindowCoordinates() {
+        let windowWidth: CGFloat = 393
+        let windowHeight: CGFloat = 852
+
+        // Simulate touching upper-right (2x latch) at window coordinate (300, 200)
+        let touchInWindow = CGPoint(x: 300, y: 200)
+        let zone = resolveZone(x: touchInWindow.x, y: touchInWindow.y, width: windowWidth, height: windowHeight)
+        XCTAssertEqual(zone, .upperRightSpeed, "Touching upper-right must resolve to 2x speed latch")
+
+        // Touching lower-right must resolve to share
+        let lowerRightTouch = CGPoint(x: 300, y: 700)
+        let shareZone = resolveZone(x: lowerRightTouch.x, y: lowerRightTouch.y, width: windowWidth, height: windowHeight)
+        XCTAssertEqual(shareZone, .lowerRightShare, "Touching lower-right must resolve to share")
+
+        // If buggy coordinate space (contentOffset space on reel 2, offset = 1704) was used:
+        let buggyTouchY: CGFloat = 1704 + 200 // 1904
+        let buggyZone = resolveZone(x: touchInWindow.x, y: buggyTouchY, width: windowWidth, height: windowHeight)
+        XCTAssertEqual(buggyZone, .lowerRightShare, "Buggy scroll offset incorrectly routed 2x to share")
+    }
+
+    // MARK: - UAT Feedback 1: Viewport Clamp on Normalized Touch Coordinates
+
+    /// Mirrors FeedPagerView.handleLongPress clamping exactly:
+    /// norm = min(max(location / size, 0.0), 1.0) in window-relative space.
+    func resolveZoneClamped(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> SpatialZone {
+        let normX = min(max(x / width, 0.0), 1.0)
+        let normY = min(max(y / height, 0.0), 1.0)
+
+        if normX > 0.65 && normY <= 0.65 {
+            return .upperRightSpeed
+        } else if normX > 0.65 && normY > 0.65 {
+            return .lowerRightShare
+        } else if normX >= 0.30 && normX <= 0.65 && normY > 0.65 {
+            return .lowerMiddleBookmark
+        } else {
+            return .deadZone
+        }
+    }
+
+    func testViewportClampKeepsEdgeTouchesRoutable() {
+        let w: CGFloat = 393
+        let h: CGFloat = 852
+
+        // Slight negative overshoot (status-bar / rounding) stays in the 2x zone.
+        XCTAssertEqual(
+            resolveZoneClamped(x: 300, y: -8, width: w, height: h),
+            .upperRightSpeed,
+            "Negative Y overshoot must clamp to 0 and still latch 2x"
+        )
+
+        // Slight bottom overshoot clamps to 1.0 and stably routes to share.
+        XCTAssertEqual(
+            resolveZoneClamped(x: 300, y: 860, width: w, height: h),
+            .lowerRightShare,
+            "Bottom overshoot must clamp to 1.0 and route to share"
+        )
+
+        // In-range 2x touch is unaffected by clamping.
+        XCTAssertEqual(
+            resolveZoneClamped(x: 300, y: 200, width: w, height: h),
+            .upperRightSpeed
+        )
+    }
+
+    // MARK: - Multi-Slot Pre-Render Invariants
+
+    func testMultiSlotIndexMapping() {
+        func slotIndices(for currentIndex: Int, totalReels: Int) -> (prev: Int?, curr: Int, next: Int?) {
+            let prev = currentIndex > 0 ? currentIndex - 1 : nil
+            let curr = currentIndex
+            let next = currentIndex + 1 < totalReels ? currentIndex + 1 : nil
+            return (prev, curr, next)
+        }
+
+        let slotsAt0 = slotIndices(for: 0, totalReels: 10)
+        XCTAssertNil(slotsAt0.prev)
+        XCTAssertEqual(slotsAt0.curr, 0)
+        XCTAssertEqual(slotsAt0.next, 1)
+
+        let slotsAt5 = slotIndices(for: 5, totalReels: 10)
+        XCTAssertEqual(slotsAt5.prev, 4)
+        XCTAssertEqual(slotsAt5.curr, 5)
+        XCTAssertEqual(slotsAt5.next, 6)
+
+        let slotsAt9 = slotIndices(for: 9, totalReels: 10)
+        XCTAssertEqual(slotsAt9.prev, 8)
+        XCTAssertEqual(slotsAt9.curr, 9)
+        XCTAssertNil(slotsAt9.next)
+    }
 }

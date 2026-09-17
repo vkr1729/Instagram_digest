@@ -110,8 +110,6 @@ struct FeedMainView: View {
     @State private var showDownloadSheet: Bool = false
     @State private var showBookmarksSheet: Bool = false
     @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
-    @State private var showShareSheet: Bool = false
-    @State private var shareItems: [Any] = []
 
     // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
@@ -208,6 +206,7 @@ struct FeedMainView: View {
                     reel: currentReel,
                     isLatched2x: pool.isLatched2x,
                     isBookmarked: isCurrentBookmarked,
+                    isChromeVisible: isChromeVisible,
                     seekFractionPreview: seekPreviewFraction,
                     progress: pool.currentProgress,
                     duration: pool.currentDuration,
@@ -233,8 +232,6 @@ struct FeedMainView: View {
                     }
                 )
                 .ignoresSafeArea()
-                .opacity(isChromeVisible ? 1.0 : 0.0)
-                .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
 
                 // 3. Top Navigation Header & Story Category Circles Bar (Mock 2 Locked)
                 VStack(spacing: 0) {
@@ -310,9 +307,6 @@ struct FeedMainView: View {
         }
         .sheet(isPresented: $showBookmarksSheet) {
             BookmarksSheet()
-        }
-        .sheet(isPresented: $showShareSheet) {
-            ActivityViewController(activityItems: shareItems)
         }
         .onChange(of: activeIndex) { _, newIndex in
             saveLastActiveReel(index: newIndex)
@@ -645,11 +639,17 @@ struct FeedMainView: View {
         }
     }
 
+    @State private var bookmarkPopGeneration: UInt64 = 0
+
     private func triggerBookmarkPopAnimation() {
+        bookmarkPopGeneration &+= 1
+        let generation = bookmarkPopGeneration
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
             showBookmarkPop = true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            // A rapid second toggle must not be hidden early by the first timer.
+            guard generation == bookmarkPopGeneration else { return }
             withAnimation(.easeOut(duration: 0.2)) {
                 showBookmarkPop = false
             }
@@ -668,15 +668,13 @@ struct FeedMainView: View {
         // directory) so the share sheet attaches the real .mp4, not just a link.
         if let resolved = LibraryPathResolver.shared.resolvedLocalFileURL(for: weekID, reelID: reel.id),
            FileManager.default.fileExists(atPath: resolved.path) {
-            self.shareItems = [resolved, shareCaption]
-            self.showShareSheet = true
+            ShareSheetPresenter.present(items: [resolved, shareCaption])
             return
         }
 
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(reel.id).mp4")
         if FileManager.default.fileExists(atPath: tempFile.path) {
-            self.shareItems = [tempFile, shareCaption]
-            self.showShareSheet = true
+            ShareSheetPresenter.present(items: [tempFile, shareCaption])
             return
         }
 
@@ -689,14 +687,12 @@ struct FeedMainView: View {
                 }
                 try FileManager.default.moveItem(at: downloadedURL, to: tempFile)
                 await MainActor.run {
-                    self.shareItems = [tempFile, shareCaption]
-                    self.showShareSheet = true
+                    ShareSheetPresenter.present(items: [tempFile, shareCaption])
                 }
             } catch {
                 // Fallback to video URL + caption if download fails
                 await MainActor.run {
-                    self.shareItems = [reel.videoUrl, shareCaption]
-                    self.showShareSheet = true
+                    ShareSheetPresenter.present(items: [reel.videoUrl, shareCaption])
                 }
             }
         }
@@ -769,13 +765,28 @@ public final class Reachability: @unchecked Sendable {
     }
 }
 
-/// UIActivityViewController wrapper for system share sheet
-struct ActivityViewController: UIViewControllerRepresentable {
-    let activityItems: [Any]
+/// Native system share sheet presenter that invokes UIActivityViewController directly from the topmost UIViewController,
+/// avoiding SwiftUI .sheet nested presentation bugs that result in blank action sheets.
+@MainActor
+public enum ShareSheetPresenter {
+    public static func present(items: [Any]) {
+        guard let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+              let window = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first,
+              let rootVC = window.rootViewController else { return }
 
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        var topVC = rootVC
+        while let presented = topVC.presentedViewController {
+            topVC = presented
+        }
+
+        let activityVC = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let popover = activityVC.popoverPresentationController {
+            popover.sourceView = topVC.view
+            popover.sourceRect = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        topVC.present(activityVC, animated: true)
     }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
+
+

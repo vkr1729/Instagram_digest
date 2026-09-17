@@ -9,6 +9,7 @@ public struct ReelCardOverlayView: View {
     public let reel: ReelItem
     public let isLatched2x: Bool
     public let isBookmarked: Bool
+    public let isChromeVisible: Bool
     public let seekFractionPreview: Double?
     public let progress: Double
     public let duration: Double
@@ -24,6 +25,7 @@ public struct ReelCardOverlayView: View {
         reel: ReelItem,
         isLatched2x: Bool = false,
         isBookmarked: Bool = false,
+        isChromeVisible: Bool = true,
         seekFractionPreview: Double? = nil,
         progress: Double = 0.0,
         duration: Double = 0.0,
@@ -38,6 +40,7 @@ public struct ReelCardOverlayView: View {
         self.reel = reel
         self.isLatched2x = isLatched2x
         self.isBookmarked = isBookmarked
+        self.isChromeVisible = isChromeVisible
         self.seekFractionPreview = seekFractionPreview
         self.progress = progress
         self.duration = duration
@@ -64,6 +67,8 @@ public struct ReelCardOverlayView: View {
             }
             .ignoresSafeArea()
             .allowsHitTesting(false)
+            .opacity(isChromeVisible ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
 
             // 2. Animated Bookmark Pop Indicator (Center)
             if showBookmarkPop {
@@ -232,6 +237,8 @@ public struct ReelCardOverlayView: View {
                         .accessibilityIdentifier("ReelCaptionText")
                 }
             }
+            .opacity(isChromeVisible ? 1.0 : 0.0)
+            .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
         }
     }
 

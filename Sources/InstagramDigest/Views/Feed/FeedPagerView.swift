@@ -123,13 +123,16 @@ public struct FeedPagerView: UIViewControllerRepresentable {
 
         @objc func handleLongPress(_ sender: UILongPressGestureRecognizer) {
             guard let view = sender.view else { return }
-            let location = sender.location(in: view)
-            let width = view.bounds.width
-            let height = view.bounds.height
+            let targetView = view.window ?? view.superview ?? view
+            let location = sender.location(in: targetView)
+            let width = targetView.bounds.width
+            let height = targetView.bounds.height
             guard width > 0, height > 0 else { return }
 
-            let normX = location.x / width
-            let normY = location.y / height
+            // Clamp to the visible viewport so rounding/safe-area overshoot
+            // can never push a 2x touch into the Share zone (or vice versa).
+            let normX = min(max(location.x / width, 0.0), 1.0)
+            let normY = min(max(location.y / height, 0.0), 1.0)
 
             switch sender.state {
             case .began:
@@ -169,8 +172,9 @@ public struct FeedPagerView: UIViewControllerRepresentable {
 
         @objc func handleSeekPan(_ sender: SeekPanGestureRecognizer) {
             guard let view = sender.view else { return }
-            let location = sender.location(in: view)
-            let width = view.bounds.width
+            let targetView = view.window ?? view.superview ?? view
+            let location = sender.location(in: targetView)
+            let width = targetView.bounds.width
             guard width > 0 else { return }
 
             switch sender.state {
@@ -222,7 +226,9 @@ public struct FeedPagerView: UIViewControllerRepresentable {
                 return UICollectionViewCell()
             }
             let reel = parent.reels[indexPath.item]
-            return collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: reel)
+            let cell = collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: reel)
+            viewController?.reattachPlayerToVisibleCells()
+            return cell
         }
 
         // MARK: - UICollectionViewDelegateFlowLayout
@@ -241,6 +247,14 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             if !decelerate {
                 handleScrollSettle(scrollView)
             }
+        }
+
+        public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+            handleScrollSettle(scrollView)
+        }
+
+        public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            viewController?.reattachPlayerToVisibleCells()
         }
 
         private func handleScrollSettle(_ scrollView: UIScrollView) {
@@ -268,6 +282,8 @@ public struct FeedPagerView: UIViewControllerRepresentable {
                     self.parent.currentIndex = clampedPage
                     self.parent.onPageChanged(clampedPage)
                     self.viewController?.updateCurrentIndex(clampedPage)
+                } else {
+                    self.viewController?.reattachPlayerToVisibleCells()
                 }
             }
             settleWorkItem = workItem
@@ -278,7 +294,6 @@ public struct FeedPagerView: UIViewControllerRepresentable {
         // MARK: - Prefetching
 
         public func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
-            // Memory-efficient image prefetching
         }
     }
 }
@@ -328,7 +343,7 @@ public final class FeedCollectionViewController: UICollectionViewController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.reattachPlayerToVisibleCell()
+                self?.reattachPlayerToVisibleCells()
             }
         )
 
@@ -338,7 +353,7 @@ public final class FeedCollectionViewController: UICollectionViewController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.reattachPlayerToVisibleCell()
+                self?.reattachPlayerToVisibleCells()
             }
         )
     }
@@ -349,15 +364,40 @@ public final class FeedCollectionViewController: UICollectionViewController {
         }
     }
 
-    public func reattachPlayerToVisibleCell() {
+    public override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        reattachPlayerToVisibleCells()
+    }
+
+    /// Multi-slot attachment: binds Slot 1 to current reel, Slot 2 to current + 1 (next), and Slot 0 to current - 1 (prev)
+    /// Eliminates black screen blink and renders videos instantly with zero thumbnail image loading
+    public func reattachPlayerToVisibleCells() {
+        let current = currentAttachedIndex
+        guard current >= 0, current < currentReels.count else { return }
+
         for cell in collectionView.visibleCells {
-            if let indexPath = collectionView.indexPath(for: cell),
-               let feedCell = cell as? FeedCell,
-               indexPath.item == currentAttachedIndex {
+            guard let indexPath = collectionView.indexPath(for: cell),
+                  let feedCell = cell as? FeedCell,
+                  indexPath.item < currentReels.count else { continue }
+            let itemIndex = indexPath.item
+            if itemIndex == current {
                 feedCell.playerContainerView?.isHidden = false
                 if let pc = feedCell.playerContainerView {
                     AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 1)
                 }
+            } else if itemIndex == current + 1 {
+                feedCell.playerContainerView?.isHidden = false
+                if let pc = feedCell.playerContainerView {
+                    AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 2)
+                }
+            } else if itemIndex == current - 1 {
+                feedCell.playerContainerView?.isHidden = false
+                if let pc = feedCell.playerContainerView {
+                    AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 0)
+                }
+            } else {
+                feedCell.playerContainerView?.isHidden = true
+                feedCell.playerContainerView?.playerLayer.player = nil
             }
         }
     }
@@ -376,18 +416,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
 
     /// Reconfigures visible cells on index change to attach/detach player layers without reloadData churn
     public func updateCurrentIndex(_ newIndex: Int) {
-        guard newIndex != currentAttachedIndex, newIndex >= 0, newIndex < currentReels.count else { return }
+        guard newIndex >= 0, newIndex < currentReels.count else { return }
         self.currentAttachedIndex = newIndex
-
-        for cell in collectionView.visibleCells {
-            if let indexPath = collectionView.indexPath(for: cell),
-               let feedCell = cell as? FeedCell,
-               indexPath.item < currentReels.count {
-                let isCurrent = indexPath.item == newIndex
-                let reel = currentReels[indexPath.item]
-                feedCell.configure(reel: reel, isCurrent: isCurrent)
-            }
-        }
+        reattachPlayerToVisibleCells()
     }
 
     public func scrollToCurrentIndexIfNeeded(_ index: Int) {
@@ -408,11 +439,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
     }
 }
 
-/// Custom UICollectionViewCell with direct PlayerContainerView attachment and immediate teardown on reuse
+/// Custom UICollectionViewCell with direct PlayerContainerView attachment and zero thumbnail image loading
 public final class FeedCell: UICollectionViewCell {
     public private(set) var playerContainerView: PlayerContainerView?
-    private var thumbnailImageView: UIImageView?
-    private var currentThumbnailURL: URL?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -427,31 +456,17 @@ public final class FeedCell: UICollectionViewCell {
     }
 
     private func setupViews() {
-        // 1. Thumbnail Image View (backdrop)
-        let iv = UIImageView()
-        iv.contentMode = .scaleAspectFill
-        iv.clipsToBounds = true
-        iv.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(iv)
-
-        // 2. Player Layer Container View
         let pc = PlayerContainerView()
         pc.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(pc)
 
         NSLayoutConstraint.activate([
-            iv.topAnchor.constraint(equalTo: contentView.topAnchor),
-            iv.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            iv.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            iv.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-
             pc.topAnchor.constraint(equalTo: contentView.topAnchor),
             pc.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             pc.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             pc.trailingAnchor.constraint(equalTo: contentView.trailingAnchor)
         ])
 
-        self.thumbnailImageView = iv
         self.playerContainerView = pc
     }
 
@@ -465,84 +480,11 @@ public final class FeedCell: UICollectionViewCell {
             playerContainerView?.isHidden = true
             playerContainerView?.playerLayer.player = nil
         }
-
-        // Load thumbnail image if available with identity guard
-        self.currentThumbnailURL = reel.thumbnailUrl
-        if let thumbURL = reel.thumbnailUrl {
-            ImagePipeline.shared.loadImage(from: thumbURL) { [weak self] img in
-                guard self?.currentThumbnailURL == thumbURL else { return }
-                self?.thumbnailImageView?.image = img
-            }
-        } else {
-            thumbnailImageView?.image = nil
-        }
     }
 
     public override func prepareForReuse() {
         super.prepareForReuse()
-        // Immediate player layer detachment conforming strictly to §1.7
-        currentThumbnailURL = nil
         playerContainerView?.playerLayer.player = nil
         playerContainerView?.isHidden = true
-        thumbnailImageView?.image = nil
-    }
-}
-
-/// URLCache & NSCache backed image decompression pipeline conforming to §1.7
-public final class ImagePipeline: @unchecked Sendable {
-    public static let shared = ImagePipeline()
-    private let cache = NSCache<NSURL, UIImage>()
-    private var memoryWarningToken: NSObjectProtocol?
-
-    private init() {
-        cache.countLimit = 150
-        cache.totalCostLimit = 50 * 1024 * 1024 // 50 MB decoded image memory cache
-
-        memoryWarningToken = NotificationCenter.default.addObserver(
-            forName: UIApplication.didReceiveMemoryWarningNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.cache.removeAllObjects()
-        }
-    }
-
-    deinit {
-        if let token = memoryWarningToken {
-            NotificationCenter.default.removeObserver(token)
-        }
-    }
-
-    public func loadImage(from url: URL, completion: @escaping @MainActor (UIImage?) -> Void) {
-        if let cached = cache.object(forKey: url as NSURL) {
-            Task { @MainActor in
-                completion(cached)
-            }
-            return
-        }
-
-        Task.detached(priority: .userInitiated) { [weak self] in
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let rawImage = UIImage(data: data) else {
-                Task { @MainActor in completion(nil) }
-                return
-            }
-
-            // Thread-safe modern decompression
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = 1.0
-            format.opaque = true
-            let renderer = UIGraphicsImageRenderer(size: rawImage.size, format: format)
-            let decompressed = renderer.image { _ in
-                rawImage.draw(at: .zero)
-            }
-
-            let cost = Int(rawImage.size.width * rawImage.scale * rawImage.size.height * rawImage.scale * 4)
-            self?.cache.setObject(decompressed, forKey: url as NSURL, cost: cost)
-
-            Task { @MainActor in
-                completion(decompressed)
-            }
-        }
     }
 }

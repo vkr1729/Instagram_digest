@@ -54,3 +54,7 @@ debug/
 .user_uploaded/
 FINAL_*.md
 *HANDOFF_PROMPT*.md
+
+# iOS Build artifacts
+*.ipa
+build_ipa/

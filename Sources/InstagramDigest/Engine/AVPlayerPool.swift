@@ -37,7 +37,7 @@ public final class AVPlayerPool: ObservableObject {
             self.player.actionAtItemEnd = .none
         }
 
-        public func teardown() {
+        public func teardown(detachingLayer: Bool = false) {
             player.pause()
             if let token = timeObserverToken {
                 player.removeTimeObserver(token)
@@ -56,8 +56,10 @@ public final class AVPlayerPool: ObservableObject {
             looper?.disableLooping()
             looper = nil
             player.replaceCurrentItem(with: nil)
-            playerLayer?.player = nil
-            playerLayer = nil
+            if detachingLayer {
+                playerLayer?.player = nil
+                playerLayer = nil
+            }
             currentItem = nil
             slotItem = nil
         }
@@ -251,6 +253,9 @@ public final class AVPlayerPool: ObservableObject {
 
         // If slot already holds this item and has currentItem, resume unless rebuilding
         if !forceRebuild, targetTime == nil, slot.slotItem?.reel.id == item.id, slot.player.currentItem != nil {
+            // Reconnect the layer: it may have been detached by cell reuse or backgrounding.
+            slot.playerLayer?.player = slot.player
+            slot.playerLayer?.videoGravity = .resizeAspect
             applyPlaybackRate()
             self.isPlaying = true
             return
@@ -287,6 +292,8 @@ public final class AVPlayerPool: ObservableObject {
 
                 slot.currentItem = playerItem
                 slot.player.replaceCurrentItem(with: playerItem)
+                slot.playerLayer?.player = slot.player
+                slot.playerLayer?.videoGravity = .resizeAspect
 
                 // Unmute current slot
                 slot.player.isMuted = false
@@ -349,6 +356,8 @@ public final class AVPlayerPool: ObservableObject {
 
                 slot.currentItem = playerItem
                 slot.player.replaceCurrentItem(with: playerItem)
+                slot.playerLayer?.player = slot.player
+                slot.playerLayer?.videoGravity = .resizeAspect
                 slot.player.pause()
             } catch {
                 // Secondary slot loading failures can be silently ignored
@@ -520,6 +529,8 @@ public final class AVPlayerPool: ObservableObject {
                     self.slotCurrent.slotItem = SlotItem(reel: item, localURL: nil, remoteURL: item.videoUrl, isLocal: false)
                     self.slotCurrent.currentItem = playerItem
                     self.slotCurrent.player.replaceCurrentItem(with: playerItem)
+                    self.slotCurrent.playerLayer?.player = self.slotCurrent.player
+                    self.slotCurrent.playerLayer?.videoGravity = .resizeAspect
                     self.slotCurrent.player.isMuted = false
                     self.slotCurrent.player.volume = 1.0
                     self.observePlayerItemStatus(for: self.slotCurrent, item: playerItem, reel: item, isLocal: false, generation: itemGen)
@@ -635,5 +646,6 @@ public final class AVPlayerPool: ObservableObject {
         let slot = slots.first { $0.index == index }
         slot?.playerLayer = layer
         layer.player = slot?.player
+        layer.videoGravity = .resizeAspect
     }
 }
