@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import InstagramDigest
 
 final class EngineTests: XCTestCase {
@@ -56,5 +57,38 @@ final class EngineTests: XCTestCase {
         coordinator.cancelAll()
         XCTAssertFalse(coordinator.isSuspended)
         XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    @MainActor
+    func testCellRegistrationDequeueReuse() {
+        let reels = [
+            ReelItem(id: "test_reel_1", creatorHandle: "mkbhd", caption: "Test 1", rank: 1, videoUrl: URL(string: "https://example.com/1.mp4")!),
+            ReelItem(id: "test_reel_2", creatorHandle: "veritasium", caption: "Test 2", rank: 2, videoUrl: URL(string: "https://example.com/2.mp4")!)
+        ]
+        var currentIndex = 0
+        let binding = Binding<Int>(get: { currentIndex }, set: { currentIndex = $0 })
+        let pagerView = FeedPagerView(
+            reels: reels,
+            currentIndex: binding,
+            onPageChanged: { _ in },
+            onScrollEnded: { _ in },
+            onForwardScrollPast: { _ in }
+        )
+        let coordinator = FeedPagerView.Coordinator(pagerView)
+        XCTAssertNotNil(coordinator.cellRegistration, "Cell registration must be eagerly instantiated up-front")
+
+        let layout = UICollectionViewFlowLayout()
+        let collectionView = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: layout)
+        collectionView.dataSource = coordinator
+
+        // Dequeue item 0: must succeed and not throw NSInternalInconsistencyException
+        let cell0 = coordinator.collectionView(collectionView, cellForItemAt: IndexPath(item: 0, section: 0))
+        XCTAssertNotNil(cell0)
+        XCTAssertTrue(cell0 is FeedCell)
+
+        // Dequeue item 1: demonstrates registration is shared across dequeues without recreation
+        let cell1 = coordinator.collectionView(collectionView, cellForItemAt: IndexPath(item: 1, section: 0))
+        XCTAssertNotNil(cell1)
+        XCTAssertTrue(cell1 is FeedCell)
     }
 }

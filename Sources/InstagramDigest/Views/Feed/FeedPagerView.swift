@@ -55,20 +55,18 @@ public struct FeedPagerView: UIViewControllerRepresentable {
         weak var viewController: FeedCollectionViewController?
         private var settleWorkItem: DispatchWorkItem?
         public var lastActiveIndex: Int = 0
+        private(set) var cellRegistration: UICollectionView.CellRegistration<FeedCell, ReelItem>!
 
         init(_ parent: FeedPagerView) {
             self.parent = parent
             self.lastActiveIndex = parent.currentIndex
-        }
-
-        // Modern CellRegistration conforming to §1.7
-        private lazy var cellRegistration: UICollectionView.CellRegistration<FeedCell, ReelItem> = {
-            UICollectionView.CellRegistration<FeedCell, ReelItem> { [weak self] cell, indexPath, reel in
+            super.init()
+            self.cellRegistration = UICollectionView.CellRegistration<FeedCell, ReelItem> { [weak self] cell, indexPath, reel in
                 guard let self = self else { return }
                 let isCurrent = indexPath.item == self.parent.currentIndex
                 cell.configure(reel: reel, isCurrent: isCurrent)
             }
-        }()
+        }
 
         // MARK: - UICollectionViewDataSource
 

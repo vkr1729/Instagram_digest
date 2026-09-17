@@ -157,4 +157,12 @@ public struct LibraryPathResolver: Sendable {
             ofItemAtPath: url.path
         )
     }
+
+    /// Best-effort pre-creation of Application Support directory before SwiftData initialization
+    public func ensureApplicationSupportExists() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        if let appSupport {
+            try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        }
+    }
 }

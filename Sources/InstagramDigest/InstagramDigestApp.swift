@@ -7,6 +7,8 @@ struct InstagramDigestApp: App {
     let modelContainer: ModelContainer
 
     init() {
+        LibraryPathResolver.shared.ensureApplicationSupportExists()
+
         do {
             let schema = Schema([
                 WatchedEvent.self,
