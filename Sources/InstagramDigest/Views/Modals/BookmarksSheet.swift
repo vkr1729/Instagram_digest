@@ -32,6 +32,7 @@ public struct BookmarksSheet: View {
                             Text("\(formatMB(totalBytes)) / 1.5 GB")
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(.cyan)
+                                .accessibilityIdentifier("StorageGaugeLabel")
                         }
 
                         // Progress Gauge Bar
@@ -58,6 +59,7 @@ public struct BookmarksSheet: View {
                                         .foregroundColor(.red.opacity(0.9))
                                 }
                             }
+                            .accessibilityIdentifier("FreeStorageButton")
                             .disabled(isPurgingStorage || totalBytes == 0)
                         }
                     }
@@ -132,6 +134,7 @@ public struct BookmarksSheet: View {
                         dismiss()
                     }
                     .foregroundColor(.white)
+                    .accessibilityIdentifier("BookmarksDoneButton")
                 }
             }
             .sheet(item: $selectedBookmarkForPlayback) { bookmark in

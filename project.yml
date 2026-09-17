@@ -50,13 +50,32 @@ targets:
     dependencies:
       - target: InstagramDigest
 
+  InstagramDigestUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/InstagramDigestUITests
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      CURRENT_PROJECT_VERSION: "1"
+      MARKETING_VERSION: "1.0.0"
+      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.offline.uitests
+      TEST_TARGET_NAME: InstagramDigest
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGN_IDENTITY: ""
+    dependencies:
+      - target: InstagramDigest
+
 schemes:
   InstagramDigest:
     build:
       targets:
         InstagramDigest: all
         InstagramDigestTests: [test]
+        InstagramDigestUITests: [test]
     test:
       gatherCoverageData: true
       targets:
         - InstagramDigestTests
+        - InstagramDigestUITests
+

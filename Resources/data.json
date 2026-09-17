@@ -1,0 +1,43 @@
+{
+  "run_date": "2026-09-17",
+  "week_id": "2026-09-17",
+  "generated_at": "2026-09-17T08:00:00Z",
+  "items": [
+    {
+      "id": "reel_01",
+      "creator_handle": "mkbhd",
+      "caption": "Next-gen spatial computing impressions and hardware teardown",
+      "rank": 1,
+      "video_url": "https://pub-r2.dev/videos/2026-09-17/reel_01.mp4",
+      "thumbnail": "https://pub-r2.dev/thumbnails/reel_01.jpg",
+      "size_bytes": 14500000
+    },
+    {
+      "id": "reel_02",
+      "creator_handle": "hubermanlab",
+      "caption": "Optimal focus routines, light exposure, and daily protocols",
+      "rank": 2,
+      "video_url": "https://pub-r2.dev/videos/2026-09-17/reel_02.mp4",
+      "thumbnail": "https://pub-r2.dev/thumbnails/reel_02.jpg",
+      "size_bytes": 18200000
+    },
+    {
+      "id": "reel_03",
+      "creator_handle": "lexfridman",
+      "caption": "Deep learning architectures and humanoid robotics breakdown",
+      "rank": 3,
+      "video_url": "https://pub-r2.dev/videos/2026-09-17/reel_03.mp4",
+      "thumbnail": "https://pub-r2.dev/thumbnails/reel_03.jpg",
+      "size_bytes": 16100000
+    },
+    {
+      "id": "reel_04",
+      "creator_handle": "veritasium",
+      "caption": "The unexpected physics of quantum tunneling",
+      "rank": 4,
+      "video_url": "https://pub-r2.dev/videos/2026-09-17/reel_04.mp4",
+      "thumbnail": "https://pub-r2.dev/thumbnails/reel_04.jpg",
+      "size_bytes": 19400000
+    }
+  ]
+}

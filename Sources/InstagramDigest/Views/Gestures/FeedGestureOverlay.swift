@@ -41,6 +41,7 @@ public struct FeedGestureOverlay: UIViewRepresentable {
         let view = UIView()
         view.backgroundColor = .clear
         view.isUserInteractionEnabled = true
+        view.accessibilityIdentifier = "FeedGestureOverlayView"
 
         let coordinator = context.coordinator
         coordinator.setupGestures(in: view)

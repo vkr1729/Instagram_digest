@@ -89,6 +89,7 @@ public struct GridView: View {
                                         .stroke(isCurrent ? Color.cyan : Color.clear, lineWidth: 2)
                                 )
                             }
+                            .accessibilityIdentifier("GridReelItem_\(index)")
                         }
                     }
                     .padding(.vertical, 2)
@@ -102,6 +103,7 @@ public struct GridView: View {
                         dismiss()
                     }
                     .foregroundColor(.white)
+                    .accessibilityIdentifier("GridDoneButton")
                 }
             }
         }

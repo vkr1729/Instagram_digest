@@ -153,6 +153,7 @@ public final class FeedCollectionViewController: UICollectionViewController {
         collectionView.isPagingEnabled = true
         collectionView.showsVerticalScrollIndicator = false
         collectionView.contentInsetAdjustmentBehavior = .never
+        collectionView.accessibilityIdentifier = "FeedCollectionView"
         collectionView.dataSource = coordinator
         collectionView.delegate = coordinator
         collectionView.prefetchDataSource = coordinator

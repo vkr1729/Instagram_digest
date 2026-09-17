@@ -24,11 +24,12 @@ jobs:
         run: |
           xcodegen generate
 
-      - name: Discover iOS Simulator
+      - name: Discover and Boot iOS Simulator
         id: simulator
         run: |
           DEVICE_NAME=$(xcrun simctl list devices available -j | jq -r '[.devices[] | map(select(.isAvailable and (.name | contains("iPhone"))))] | flatten | .[0].name // "iPhone 16"')
           echo "Discovered simulator: $DEVICE_NAME"
+          xcrun simctl boot "$DEVICE_NAME" || true
           echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Run Unit Tests
@@ -37,10 +38,32 @@ jobs:
             -project InstagramDigest.xcodeproj \
             -scheme InstagramDigest \
             -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -only-testing:InstagramDigestTests \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
+
+      - name: Run Deep UAT (XCUITest Suite)
+        run: |
+          xcodebuild test \
+            -project InstagramDigest.xcodeproj \
+            -scheme InstagramDigest \
+            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -only-testing:InstagramDigestUITests \
+            -resultBundlePath UATResults.xcresult \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload UAT Results on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uat-results
+          path: UATResults.xcresult
+          if-no-files-found: ignore
 
       - name: Build Release App for Device (Unsigned)
         run: |

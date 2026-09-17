@@ -154,6 +154,7 @@ public struct DownloadAllSheet: View {
                                     .foregroundColor(.black)
                                     .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
+                            .accessibilityIdentifier("StartDownloadButton")
 
                         case .downloading:
                             HStack(spacing: 12) {
@@ -198,6 +199,7 @@ public struct DownloadAllSheet: View {
                                     .foregroundColor(.black)
                                     .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
+                            .accessibilityIdentifier("DownloadDoneButton")
                         }
                     }
                     .padding(.horizontal, 20)
@@ -212,6 +214,7 @@ public struct DownloadAllSheet: View {
                         dismiss()
                     }
                     .foregroundColor(.white)
+                    .accessibilityIdentifier("DownloadCloseButton")
                 }
             }
             .onAppear {

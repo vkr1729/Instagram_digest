@@ -21,6 +21,14 @@ public actor DigestDataService {
     public func fetchManifest(from url: URL = defaultManifestURL) async throws -> DigestManifest {
         let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent("manifest_cache.json")
 
+        // 0. In UI test environment, prioritize bundled manifest for instant deterministic testing
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+           let bundleURL = Bundle.main.url(forResource: "data", withExtension: "json"),
+           let bundleData = try? Data(contentsOf: bundleURL),
+           let manifest = try? JSONDecoder().decode(DigestManifest.self, from: bundleData) {
+            return manifest
+        }
+
         // 1. If url is a local file URL, load directly; on corrupt file fall through to fallbacks
         if url.isFileURL {
             do {

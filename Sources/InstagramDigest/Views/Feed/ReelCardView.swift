@@ -91,6 +91,7 @@ public struct ReelCardOverlayView: View {
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial.opacity(0.8))
                     .clipShape(Capsule())
+                    .accessibilityIdentifier("ReelCreatorHandle")
 
                     // Rank Badge
                     Text(reel.rankDisplay)
@@ -100,6 +101,7 @@ public struct ReelCardOverlayView: View {
                         .padding(.vertical, 6)
                         .background(Color.white.opacity(0.2))
                         .clipShape(Capsule())
+                        .accessibilityIdentifier("ReelRankBadge")
 
                     // Discovery Pill for external reels
                     if reel.isExternal {
@@ -128,6 +130,7 @@ public struct ReelCardOverlayView: View {
                         .background(Color.black.opacity(0.6))
                         .clipShape(Capsule())
                         .overlay(Capsule().stroke(Color.yellow.opacity(0.8), lineWidth: 1))
+                        .accessibilityIdentifier("Latched2xBadge")
                     }
 
                     // Bookmark indicator
@@ -138,6 +141,7 @@ public struct ReelCardOverlayView: View {
                             .padding(8)
                             .background(.ultraThinMaterial)
                             .clipShape(Circle())
+                            .accessibilityIdentifier("BookmarkIndicator")
                     }
                 }
                 .padding(.horizontal, 16)

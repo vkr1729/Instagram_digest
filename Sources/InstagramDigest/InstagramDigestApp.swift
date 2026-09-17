@@ -91,6 +91,7 @@ struct FeedMainView: View {
                         .font(.system(size: 15, weight: .medium))
                         .foregroundColor(.white.opacity(0.8))
                 }
+                .accessibilityIdentifier("LoadingDigestView")
             } else if let error = errorMessage {
                 VStack(spacing: 16) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -192,6 +193,7 @@ struct FeedMainView: View {
                             .background(.ultraThinMaterial)
                             .clipShape(Capsule())
                         }
+                        .accessibilityIdentifier("SpeedButton")
 
                         Spacer()
 
@@ -206,6 +208,7 @@ struct FeedMainView: View {
                                 .background(.ultraThinMaterial)
                                 .clipShape(Circle())
                         }
+                        .accessibilityIdentifier("GridButton")
 
                         // Download All Button
                         Button {
@@ -218,6 +221,7 @@ struct FeedMainView: View {
                                 .background(.ultraThinMaterial)
                                 .clipShape(Circle())
                         }
+                        .accessibilityIdentifier("DownloadAllButton")
 
                         // Bookmarks Button
                         Button {
@@ -230,6 +234,7 @@ struct FeedMainView: View {
                                 .background(.ultraThinMaterial)
                                 .clipShape(Circle())
                         }
+                        .accessibilityIdentifier("BookmarksButton")
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 10)
