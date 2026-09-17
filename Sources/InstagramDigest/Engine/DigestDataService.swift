@@ -48,13 +48,22 @@ public actor DigestDataService {
         // 3. Fallback to cached manifest
         if FileManager.default.fileExists(atPath: cacheFileURL.path),
            let cachedData = try? Data(contentsOf: cacheFileURL) {
-            return try JSONDecoder().decode(DigestManifest.self, from: cachedData)
+            do {
+                return try JSONDecoder().decode(DigestManifest.self, from: cachedData)
+            } catch {
+                // Corrupted cache file, delete it and fall through to bundle
+                try? FileManager.default.removeItem(at: cacheFileURL)
+            }
         }
 
         // 4. Fallback to bundle if present
         if let bundleURL = Bundle.main.url(forResource: "data", withExtension: "json"),
            let bundleData = try? Data(contentsOf: bundleURL) {
-            return try JSONDecoder().decode(DigestManifest.self, from: bundleData)
+            do {
+                return try JSONDecoder().decode(DigestManifest.self, from: bundleData)
+            } catch {
+                // Bundle decode error
+            }
         }
 
         throw URLError(.cannotConnectToHost)

@@ -17,6 +17,7 @@ public actor MediaCacheManager {
 
     /// Bound reel IDs currently active or preloaded in the video pool
     private var activeVideoPoolReelIDs: Set<String> = []
+    private var latestLivePinSetGeneration: UInt64 = 0
 
     /// Flag indicating if a purge operation is in progress (for UI disabling)
     public private(set) var isPurging: Bool = false
@@ -38,8 +39,12 @@ public actor MediaCacheManager {
         self.downloadSuspensionHandler = handler
     }
 
-    /// Updates active reel IDs bound to the AVPlayer pool (protected by LivePinSet)
-    public func setActiveVideoPoolReelIDs(_ ids: Set<String>) {
+    /// Updates active reel IDs bound to the AVPlayer pool (protected by LivePinSet) with generation fencing
+    public func setActiveVideoPoolReelIDs(_ ids: Set<String>, generation: UInt64 = 0) {
+        if generation > 0 {
+            guard generation >= latestLivePinSetGeneration else { return }
+            latestLivePinSetGeneration = generation
+        }
         self.activeVideoPoolReelIDs = ids
     }
 
@@ -139,6 +144,20 @@ public actor MediaCacheManager {
         // Try removing directory if empty
         if let remaining = try? fm.contentsOfDirectory(atPath: weekDir.path), remaining.isEmpty {
             try? fm.removeItem(at: weekDir)
+        }
+
+        // Also clean up stale ResumeData files not in LivePinSet
+        let resumeDir = pathResolver.resumeDataDirectoryURL
+        if let resumeContents = try? fm.contentsOfDirectory(at: resumeDir, includingPropertiesForKeys: nil) {
+            for fileURL in resumeContents {
+                var baseName = fileURL.lastPathComponent
+                if baseName.hasSuffix(".dat") {
+                    baseName = (baseName as NSString).deletingPathExtension
+                }
+                if !sanitizedPins.contains(baseName) {
+                    try? fm.removeItem(at: fileURL)
+                }
+            }
         }
     }
 
@@ -255,15 +274,28 @@ public actor MediaCacheManager {
         // Ensure space under 1.5 GB cap
         try await ensureSpaceForBookmark(incomingBytes: fileSize)
 
-        try pathResolver.ensureDirectoryExists(at: pathResolver.bookmarksDirectoryURL)
-        try fm.copyItem(at: feedURL, to: bookmarkDestURL)
-        try pathResolver.applyProtectionAndBackupExclusion(to: bookmarkDestURL)
+        // Perform disk copy off-actor to avoid blocking actor during large file I/O
+        let dest = bookmarkDestURL
+        let src = feedURL
+        try await Task.detached {
+            let fileMgr = FileManager.default
+            try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+            if fileMgr.fileExists(atPath: dest.path) {
+                try? fileMgr.removeItem(at: dest)
+            }
+            try fileMgr.copyItem(at: src, to: dest)
+            try LibraryPathResolver.shared.applyProtectionAndBackupExclusion(to: dest)
+        }.value
 
         item.localStatus = .cached
         item.sizeBytes = fileSize
         item.lastAccessedAt = Date()
         self.totalBookmarkBytes += fileSize
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
+        }
     }
 
     /// Serialized deletion of a bookmark's offline file (avoids orphaned files on unbookmark or delete)

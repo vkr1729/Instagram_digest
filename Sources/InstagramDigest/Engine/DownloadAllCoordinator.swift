@@ -113,6 +113,9 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         self.completedInBatch = 0
         self.failedInBatch = 0
         self.retryCounts.removeAll()
+        self.watchdogResumeTask?.cancel()
+        self.watchdogResumeTask = nil
+        self.isSuspended = false
         self.state = .downloading(completed: 0, total: totalInBatch, currentReelID: nil)
         self.overallProgress = 0.0
 
@@ -121,6 +124,9 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
     }
 
     public func cancelAll() {
+        watchdogResumeTask?.cancel()
+        watchdogResumeTask = nil
+        isSuspended = false
         for (_, entry) in inFlightTasks {
             entry.task.cancel()
         }

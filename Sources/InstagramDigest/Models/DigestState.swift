@@ -10,7 +10,7 @@ public enum BookmarkLocalStatus: String, Codable, Sendable {
 /// Append-only log of watched reels to maintain history across weeks.
 @Model
 public final class WatchedEvent {
-    @Attribute(.unique) public var compoundKey: String = "" // "{weekID}_{reelID}"
+    @Attribute(.unique) public var compoundKey: String = "" // "{weekID}\u{1F}{reelID}"
     public var reelID: String = ""
     public var weekID: String = ""
     public var timestamp: Date = Date()
@@ -20,7 +20,7 @@ public final class WatchedEvent {
         weekID: String,
         timestamp: Date = Date()
     ) {
-        self.compoundKey = "\(weekID)_\(reelID)"
+        self.compoundKey = "\(weekID)\u{1F}\(reelID)"
         self.reelID = reelID
         self.weekID = weekID
         self.timestamp = timestamp

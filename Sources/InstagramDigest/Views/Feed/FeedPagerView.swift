@@ -155,6 +155,35 @@ public final class FeedCollectionViewController: UICollectionViewController {
         collectionView.dataSource = coordinator
         collectionView.delegate = coordinator
         collectionView.prefetchDataSource = coordinator
+
+        NotificationCenter.default.addObserver(
+            forName: AVPlayerPool.didEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reattachPlayerToVisibleCell()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reattachPlayerToVisibleCell()
+        }
+    }
+
+    public func reattachPlayerToVisibleCell() {
+        for cell in collectionView.visibleCells {
+            if let indexPath = collectionView.indexPath(for: cell),
+               let feedCell = cell as? FeedCell,
+               indexPath.item == currentAttachedIndex {
+                feedCell.playerContainerView?.isHidden = false
+                if let pc = feedCell.playerContainerView {
+                    AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 1)
+                }
+            }
+        }
     }
 
     /// Only reloads data when reels collection identity actually changes (prevents reloadData churn)
@@ -203,6 +232,7 @@ public final class FeedCollectionViewController: UICollectionViewController {
 public final class FeedCell: UICollectionViewCell {
     public private(set) var playerContainerView: PlayerContainerView?
     private var thumbnailImageView: UIImageView?
+    private var currentThumbnailURL: URL?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -256,9 +286,11 @@ public final class FeedCell: UICollectionViewCell {
             playerContainerView?.playerLayer.player = nil
         }
 
-        // Load thumbnail image if available
+        // Load thumbnail image if available with identity guard
+        self.currentThumbnailURL = reel.thumbnailUrl
         if let thumbURL = reel.thumbnailUrl {
             ImagePipeline.shared.loadImage(from: thumbURL) { [weak self] img in
+                guard self?.currentThumbnailURL == thumbURL else { return }
                 self?.thumbnailImageView?.image = img
             }
         } else {
@@ -269,6 +301,7 @@ public final class FeedCell: UICollectionViewCell {
     public override func prepareForReuse() {
         super.prepareForReuse()
         // Immediate player layer detachment conforming strictly to §1.7
+        currentThumbnailURL = nil
         playerContainerView?.playerLayer.player = nil
         playerContainerView?.isHidden = true
         thumbnailImageView?.image = nil
@@ -283,6 +316,14 @@ public final class ImagePipeline: @unchecked Sendable {
     private init() {
         cache.countLimit = 150
         cache.totalCostLimit = 50 * 1024 * 1024 // 50 MB decoded image memory cache
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.cache.removeAllObjects()
+        }
     }
 
     public func loadImage(from url: URL, completion: @escaping @MainActor (UIImage?) -> Void) {
@@ -300,13 +341,17 @@ public final class ImagePipeline: @unchecked Sendable {
                 return
             }
 
-            // Decompress off-main thread
-            UIGraphicsBeginImageContextWithOptions(rawImage.size, true, 1.0)
-            rawImage.draw(at: .zero)
-            let decompressed = UIGraphicsGetImageFromCurrentImageContext() ?? rawImage
-            UIGraphicsEndImageContext()
+            // Thread-safe modern decompression
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1.0
+            format.opaque = true
+            let renderer = UIGraphicsImageRenderer(size: rawImage.size, format: format)
+            let decompressed = renderer.image { _ in
+                rawImage.draw(at: .zero)
+            }
 
-            self?.cache.setObject(decompressed, forKey: url as NSURL)
+            let cost = Int(decompressed.size.width * decompressed.size.height * 4)
+            self?.cache.setObject(decompressed, forKey: url as NSURL, cost: cost)
 
             Task { @MainActor in
                 completion(decompressed)

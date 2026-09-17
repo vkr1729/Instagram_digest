@@ -78,4 +78,9 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(item.localStatus, .evicted)
         XCTAssertEqual(item.videoUrl?.absoluteString, "https://example.com/reel.mp4")
     }
+
+    func testWatchedEventCompoundKey() {
+        let event = WatchedEvent(reelID: "reel_01", weekID: "2026-09-17")
+        XCTAssertEqual(event.compoundKey, "2026-09-17\u{1F}reel_01")
+    }
 }

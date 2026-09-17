@@ -103,7 +103,11 @@ public struct BookmarksSheet: View {
                                                     reelID: bookmark.reelID,
                                                     fallbackSizeBytes: bookmark.sizeBytes
                                                 )
-                                                try? modelContext.save()
+                                                do {
+                                                    try modelContext.save()
+                                                } catch {
+                                                    modelContext.rollback()
+                                                }
                                                 await refreshLedger()
                                             } catch {
                                                 errorMessage = error.localizedDescription
@@ -161,7 +165,11 @@ public struct BookmarksSheet: View {
             }
             modelContext.delete(item)
         }
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+        }
         Task {
             await refreshLedger()
         }

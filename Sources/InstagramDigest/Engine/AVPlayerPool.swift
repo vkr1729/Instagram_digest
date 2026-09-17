@@ -9,6 +9,7 @@ import UIKit
 @MainActor
 public final class AVPlayerPool: ObservableObject {
     public static let shared = AVPlayerPool()
+    public static let didEnterForegroundNotification = Notification.Name("AVPlayerPool.didEnterForegroundNotification")
 
     public struct SlotItem: Sendable {
         public let reel: ReelItem
@@ -169,7 +170,7 @@ public final class AVPlayerPool: ObservableObject {
         if let n = nextItem { boundIDs.insert(n.id) }
 
         Task {
-            await MediaCacheManager.shared.setActiveVideoPoolReelIDs(boundIDs)
+            await MediaCacheManager.shared.setActiveVideoPoolReelIDs(boundIDs, generation: thisGeneration)
         }
 
         // Configure Slot 1 (Current)
@@ -197,11 +198,11 @@ public final class AVPlayerPool: ObservableObject {
 
     // MARK: - Slot Configuration
 
-    private func configureCurrentSlot(with item: ReelItem, generation: UInt64, restoringTo targetTime: Double? = nil) {
+    private func configureCurrentSlot(with item: ReelItem, generation: UInt64, restoringTo targetTime: Double? = nil, forceRebuild: Bool = false) {
         let slot = slotCurrent
 
         // If slot already holds this item and has currentItem, resume unless rebuilding
-        if targetTime == nil, slot.slotItem?.reel.id == item.id, slot.player.currentItem != nil {
+        if !forceRebuild, targetTime == nil, slot.slotItem?.reel.id == item.id, slot.player.currentItem != nil {
             applyPlaybackRate()
             self.isPlaying = true
             return
@@ -406,15 +407,15 @@ public final class AVPlayerPool: ObservableObject {
             localStallCount[item.id] = stalls
 
             if stalls == 1 {
-                // First stall: suspend downloads for 10s and retry local playback first
+                // First stall: suspend downloads for 10s and retry local playback first with forced rebuild
                 DownloadAllCoordinator.shared.suspendForWatchdog(durationSeconds: 10.0)
                 onStallWatchdogTriggered?()
 
-                // Retry local playback
+                // Retry local playback with forced rebuild
                 let gen = poolGeneration
                 Task { @MainActor [weak self] in
                     guard let self = self, self.poolGeneration == gen else { return }
-                    self.configureCurrentSlot(with: item, generation: gen)
+                    self.configureCurrentSlot(with: item, generation: gen, forceRebuild: true)
                 }
             } else {
                 // Second consecutive local stall: evict corrupted file via actor, then fall back to remote stream
@@ -422,6 +423,7 @@ public final class AVPlayerPool: ObservableObject {
                     await MediaCacheManager.shared.evictLocalFeedFile(weekID: self.currentWeekID, reelID: item.id)
                 }
 
+                self.slotCurrent.teardown()
                 let remoteAsset = AVURLAsset(url: item.videoUrl)
                 let itemGen = poolGeneration
                 Task { @MainActor [weak self] in
@@ -430,10 +432,12 @@ public final class AVPlayerPool: ObservableObject {
                     playerItem.audioTimePitchAlgorithm = .timeDomain
                     self.slotCurrent.player.automaticallyWaitsToMinimizeStalling = true
                     self.slotCurrent.currentItem = playerItem
-                    self.slotCurrent.looper?.disableLooping()
                     self.slotCurrent.looper = AVPlayerLooper(player: self.slotCurrent.player, templateItem: playerItem)
                     self.observePlayerItemStatus(for: self.slotCurrent, item: playerItem, reel: item, isLocal: false, generation: itemGen)
+                    self.attachTimeObserver(to: self.slotCurrent, reel: item)
+                    self.isPlaying = true
                     self.slotCurrent.player.rate = self.effectiveRate
+                    AudioSessionCoordinator.shared.activateSession()
                 }
             }
         } else {
@@ -532,6 +536,7 @@ public final class AVPlayerPool: ObservableObject {
         for slot in slots {
             slot.playerLayer?.player = slot.player
         }
+        NotificationCenter.default.post(name: Self.didEnterForegroundNotification, object: self)
         if wasPlayingBeforeBackground {
             play()
         }

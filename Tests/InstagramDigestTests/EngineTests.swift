@@ -34,4 +34,26 @@ final class EngineTests: XCTestCase {
         // Expected: 30 MB + 1.0 GB headroom = 1_030_000_000 bytes
         XCTAssertEqual(required, 1_030_000_000)
     }
+
+    func testLivePinSetGenerationFencing() async {
+        let manager = MediaCacheManager.shared
+        await manager.setActiveVideoPoolReelIDs(["new_reel"], generation: 2)
+        // Stale task with generation 1 finishes late: should be rejected
+        await manager.setActiveVideoPoolReelIDs(["stale_reel"], generation: 1)
+
+        let pinSet = await manager.computeLivePinSet()
+        XCTAssertTrue(pinSet.contains("new_reel"))
+        XCTAssertFalse(pinSet.contains("stale_reel"))
+    }
+
+    @MainActor
+    func testDownloadAllCoordinatorCancelResetsSuspension() {
+        let coordinator = DownloadAllCoordinator.shared
+        coordinator.suspendQueue()
+        XCTAssertTrue(coordinator.isSuspended)
+
+        coordinator.cancelAll()
+        XCTAssertFalse(coordinator.isSuspended)
+        XCTAssertEqual(coordinator.state, .idle)
+    }
 }

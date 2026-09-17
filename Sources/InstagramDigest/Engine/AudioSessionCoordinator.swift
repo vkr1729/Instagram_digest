@@ -6,6 +6,7 @@ import AVFoundation
 public final class AudioSessionCoordinator: Sendable {
     public static let shared = AudioSessionCoordinator()
 
+    private var interruptionDepth: Int = 0
     private var wasPlayingBeforeInterruption: Bool = false
     private var isSessionActive: Bool = false
 
@@ -95,11 +96,16 @@ public final class AudioSessionCoordinator: Sendable {
 
         switch type {
         case .began:
-            wasPlayingBeforeInterruption = AVPlayerPool.shared.isPlaying
-            if wasPlayingBeforeInterruption {
-                AVPlayerPool.shared.pause()
+            if interruptionDepth == 0 {
+                wasPlayingBeforeInterruption = AVPlayerPool.shared.isPlaying
+                if wasPlayingBeforeInterruption {
+                    AVPlayerPool.shared.pause()
+                }
             }
+            interruptionDepth += 1
         case .ended:
+            interruptionDepth = max(0, interruptionDepth - 1)
+            guard interruptionDepth == 0 else { return }
             guard wasPlayingBeforeInterruption else { return }
             wasPlayingBeforeInterruption = false
 
@@ -121,8 +127,9 @@ public final class AudioSessionCoordinator: Sendable {
             return
         }
 
-        // On headphone unplug / Bluetooth disconnect, pause immediately
+        // On headphone unplug / Bluetooth disconnect, pause immediately and prevent accidental speaker resume
         if reason == .oldDeviceUnavailable {
+            wasPlayingBeforeInterruption = false
             if AVPlayerPool.shared.isPlaying {
                 AVPlayerPool.shared.pause()
             }

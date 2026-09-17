@@ -298,6 +298,39 @@ struct FeedMainView: View {
                 let fetched = try await DigestDataService.shared.fetchManifest()
                 self.manifest = fetched
                 self.isLoading = false
+
+                // Check AppState for weekly rollover and purge stale week cache
+                let stateDescriptor = FetchDescriptor<AppState>()
+                if let appState = (try? self.modelContext.fetch(stateDescriptor))?.first {
+                    if !appState.currentWeekID.isEmpty && appState.currentWeekID != fetched.weekId {
+                        let oldWeek = appState.currentWeekID
+                        appState.currentWeekID = fetched.weekId
+                        do {
+                            try self.modelContext.save()
+                        } catch {
+                            self.modelContext.rollback()
+                        }
+                        Task {
+                            await MediaCacheManager.shared.purgeOldWeekDirectory(oldWeekID: oldWeek)
+                        }
+                    } else if appState.currentWeekID.isEmpty {
+                        appState.currentWeekID = fetched.weekId
+                        do {
+                            try self.modelContext.save()
+                        } catch {
+                            self.modelContext.rollback()
+                        }
+                    }
+                } else {
+                    let newState = AppState(currentWeekID: fetched.weekId)
+                    self.modelContext.insert(newState)
+                    do {
+                        try self.modelContext.save()
+                    } catch {
+                        self.modelContext.rollback()
+                    }
+                }
+
                 if !fetched.items.isEmpty {
                     self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: 0)
                 }
@@ -323,7 +356,7 @@ struct FeedMainView: View {
         guard let weekID = manifest?.weekId else { return }
 
         let reelID = reel.id
-        let compoundKey = "\(weekID)_\(reelID)"
+        let compoundKey = "\(weekID)\u{1F}\(reelID)"
         let descriptor = FetchDescriptor<WatchedEvent>(
             predicate: #Predicate { $0.compoundKey == compoundKey }
         )
@@ -350,7 +383,11 @@ struct FeedMainView: View {
             modelContext.insert(daily)
         }
 
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+        }
 
         // Check Mindful 50-reels threshold
         if daily.viewedCount >= 50 {
@@ -401,8 +438,12 @@ struct FeedMainView: View {
                 let daily = DailyProgress(dateString: todayStr, viewedCount: unrecordedCount)
                 modelContext.insert(daily)
             }
-            // Single batched save for all predecessors
-            try? modelContext.save()
+            // Single batched save for all predecessors with rollback protection
+            do {
+                try modelContext.save()
+            } catch {
+                modelContext.rollback()
+            }
         }
 
         activeIndex = targetIndex
@@ -441,7 +482,11 @@ struct FeedMainView: View {
             // Unbookmark: delete row and delete physical file via actor (avoids orphaned files)
             let reelID = item.reelID
             modelContext.delete(item)
-            try? modelContext.save()
+            do {
+                try modelContext.save()
+            } catch {
+                modelContext.rollback()
+            }
             bookmarkedReelIDs.remove(reelID)
 
             Task {
@@ -463,7 +508,11 @@ struct FeedMainView: View {
                 sizeBytes: reel.sizeBytes ?? 0
             )
             modelContext.insert(item)
-            try? modelContext.save()
+            do {
+                try modelContext.save()
+            } catch {
+                modelContext.rollback()
+            }
             bookmarkedReelIDs.insert(reel.id)
 
             if isLocal {
@@ -538,7 +587,11 @@ struct FeedMainView: View {
             calendar.timeZone = .current
             if let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: Date()) {
                 daily.snoozeUntil = endOfDay
-                try? modelContext.save()
+                do {
+                    try modelContext.save()
+                } catch {
+                    modelContext.rollback()
+                }
             }
         }
     }
