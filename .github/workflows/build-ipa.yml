@@ -1,0 +1,73 @@
+name: Build InstagramDigest iOS App
+
+on:
+  push:
+    branches:
+      - feat/ios-app
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build, Test & Package IPA
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: |
+          xcodegen generate
+
+      - name: Discover iOS Simulator
+        id: simulator
+        run: |
+          DEVICE_NAME=$(xcrun simctl list devices available -j | jq -r '[.devices[] | map(select(.isAvailable and (.name | contains("iPhone"))))] | flatten | .[0].name // "iPhone 16"')
+          echo "Discovered simulator: $DEVICE_NAME"
+          echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Run Unit Tests
+        run: |
+          xcodebuild test \
+            -project InstagramDigest.xcodeproj \
+            -scheme InstagramDigest \
+            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Build Release App for Device (Unsigned)
+        run: |
+          xcodebuild build \
+            -project InstagramDigest.xcodeproj \
+            -scheme InstagramDigest \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package Unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/InstagramDigest.app Payload/
+          zip -qr InstagramDigest.ipa Payload
+          echo "IPA Size: $(ls -lh InstagramDigest.ipa | awk '{print $5}')"
+
+      - name: Inspect Package Structure
+        run: |
+          unzip -l InstagramDigest.ipa | head -n 35
+
+      - name: Upload Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstagramDigest-Unsigned-IPA
+          path: InstagramDigest.ipa
+          if-no-files-found: error
