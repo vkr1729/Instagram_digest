@@ -4,8 +4,8 @@ import Combine
 import UIKit
 
 /// Manages a strict 3-slot AVQueuePlayer pool (Current - 1, Current, Current + 1)
-/// with zero-leak teardown, monotonic poolGeneration counter, AVPlayerLooper,
-/// KVO status observation, and LivePinSet synchronization.
+/// with zero-leak teardown, monotonic poolGeneration counter, DidPlayToEnd
+/// auto-advance, KVO status observation, and LivePinSet synchronization.
 @MainActor
 public final class AVPlayerPool: ObservableObject {
     public static let shared = AVPlayerPool()
@@ -27,6 +27,7 @@ public final class AVPlayerPool: ObservableObject {
         public var timeObserverToken: Any?
         public var statusCancellable: AnyCancellable?
         public var failedObserverToken: NSObjectProtocol?
+        public var didPlayToEndObserverToken: NSObjectProtocol?
         public var slotItem: SlotItem?
         public weak var playerLayer: AVPlayerLayer?
 
@@ -47,6 +48,10 @@ public final class AVPlayerPool: ObservableObject {
             if let token = failedObserverToken {
                 NotificationCenter.default.removeObserver(token)
                 failedObserverToken = nil
+            }
+            if let token = didPlayToEndObserverToken {
+                NotificationCenter.default.removeObserver(token)
+                didPlayToEndObserverToken = nil
             }
             looper?.disableLooping()
             looper = nil
@@ -281,7 +286,7 @@ public final class AVPlayerPool: ObservableObject {
                 slot.player.automaticallyWaitsToMinimizeStalling = !isLocal
 
                 slot.currentItem = playerItem
-                slot.looper = AVPlayerLooper(player: slot.player, templateItem: playerItem)
+                slot.player.replaceCurrentItem(with: playerItem)
 
                 // Unmute current slot
                 slot.player.isMuted = false
@@ -343,7 +348,7 @@ public final class AVPlayerPool: ObservableObject {
                 slot.player.volume = 0.0
 
                 slot.currentItem = playerItem
-                slot.looper = AVPlayerLooper(player: slot.player, templateItem: playerItem)
+                slot.player.replaceCurrentItem(with: playerItem)
                 slot.player.pause()
             } catch {
                 // Secondary slot loading failures can be silently ignored
@@ -352,6 +357,21 @@ public final class AVPlayerPool: ObservableObject {
     }
 
     // MARK: - Status & Failure Observation
+
+    public var onAutoAdvanceToNext: (@MainActor () -> Void)?
+
+    private func handlePlaybackEnded(for reel: ReelItem, slot: Slot) {
+        guard slot === slotCurrent else { return }
+        if currentIndex + 1 < currentItems.count {
+            onAutoAdvanceToNext?()
+        } else {
+            // Last item: replay only after the seek completes, otherwise play()
+            // can resume at the end position and re-fire DidPlayToEnd in a tight loop.
+            slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak slot] _ in
+                slot?.player.play()
+            }
+        }
+    }
 
     private func observePlayerItemStatus(
         for slot: Slot,
@@ -382,6 +402,15 @@ public final class AVPlayerPool: ObservableObject {
         ) { [weak self, weak slot, weak playerItem] _ in
             guard let self = self, let s = slot, s.currentItem === playerItem else { return }
             self.handlePlaybackError(for: reel, isLocal: isLocal)
+        }
+
+        slot.didPlayToEndObserverToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: playerItem,
+            queue: .main
+        ) { [weak self, weak slot, weak playerItem] _ in
+            guard let self = self, let s = slot, s.currentItem === playerItem else { return }
+            self.handlePlaybackEnded(for: reel, slot: s)
         }
     }
 
@@ -486,8 +515,13 @@ public final class AVPlayerPool: ObservableObject {
                     playerItem.audioTimePitchAlgorithm = .timeDomain
                     playerItem.preferredForwardBufferDuration = 8.0
                     self.slotCurrent.player.automaticallyWaitsToMinimizeStalling = true
+                    // No AVPlayerLooper here: a looper would swallow DidPlayToEnd and
+                    // break auto-advance. The end observer below drives advancement.
+                    self.slotCurrent.slotItem = SlotItem(reel: item, localURL: nil, remoteURL: item.videoUrl, isLocal: false)
                     self.slotCurrent.currentItem = playerItem
-                    self.slotCurrent.looper = AVPlayerLooper(player: self.slotCurrent.player, templateItem: playerItem)
+                    self.slotCurrent.player.replaceCurrentItem(with: playerItem)
+                    self.slotCurrent.player.isMuted = false
+                    self.slotCurrent.player.volume = 1.0
                     self.observePlayerItemStatus(for: self.slotCurrent, item: playerItem, reel: item, isLocal: false, generation: itemGen)
                     self.attachTimeObserver(to: self.slotCurrent, reel: item)
                     self.isPlaying = true

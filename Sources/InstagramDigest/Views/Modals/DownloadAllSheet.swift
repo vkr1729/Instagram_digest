@@ -218,7 +218,7 @@ public struct DownloadAllSheet: View {
                 }
             }
             .onAppear {
-                preflightResult = coordinator.preflightStorage(reels: reels)
+                preflightResult = coordinator.preflightStorage(reels: reels, weekID: weekID)
             }
         }
     }

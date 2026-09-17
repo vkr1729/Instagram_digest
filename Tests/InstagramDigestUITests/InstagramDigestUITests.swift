@@ -2,9 +2,9 @@ import XCTest
 
 /// Deep Automated User Acceptance Testing (UAT) suite for Instagram Digest.
 /// Strictly exercises locked Mock 2 (Mobile PWA Standard) user workflows:
-/// - Brand header (Instagram logo, Jump pill, Grid, Download, Bookmarks chip)
+/// - Brand header (Instagram logo, Grid, Download, Bookmarks chip)
 /// - Story Category Circles bar (all 7 categories edge-to-edge)
-/// - Jump-to-N Modal dialog
+/// - Grid navigation (Jump-to-N pill retired in favor of grid + last-reel resume)
 /// - Bottom HUD: @creatorHandle, #rank badge, WhatsApp Share, Gold Save button, 2-line caption
 /// - Paging, speed latch, and Bookmarks storage gauge
 @MainActor
@@ -32,13 +32,12 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(logo.waitForExistence(timeout: 8.0), "InstagramLogoText must appear on app launch")
         XCTAssertEqual(logo.label, "Instagram")
 
-        // Verify Mock 2 header action controls
-        let jumpPill = app.buttons["JumpPillButton"]
+        // Verify Mock 2 header action controls (Jump pill retired)
         let gridButton = app.buttons["GridIconButton"]
         let downloadButton = app.buttons["OfflineIconButton"]
         let bookmarksButton = app.buttons["BookmarksChipButton"]
 
-        XCTAssertTrue(jumpPill.exists, "JumpPillButton must exist in header")
+        XCTAssertFalse(app.buttons["JumpPillButton"].exists, "JumpPillButton must not exist; grid + resume replace it")
         XCTAssertTrue(gridButton.exists, "GridIconButton must exist in header")
         XCTAssertTrue(downloadButton.exists, "OfflineIconButton must exist in header")
         XCTAssertTrue(bookmarksButton.exists, "BookmarksChipButton must exist in header")
@@ -82,30 +81,24 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(creatorHandle.exists)
     }
 
-    // MARK: - 3. Jump to Reel Modal Navigation
+    // MARK: - 3. Grid Navigation (replaces retired Jump-to-Reel Modal)
 
-    func testJumpToReelModal() throws {
-        let jumpPill = app.buttons["JumpPillButton"]
-        XCTAssertTrue(jumpPill.waitForExistence(timeout: 8.0))
+    func testGridNavigationToReel() throws {
+        let gridButton = app.buttons["GridIconButton"]
+        XCTAssertTrue(gridButton.waitForExistence(timeout: 8.0))
 
-        jumpPill.tap()
+        gridButton.tap()
 
-        // Verify Jump modal is presented
-        let jumpNavBar = app.navigationBars["Jump"]
-        XCTAssertTrue(jumpNavBar.waitForExistence(timeout: 5.0), "Jump modal navigation bar should appear")
+        // Verify grid sheet is presented
+        let gridDoneButton = app.buttons["GridDoneButton"]
+        XCTAssertTrue(gridDoneButton.waitForExistence(timeout: 5.0), "Grid sheet should be presented")
 
-        let textField = app.textFields["JumpToReelTextField"]
-        XCTAssertTrue(textField.exists, "Jump input textfield must exist")
+        // Navigate to the second reel via the grid
+        let secondItem = app.buttons["GridReelItem_1"]
+        XCTAssertTrue(secondItem.waitForExistence(timeout: 5.0), "Grid item must exist")
+        secondItem.tap()
 
-        let confirmButton = app.buttons["JumpConfirmButton"]
-        XCTAssertTrue(confirmButton.exists, "Jump confirm button must exist")
-
-        // Jump to reel #2
-        textField.tap()
-        textField.typeText("2")
-        confirmButton.tap()
-
-        // Verify sheet dismissed and current reel jumped
+        // Verify sheet dismissed and feed jumped to the selected reel
         let rankBadge = app.staticTexts["ReelRankBadge"]
         XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
     }

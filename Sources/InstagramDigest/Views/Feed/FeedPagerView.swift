@@ -134,10 +134,26 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             switch sender.state {
             case .began:
                 if normX > 0.65 && normY <= 0.65 {
+                    // Mid & upper right for 2x
                     suppressNextTap = true
                     hapticGenerator.impactOccurred()
                     hapticGenerator.prepare()
                     parent.onToggleLatched2x()
+
+                } else if normX > 0.65 && normY > 0.65 {
+                    // Lower right for Share
+                    suppressNextTap = true
+                    hapticGenerator.impactOccurred()
+                    hapticGenerator.prepare()
+                    parent.onTriggerShare()
+
+                } else if normX >= 0.30 && normX <= 0.65 && normY > 0.65 {
+                    // Lower middle for Bookmark
+                    suppressNextTap = true
+                    hapticGenerator.impactOccurred()
+                    hapticGenerator.prepare()
+                    parent.onTriggerBookmark()
+
                 } else {
                     suppressNextTap = false
                 }
@@ -376,10 +392,11 @@ public final class FeedCollectionViewController: UICollectionViewController {
 
     public func scrollToCurrentIndexIfNeeded(_ index: Int) {
         guard index != lastScrolledIndex, index >= 0, index < currentReels.count else { return }
+        let shouldAnimate = (lastScrolledIndex >= 0 && abs(index - lastScrolledIndex) == 1)
         lastScrolledIndex = index
         coordinator?.lastActiveIndex = index
         let indexPath = IndexPath(item: index, section: 0)
-        collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
+        collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: shouldAnimate)
         updateCurrentIndex(index)
     }
 

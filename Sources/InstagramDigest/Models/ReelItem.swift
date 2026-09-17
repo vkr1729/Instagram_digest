@@ -40,7 +40,11 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         self.rank = rank
         self.rankDisplay = rankDisplay ?? String(format: "#%02d", rank)
         self.videoUrl = videoUrl
-        self.thumbnailUrl = thumbnailUrl
+        if let thumb = thumbnailUrl, thumb.host?.contains("fbcdn.net") != true {
+            self.thumbnailUrl = thumb
+        } else {
+            self.thumbnailUrl = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(id)_portrait.jpg")
+        }
         self.category = category
         self.viewCount = viewCount
         self.likeCount = likeCount
@@ -121,13 +125,18 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         }
         self.videoUrl = validVideoURL
 
-        // Resolve thumbnail URL
+        // Resolve thumbnail URL, preferring stable GitHub Pages CDN over expired fbcdn links
         var resolvedThumb: URL? = nil
         for key in [CodingKeys.thumbnailUrl, .altThumbnailUrl, .camelThumbnailUrl, .poster] {
             if let str = try? container.decode(String.self, forKey: key), let url = URL(string: str) {
-                resolvedThumb = url
-                break
+                if url.host?.contains("fbcdn.net") != true {
+                    resolvedThumb = url
+                    break
+                }
             }
+        }
+        if resolvedThumb == nil {
+            resolvedThumb = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(self.id)_portrait.jpg")
         }
         self.thumbnailUrl = resolvedThumb
 

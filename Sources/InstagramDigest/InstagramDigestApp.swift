@@ -84,9 +84,10 @@ struct InstagramDigestApp: App {
 }
 
 /// Main Feed screen strictly conforming to locked Mock 2 (Mobile PWA Standard).
-/// Hosts cursive Instagram brand logo, Jump-to-N pill, Grid, Download, Bookmarks chip,
+/// Hosts cursive Instagram brand logo, Grid, Download, Bookmarks chip,
 /// 7-story category circles bar, uncropped video pager, bottom HUD with creator handle,
 /// WhatsApp share, Gold bookmark button, 2-line caption, and auto-immersive playback.
+/// Grid selection and last-reel resume replace the retired Jump-to-N pill.
 struct FeedMainView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var pool = AVPlayerPool.shared
@@ -108,7 +109,6 @@ struct FeedMainView: View {
     @State private var showGridSheet: Bool = false
     @State private var showDownloadSheet: Bool = false
     @State private var showBookmarksSheet: Bool = false
-    @State private var showJumpModal: Bool = false
     @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
     @State private var showShareSheet: Bool = false
     @State private var shareItems: [Any] = []
@@ -164,6 +164,7 @@ struct FeedMainView: View {
                     currentIndex: $activeIndex,
                     onPageChanged: { newIndex in
                         isCaptionExpanded = false
+                        saveLastActiveReel(index: newIndex)
                         pool.setCurrentIndex(newIndex)
                     },
                     onScrollEnded: { uptime in
@@ -190,6 +191,12 @@ struct FeedMainView: View {
                     },
                     onToggleLatched2x: {
                         pool.setLatched2x(!pool.isLatched2x)
+                    },
+                    onTriggerBookmark: {
+                        toggleBookmarkCurrentReel()
+                    },
+                    onTriggerShare: {
+                        triggerShareCurrentReel()
                     },
                     lastScrollEndTime: lastScrollEndTime,
                     currentProgress: pool.currentProgress
@@ -235,10 +242,6 @@ struct FeedMainView: View {
                         currentIndex: activeIndex,
                         totalCount: pool.currentItems.count,
                         bookmarkCount: savedBookmarks.count,
-                        onTapJump: {
-                            pool.pause()
-                            showJumpModal = true
-                        },
                         onTapGrid: {
                             pool.pause()
                             showGridSheet = true
@@ -290,15 +293,6 @@ struct FeedMainView: View {
                 .zIndex(30)
             }
         }
-        .sheet(isPresented: $showJumpModal) {
-            JumpToReelModalView(
-                totalCount: pool.currentItems.count,
-                currentNumber: activeIndex + 1,
-                onJump: { targetIndex in
-                    jumpToReel(at: targetIndex)
-                }
-            )
-        }
         .sheet(isPresented: $showGridSheet) {
             GridView(
                 reels: pool.currentItems,
@@ -319,6 +313,12 @@ struct FeedMainView: View {
         }
         .sheet(isPresented: $showShareSheet) {
             ActivityViewController(activityItems: shareItems)
+        }
+        .onChange(of: activeIndex) { _, newIndex in
+            saveLastActiveReel(index: newIndex)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            saveLastActiveReel(index: activeIndex)
         }
         .task {
             loadManifest()
@@ -342,24 +342,44 @@ struct FeedMainView: View {
 
                 // Check AppState for weekly rollover and purge stale week cache
                 let stateDescriptor = FetchDescriptor<AppState>()
-                if let appState = (try? self.modelContext.fetch(stateDescriptor))?.first {
-                    if !appState.currentWeekID.isEmpty && appState.currentWeekID != fetched.weekId {
-                        let oldWeek = appState.currentWeekID
-                        appState.currentWeekID = fetched.weekId
+                let appState = (try? self.modelContext.fetch(stateDescriptor))?.first
+                var resumeIndex = 0
+                var isNewWeek = false
+
+                if let state = appState {
+                    if !state.currentWeekID.isEmpty && state.currentWeekID != fetched.weekId {
+                        isNewWeek = true
+                        let oldWeek = state.currentWeekID
+                        state.currentWeekID = fetched.weekId
+                        state.lastActiveReelID = nil
                         do {
                             try self.modelContext.save()
                         } catch {
                             self.modelContext.rollback()
                         }
+                        UserDefaults.standard.removeObject(forKey: "lastActiveReelID_\(oldWeek)")
+                        UserDefaults.standard.removeObject(forKey: "lastActiveIndex_\(oldWeek)")
                         Task {
                             await MediaCacheManager.shared.purgeOldWeekDirectory(oldWeekID: oldWeek)
                         }
-                    } else if appState.currentWeekID.isEmpty {
-                        appState.currentWeekID = fetched.weekId
-                        do {
-                            try self.modelContext.save()
-                        } catch {
-                            self.modelContext.rollback()
+                    } else {
+                        if state.currentWeekID.isEmpty {
+                            state.currentWeekID = fetched.weekId
+                            do {
+                                try self.modelContext.save()
+                            } catch {
+                                self.modelContext.rollback()
+                            }
+                        }
+                        // Resume at last active reel
+                        if let lastID = state.lastActiveReelID ?? UserDefaults.standard.string(forKey: "lastActiveReelID_\(fetched.weekId)"),
+                           let idx = fetched.items.firstIndex(where: { $0.id == lastID }) {
+                            resumeIndex = idx
+                        } else {
+                            let savedIdx = UserDefaults.standard.integer(forKey: "lastActiveIndex_\(fetched.weekId)")
+                            if savedIdx >= 0 && savedIdx < fetched.items.count {
+                                resumeIndex = savedIdx
+                            }
                         }
                     }
                 } else {
@@ -372,8 +392,21 @@ struct FeedMainView: View {
                     }
                 }
 
+                if isNewWeek {
+                    // Reset watch history on weekly refresh: delete previous week's watched events
+                    let allWatchedDescriptor = FetchDescriptor<WatchedEvent>()
+                    if let oldEvents = try? self.modelContext.fetch(allWatchedDescriptor) {
+                        for ev in oldEvents where ev.weekID != fetched.weekId {
+                            self.modelContext.delete(ev)
+                        }
+                        try? self.modelContext.save()
+                    }
+                    self.watchedReelIDs.removeAll()
+                }
+
+                self.activeIndex = resumeIndex
                 if !fetched.items.isEmpty {
-                    self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: 0)
+                    self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: resumeIndex)
                 }
                 // Load historical watched state immediately after manifest arrives
                 refreshWatchedReels()
@@ -413,6 +446,28 @@ struct FeedMainView: View {
         pool.onWatchedMilestone = { reel in
             recordWatched(reel: reel)
         }
+        pool.onAutoAdvanceToNext = {
+            // Read the index from the pool (source of truth), not captured view
+            // state, so rapid scrolls between setup and fire can't target stale N+1.
+            let nextIndex = AVPlayerPool.shared.currentIndex + 1
+            if nextIndex < pool.currentItems.count {
+                jumpToReel(at: nextIndex)
+            }
+        }
+    }
+
+    private func saveLastActiveReel(index: Int) {
+        guard !pool.currentItems.isEmpty, index >= 0, index < pool.currentItems.count else { return }
+        let reel = pool.currentItems[index]
+        guard let weekID = manifest?.weekId else { return }
+
+        let stateDescriptor = FetchDescriptor<AppState>()
+        if let appState = (try? modelContext.fetch(stateDescriptor))?.first {
+            appState.lastActiveReelID = reel.id
+            try? modelContext.save()
+        }
+        UserDefaults.standard.set(reel.id, forKey: "lastActiveReelID_\(weekID)")
+        UserDefaults.standard.set(index, forKey: "lastActiveIndex_\(weekID)")
     }
 
     // MARK: - Watched Rules Engine
@@ -515,6 +570,7 @@ struct FeedMainView: View {
         }
 
         activeIndex = targetIndex
+        saveLastActiveReel(index: targetIndex)
         pool.setCurrentIndex(targetIndex)
     }
 
@@ -605,25 +661,45 @@ struct FeedMainView: View {
         let reel = pool.currentItems[activeIndex]
         let weekID = manifest?.weekId ?? "default_week"
 
-        let shareText = "Check out this reel by @\(reel.creatorHandle) on Instagram Digest: https://vkr1729.github.io/Instagram_digest/share/\(reel.id).html?v=3"
-        // Encode as a single `text=` query value: ? & + must not leak through as delimiters
-        let whatsappValueAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "?&+"))
-        let encoded = shareText.addingPercentEncoding(withAllowedCharacters: whatsappValueAllowed) ?? ""
+        let caption = reel.caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shareCaption = caption.isEmpty ? "Reel by @\(reel.creatorHandle)" : caption
 
-        // Try primary WhatsApp deep link
-        if let waURL = URL(string: "whatsapp://send?text=\(encoded)"), UIApplication.shared.canOpenURL(waURL) {
-            UIApplication.shared.open(waURL)
+        // Prefer any on-disk copy (feed week directory OR isolated bookmark
+        // directory) so the share sheet attaches the real .mp4, not just a link.
+        if let resolved = LibraryPathResolver.shared.resolvedLocalFileURL(for: weekID, reelID: reel.id),
+           FileManager.default.fileExists(atPath: resolved.path) {
+            self.shareItems = [resolved, shareCaption]
+            self.showShareSheet = true
             return
         }
 
-        // Fallback: System UIActivityViewController
-        let localFile = LibraryPathResolver.shared.localFileURL(for: weekID, reelID: reel.id)
-        if FileManager.default.fileExists(atPath: localFile.path) && !Reachability.isConnectedToNetwork() {
-            shareItems = [shareText, localFile]
-        } else {
-            shareItems = [shareText, reel.videoUrl]
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(reel.id).mp4")
+        if FileManager.default.fileExists(atPath: tempFile.path) {
+            self.shareItems = [tempFile, shareCaption]
+            self.showShareSheet = true
+            return
         }
-        showShareSheet = true
+
+        // Asynchronously download video to temp file, then present share sheet with video attached
+        Task {
+            do {
+                let (downloadedURL, _) = try await URLSession.shared.download(from: reel.videoUrl)
+                if FileManager.default.fileExists(atPath: tempFile.path) {
+                    try? FileManager.default.removeItem(at: tempFile)
+                }
+                try FileManager.default.moveItem(at: downloadedURL, to: tempFile)
+                await MainActor.run {
+                    self.shareItems = [tempFile, shareCaption]
+                    self.showShareSheet = true
+                }
+            } catch {
+                // Fallback to video URL + caption if download fails
+                await MainActor.run {
+                    self.shareItems = [reel.videoUrl, shareCaption]
+                    self.showShareSheet = true
+                }
+            }
+        }
     }
 
     // MARK: - Mindful Snooze & Date Helpers

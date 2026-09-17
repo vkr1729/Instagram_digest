@@ -82,8 +82,10 @@ public final class BookmarkItem {
     }
 
     public var thumbnailUrl: URL? {
-        guard let s = thumbnailUrlString else { return nil }
-        return URL(string: s)
+        if let s = thumbnailUrlString, let u = URL(string: s), u.host?.contains("fbcdn.net") != true {
+            return u
+        }
+        return URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(reelID)_portrait.jpg")
     }
 }
 

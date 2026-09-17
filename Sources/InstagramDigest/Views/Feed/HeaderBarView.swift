@@ -2,13 +2,13 @@ import SwiftUI
 
 /// Top navigation header bar strictly conforming to Mock 2 (Mobile PWA Standard).
 /// Features cursive "Instagram" brand logo, frosted glass action pills:
-/// Jump-to-N pill, Grid icon, Download icon, and Bookmarks chip with count badge.
+/// Grid icon, Download icon, and Bookmarks chip with count badge.
+/// The Jump-to-N pill was retired in favor of grid selection + last-reel resume.
 /// Strictly excludes any desktop daily target badge.
 public struct HeaderBarView: View {
     public let currentIndex: Int
     public let totalCount: Int
     public let bookmarkCount: Int
-    public var onTapJump: () -> Void
     public var onTapGrid: () -> Void
     public var onTapOffline: () -> Void
     public var onTapBookmarks: () -> Void
@@ -17,7 +17,6 @@ public struct HeaderBarView: View {
         currentIndex: Int,
         totalCount: Int,
         bookmarkCount: Int,
-        onTapJump: @escaping () -> Void = {},
         onTapGrid: @escaping () -> Void = {},
         onTapOffline: @escaping () -> Void = {},
         onTapBookmarks: @escaping () -> Void = {}
@@ -25,7 +24,6 @@ public struct HeaderBarView: View {
         self.currentIndex = currentIndex
         self.totalCount = totalCount
         self.bookmarkCount = bookmarkCount
-        self.onTapJump = onTapJump
         self.onTapGrid = onTapGrid
         self.onTapOffline = onTapOffline
         self.onTapBookmarks = onTapBookmarks
@@ -42,26 +40,8 @@ public struct HeaderBarView: View {
 
             Spacer()
 
-            // 2. Action Controls Group
-            HStack(spacing: 6) {
-                // Jump Pill (# N / total, counts fully dynamic)
-                Button(action: onTapJump) {
-                    HStack(spacing: 3) {
-                        Text(String(format: "# %d / %d", currentIndex + 1, totalCount))
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.12))
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
-                    )
-                }
-                .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
-                .accessibilityIdentifier("JumpPillButton")
-
+            // 2. Action Controls Group (Grid, Download, Bookmarks)
+            HStack(spacing: 8) {
                 // Grid View Button (⊞)
                 Button(action: onTapGrid) {
                     Image(systemName: "square.grid.3x3.fill")
@@ -73,8 +53,9 @@ public struct HeaderBarView: View {
                         .overlay(
                             Circle().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
                         )
-                        .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 }
+                .contentShape(Rectangle())
+                .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 .accessibilityIdentifier("GridIconButton")
 
                 // Download All / Offline Button (📥)
@@ -88,8 +69,9 @@ public struct HeaderBarView: View {
                         .overlay(
                             Circle().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
                         )
-                        .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 }
+                .contentShape(Rectangle())
+                .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 .accessibilityIdentifier("OfflineIconButton")
 
                 // Bookmarks Chip (🔖 18) with gold badge
@@ -99,18 +81,22 @@ public struct HeaderBarView: View {
                             .font(.system(size: 11))
                             .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.28)) // Amber/gold
                         Text("\(bookmarkCount)")
-                            .font(.system(size: 12, weight: .heavy))
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
                             .foregroundColor(.white)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.22))
+                    .frame(height: 32)
+                    .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.25))
                     .clipShape(Capsule())
                     .overlay(
                         Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
                     )
                 }
+                .contentShape(Rectangle())
                 .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
+                .layoutPriority(1)
                 .accessibilityIdentifier("BookmarksChipButton")
             }
         }

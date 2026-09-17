@@ -26,8 +26,11 @@ final class UITests: XCTestCase {
 
     // MARK: - Spatial Zone Routing
 
+    // Mirrors FeedPagerView.handleLongPress zone thresholds exactly.
     enum SpatialZone {
         case upperRightSpeed
+        case lowerRightShare
+        case lowerMiddleBookmark
         case deadZone
     }
 
@@ -37,6 +40,10 @@ final class UITests: XCTestCase {
 
         if normX > 0.65 && normY <= 0.65 {
             return .upperRightSpeed
+        } else if normX > 0.65 && normY > 0.65 {
+            return .lowerRightShare
+        } else if normX >= 0.30 && normX <= 0.65 && normY > 0.65 {
+            return .lowerMiddleBookmark
         } else {
             return .deadZone
         }
@@ -46,16 +53,19 @@ final class UITests: XCTestCase {
         let w: CGFloat = 400
         let h: CGFloat = 800
 
-        // Upper-Right: x = 300 (0.75w), y = 200 (0.25h) -> .upperRightSpeed
+        // Mid & upper right: x = 300 (0.75w), y = 200 (0.25h) -> 2x latch
         XCTAssertEqual(resolveZone(x: 300, y: 200, width: w, height: h), .upperRightSpeed)
 
-        // Lower-Right: x = 300 (0.75w), y = 600 (0.75h) -> .deadZone (handled by HUD button)
-        XCTAssertEqual(resolveZone(x: 300, y: 600, width: w, height: h), .deadZone)
+        // Lower-Right: x = 300 (0.75w), y = 600 (0.75h) -> share
+        XCTAssertEqual(resolveZone(x: 300, y: 600, width: w, height: h), .lowerRightShare)
 
-        // Center-Lower: x = 200 (0.50w), y = 600 (0.75h) -> .deadZone (handled by HUD button)
-        XCTAssertEqual(resolveZone(x: 200, y: 600, width: w, height: h), .deadZone)
+        // Lower middle: x = 200 (0.50w), y = 600 (0.75h) -> bookmark
+        XCTAssertEqual(resolveZone(x: 200, y: 600, width: w, height: h), .lowerMiddleBookmark)
 
-        // Dead Zone: x = 100 (0.25w), y = 200 (0.25h) -> .deadZone
+        // Boundary: x = 260 (0.65w) is NOT > 0.65, y low -> bookmark zone
+        XCTAssertEqual(resolveZone(x: 260, y: 600, width: w, height: h), .lowerMiddleBookmark)
+
+        // Dead Zone: x = 100 (0.25w), y = 200 (0.25h) -> no action
         XCTAssertEqual(resolveZone(x: 100, y: 200, width: w, height: h), .deadZone)
     }
 

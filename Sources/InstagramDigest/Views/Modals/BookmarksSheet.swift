@@ -2,8 +2,9 @@ import SwiftUI
 import SwiftData
 import AVFoundation
 
-/// Bookmarks sheet with 1.5 GB storage gauge, dedicated ephemeral modal player,
-/// actor-routed file deletion, and per-row Keep Offline admission.
+/// Bookmarks sheet displaying saved reels in a 3-column Grid format (matching All Reels grid),
+/// with 1.5 GB storage gauge, and dedicated sequential BookmarkPlayerOverlay that auto-advances,
+/// has an (x) close button, channel/caption/unsave HUD, and auto-hiding chrome.
 public struct BookmarksSheet: View {
     @Query(sort: \BookmarkItem.bookmarkedAt, order: .reverse) private var bookmarks: [BookmarkItem]
     @Environment(\.dismiss) private var dismiss
@@ -12,8 +13,13 @@ public struct BookmarksSheet: View {
     @State private var totalBytes: Int64 = 0
     @State private var isPurgingStorage: Bool = false
     @State private var errorMessage: String?
-    @State private var selectedBookmarkForPlayback: BookmarkItem?
-    @State private var pendingDeleteIDs: [String] = []
+    @State private var activePlaybackIndex: Int? = nil
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2),
+        GridItem(.flexible(), spacing: 2)
+    ]
 
     public init() {}
 
@@ -79,7 +85,7 @@ public struct BookmarksSheet: View {
                             .background(Color.red.opacity(0.1))
                     }
 
-                    // Bookmarks List
+                    // Bookmarks Grid (3-column layout matching All Reels Grid)
                     if bookmarks.isEmpty {
                         VStack(spacing: 12) {
                             Spacer()
@@ -93,52 +99,87 @@ public struct BookmarksSheet: View {
                             Spacer()
                         }
                     } else {
-                        List {
-                            ForEach(bookmarks) { bookmark in
-                                BookmarkRowView(
-                                    bookmark: bookmark,
-                                    onPlay: {
-                                        selectedBookmarkForPlayback = bookmark
-                                    },
-                                    onKeepOffline: {
-                                        Task {
-                                            do {
-                                                try await MediaCacheManager.shared.keepBookmarkOffline(
-                                                    weekID: bookmark.weekID,
-                                                    reelID: bookmark.reelID,
-                                                    fallbackSizeBytes: bookmark.sizeBytes
-                                                )
-                                                do {
-                                                    try modelContext.save()
-                                                } catch {
-                                                    modelContext.rollback()
+                        ScrollView {
+                            LazyVGrid(columns: columns, spacing: 2) {
+                                ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
+                                    Button {
+                                        activePlaybackIndex = index
+                                    } label: {
+                                        ZStack(alignment: .bottomLeading) {
+                                            AsyncThumbnailView(url: bookmark.thumbnailUrl)
+                                                .frame(height: 170)
+                                                .clipped()
+
+                                            LinearGradient(
+                                                colors: [Color.clear, Color.black.opacity(0.8)],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                HStack {
+                                                    Text(String(format: "#%02d", bookmark.rank))
+                                                        .font(.system(size: 11, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                        .padding(.horizontal, 6)
+                                                        .padding(.vertical, 2)
+                                                        .background(Color.black.opacity(0.6))
+                                                        .clipShape(Capsule())
+
+                                                    Spacer()
+
+                                                    if bookmark.localStatus == .cached {
+                                                        Image(systemName: "checkmark.circle.fill")
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(.green)
+                                                    }
                                                 }
-                                                await refreshLedger()
-                                            } catch {
-                                                errorMessage = error.localizedDescription
+
+                                                Spacer()
+
+                                                Text("@\(bookmark.creatorHandle)")
+                                                    .font(.system(size: 11, weight: .semibold))
+                                                    .foregroundColor(.white)
+                                                    .lineLimit(1)
                                             }
+                                            .padding(6)
                                         }
                                     }
-                                )
-                                // Note: Do not attach container-level .accessibilityIdentifier to the row here; in SwiftUI it propagates to child elements.
-                                // allowsFullSwipe is intentionally false so XCUITest can reliably reveal and tap the Delete button
-                                // instead of racing a full-swipe auto-delete (which deletes the row before the button query runs).
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        pendingDeleteIDs = [bookmark.reelID]
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                    .accessibilityIdentifier("BookmarkDeleteButton")
+                                    .accessibilityIdentifier("BookmarkGridItem_\(index)")
                                 }
-                                .listRowBackground(Color.clear)
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             }
-                            .onDelete(perform: deleteBookmarks)
+                            .padding(.vertical, 2)
                         }
-                        .accessibilityIdentifier("BookmarksList")
-                        .listStyle(.plain)
+                        .accessibilityIdentifier("BookmarksGrid")
                     }
+                }
+
+                // Dedicated Sequential Bookmark Player Overlay.
+                // Gated on non-empty (not on idx < count) so an unsave that
+                // shrinks the grid can't yank the player mid-playback; the
+                // overlay clamps its own index via onChange below.
+                if let idx = activePlaybackIndex, idx >= 0, !bookmarks.isEmpty {
+                    BookmarkPlayerOverlay(
+                        bookmarks: bookmarks,
+                        initialIndex: min(idx, bookmarks.count - 1),
+                        onClose: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                activePlaybackIndex = nil
+                            }
+                        },
+                        onDeleteBookmark: { item in
+                            let countBefore = bookmarks.count
+                            deleteBookmark(item)
+                            if countBefore <= 1 {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    activePlaybackIndex = nil
+                                }
+                            }
+                        }
+                    )
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .zIndex(20)
                 }
             }
             .navigationTitle("Saved Bookmarks")
@@ -151,27 +192,6 @@ public struct BookmarksSheet: View {
                     .foregroundColor(.white)
                     .accessibilityIdentifier("BookmarksDoneButton")
                 }
-            }
-            .sheet(item: $selectedBookmarkForPlayback) { bookmark in
-                EphemeralPlayerSheet(bookmark: bookmark)
-            }
-            .confirmationDialog(
-                "Delete the selected bookmark?",
-                isPresented: Binding(
-                    get: { !pendingDeleteIDs.isEmpty },
-                    set: { if !$0 { pendingDeleteIDs = [] } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) {
-                    confirmPendingDeletes()
-                }
-                .accessibilityIdentifier("BookmarkDeleteConfirmButton")
-                Button("Cancel", role: .cancel) {
-                    pendingDeleteIDs = []
-                }
-            } message: {
-                Text("Removes the saved reel and its offline file. This cannot be undone.")
             }
             .task {
                 await refreshLedger()
@@ -208,190 +228,403 @@ public struct BookmarksSheet: View {
         }
     }
 
-    private func deleteBookmarks(at offsets: IndexSet) {
-        pendingDeleteIDs = offsets.compactMap { index in
-            guard index < bookmarks.count else { return nil as String? }
-            return bookmarks[index].reelID
-        }
-    }
-
-    /// Executes a confirmed deletion round by reelID lookup (never by a stale
-    /// row reference, which SwiftData may already have invalidated).
-    private func confirmPendingDeletes() {
-        let ids = Set(pendingDeleteIDs)
-        pendingDeleteIDs = []
-        guard !ids.isEmpty else { return }
-        let descriptor = FetchDescriptor<BookmarkItem>()
-        let all = (try? modelContext.fetch(descriptor)) ?? []
-        for item in all where ids.contains(item.reelID) {
-            deleteBookmark(item)
-        }
-    }
-
     private func formatMB(_ bytes: Int64) -> String {
         String(format: "%.1f MB", Double(bytes) / 1_000_000)
     }
 }
 
-public struct BookmarkRowView: View {
-    public let bookmark: BookmarkItem
-    public var onPlay: () -> Void
-    public var onKeepOffline: () -> Void
+/// Standalone Sequential Bookmark Player Overlay
+/// Plays bookmarks in order, auto-advances on end, has (x) close button at top,
+/// channel name, caption, unsave bookmark, and auto-hides chrome during playback.
+public struct BookmarkPlayerOverlay: View {
+    public let bookmarks: [BookmarkItem]
+    public let initialIndex: Int
+    public var onClose: () -> Void
+    public var onDeleteBookmark: (BookmarkItem) -> Void
 
-    public var body: some View {
-        HStack(spacing: 12) {
-            // Thumbnail
-            AsyncThumbnailView(url: bookmark.thumbnailUrl)
-                .frame(width: 54, height: 80)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+    @State private var currentIndex: Int
+    @State private var player: AVPlayer?
+    @State private var isPlaying: Bool = true
+    @State private var isChromeVisible: Bool = true
+    @State private var isCaptionExpanded: Bool = false
+    @State private var hideChromeWorkItem: DispatchWorkItem?
+    @State private var endObserverToken: NSObjectProtocol?
+    @State private var shareItems: [Any] = []
+    @State private var showShareSheet: Bool = false
 
-            // Metadata
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("@\(bookmark.creatorHandle)")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
-
-                    Text(String(format: "#%02d", bookmark.rank))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.6))
-                }
-
-                if !bookmark.caption.isEmpty {
-                    Text(bookmark.caption)
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.8))
-                        .lineLimit(2)
-                }
-
-                // Status Badge: Cached vs Stream
-                HStack(spacing: 8) {
-                    if bookmark.localStatus == .cached {
-                        Label("Offline", systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.green)
-                    } else {
-                        Label("Cloud Stream", systemImage: "icloud")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
-
-                        Button {
-                            onKeepOffline()
-                        } label: {
-                            Text("Keep Offline")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.cyan)
-                        }
-                    }
-                }
-                .padding(.top, 2)
-            }
-
-            Spacer()
-
-            // Play Trigger Button
-            Button {
-                onPlay()
-            } label: {
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(.white)
-            }
-        }
-        .padding(10)
-        .background(Color.white.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+    public init(
+        bookmarks: [BookmarkItem],
+        initialIndex: Int,
+        onClose: @escaping () -> Void,
+        onDeleteBookmark: @escaping (BookmarkItem) -> Void
+    ) {
+        self.bookmarks = bookmarks
+        self.initialIndex = initialIndex
+        self._currentIndex = State(initialValue: initialIndex)
+        self.onClose = onClose
+        self.onDeleteBookmark = onDeleteBookmark
     }
-}
 
-/// Standalone Ephemeral Player Sheet (plays without hijacking or modifying AVPlayerPool feed playlist)
-public struct EphemeralPlayerSheet: View {
-    public let bookmark: BookmarkItem
-    @Environment(\.dismiss) private var dismiss
-    @State private var player: AVQueuePlayer?
-    @State private var looper: AVPlayerLooper?
+    private var currentBookmark: BookmarkItem? {
+        guard !bookmarks.isEmpty, currentIndex >= 0, currentIndex < bookmarks.count else { return nil }
+        return bookmarks[currentIndex]
+    }
 
     public var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
             if let p = player {
-                EphemeralVideoContainer(player: p)
+                BookmarkVideoContainer(player: p)
                     .ignoresSafeArea()
             }
 
-            VStack {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("@\(bookmark.creatorHandle)")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundColor(.white)
-                        Text(String(format: "#%02d", bookmark.rank))
-                            .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.7))
+            // Video tap background layer for play/pause toggle (isolated from chrome buttons)
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture {
+                    togglePlayPause()
+                }
+
+            // Natural background scrim for chrome readability
+            if isChromeVisible {
+                LinearGradient(
+                    colors: [Color.black.opacity(0.6), Color.clear, Color.black.opacity(0.8)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            }
+
+            // Chrome Overlays
+            if let bookmark = currentBookmark {
+                VStack {
+                    // Top Bar with (x) Close Button
+                    HStack {
+                        Spacer()
+
+                        Button {
+                            player?.pause()
+                            onClose()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(.white.opacity(0.9))
+                                .background(Circle().fill(Color.black.opacity(0.4)))
+                        }
+                        .contentShape(Rectangle())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityIdentifier("BookmarkPlayerCloseButton")
                     }
-                    .padding(12)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 20)
+                    .padding(.top, 56)
 
                     Spacer()
 
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(.white.opacity(0.8))
+                    // Bottom HUD (Channel, Caption, Unsave, Share)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Text("@\(bookmark.creatorHandle)")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+
+                            Text(String(format: "#%02d", bookmark.rank))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.white.opacity(0.15))
+                                .clipShape(Capsule())
+
+                            Spacer()
+
+                            // Bookmark Toggle (Clicking removes it from bookmarks!)
+                            Button {
+                                handleUnsave(bookmark: bookmark)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "bookmark.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.28))
+                                    Text("Saved")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.28))
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
+                                )
+                            }
+                            .contentShape(Rectangle())
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("BookmarkPlayerUnsaveButton")
+
+                            // Share Button
+                            Button {
+                                triggerShare(bookmark: bookmark)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrowshape.turn.up.right.fill")
+                                        .font(.system(size: 12))
+                                    Text("Share")
+                                        .font(.system(size: 12, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .background(Color.green.opacity(0.28))
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule().stroke(Color.green.opacity(0.6), lineWidth: 0.8)
+                                )
+                            }
+                            .contentShape(Rectangle())
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("BookmarkPlayerShareButton")
+                        }
+
+                        // Caption
+                        if !bookmark.caption.isEmpty {
+                            Text(bookmark.caption)
+                                .font(.system(size: 13))
+                                .foregroundColor(.white.opacity(0.9))
+                                .lineLimit(isCaptionExpanded ? nil : 2)
+                                .onTapGesture {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        isCaptionExpanded.toggle()
+                                    }
+                                }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 40)
+                }
+                .opacity(isChromeVisible ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    if value.translation.height < -50 {
+                        // Swiped up -> next bookmark
+                        advanceToNextBookmark()
+                    } else if value.translation.height > 50 {
+                        // Swiped down -> previous bookmark
+                        retreatToPreviousBookmark()
                     }
                 }
-                .padding(20)
-
-                Spacer()
-            }
+        )
+        .sheet(isPresented: $showShareSheet) {
+            ActivityViewController(activityItems: shareItems)
         }
         .onAppear {
             AVPlayerPool.shared.pause()
-            let mediaURL: URL
-            let localURL = LibraryPathResolver.shared.bookmarkFileURL(for: bookmark.reelID)
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                mediaURL = localURL
-            } else if let remoteURL = bookmark.videoUrl {
-                mediaURL = remoteURL
-            } else {
-                return
+            if let bm = currentBookmark {
+                loadVideo(for: bm)
             }
-
-            let isLocal = (mediaURL == localURL)
-            let asset = AVURLAsset(url: mediaURL)
-            let item = AVPlayerItem(asset: asset)
-            if !isLocal {
-                item.preferredForwardBufferDuration = 8.0
-            }
-            let queuePlayer = AVQueuePlayer()
-            queuePlayer.automaticallyWaitsToMinimizeStalling = !isLocal
-            self.looper = AVPlayerLooper(player: queuePlayer, templateItem: item)
-            self.player = queuePlayer
-            queuePlayer.play()
         }
         .onDisappear {
-            player?.pause()
-            looper?.disableLooping()
-            looper = nil
-            player = nil
+            teardownPlayer()
         }
+        .onChange(of: bookmarks.count) { _, newCount in
+            // Grid shrank behind the open player (unsave, eviction, remote sync).
+            if newCount == 0 {
+                teardownPlayer()
+                onClose()
+            } else if currentIndex >= newCount {
+                currentIndex = max(0, newCount - 1)
+                isCaptionExpanded = false
+                if let bm = currentBookmark {
+                    loadVideo(for: bm)
+                }
+            }
+        }
+    }
+
+    private func togglePlayPause() {
+        guard let p = player else { return }
+        if isPlaying {
+            p.pause()
+            isPlaying = false
+            hideChromeWorkItem?.cancel()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isChromeVisible = true
+            }
+        } else {
+            p.play()
+            isPlaying = true
+            scheduleChromeAutoHide()
+        }
+    }
+
+    private func scheduleChromeAutoHide() {
+        hideChromeWorkItem?.cancel()
+        let work = DispatchWorkItem {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                if self.isPlaying {
+                    self.isChromeVisible = false
+                }
+            }
+        }
+        hideChromeWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    private func loadVideo(for bookmark: BookmarkItem) {
+        if let token = endObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            endObserverToken = nil
+        }
+        player?.pause()
+
+        let mediaURL: URL
+        let localURL = LibraryPathResolver.shared.bookmarkFileURL(for: bookmark.reelID)
+        if FileManager.default.fileExists(atPath: localURL.path) {
+            mediaURL = localURL
+        } else if let remoteURL = bookmark.videoUrl {
+            mediaURL = remoteURL
+        } else {
+            return
+        }
+
+        let isLocal = (mediaURL == localURL)
+        let asset = AVURLAsset(url: mediaURL)
+        let item = AVPlayerItem(asset: asset)
+        if !isLocal {
+            item.preferredForwardBufferDuration = 8.0
+        }
+
+        let avPlayer = AVPlayer(playerItem: item)
+        avPlayer.automaticallyWaitsToMinimizeStalling = !isLocal
+        self.player = avPlayer
+        self.isPlaying = true
+        avPlayer.play()
+
+        endObserverToken = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak avPlayer] _ in
+            guard avPlayer != nil else { return }
+            handleVideoEnded()
+        }
+
+        scheduleChromeAutoHide()
+    }
+
+    private func handleVideoEnded() {
+        if currentIndex + 1 < bookmarks.count {
+            advanceToNextBookmark()
+        } else {
+            // Replay only after the seek completes to avoid re-firing end-of-item.
+            let currentPlayer = player
+            currentPlayer?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak currentPlayer] _ in
+                currentPlayer?.play()
+            }
+        }
+    }
+
+    private func advanceToNextBookmark() {
+        guard currentIndex + 1 < bookmarks.count else { return }
+        isCaptionExpanded = false
+        currentIndex += 1
+        if let bm = currentBookmark {
+            loadVideo(for: bm)
+        }
+    }
+
+    private func retreatToPreviousBookmark() {
+        guard currentIndex > 0 else { return }
+        isCaptionExpanded = false
+        currentIndex -= 1
+        if let bm = currentBookmark {
+            loadVideo(for: bm)
+        }
+    }
+
+    private func handleUnsave(bookmark: BookmarkItem) {
+        onDeleteBookmark(bookmark)
+        // If other bookmarks exist, switch to next available bookmark
+        let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
+        if remaining.isEmpty {
+            player?.pause()
+            onClose()
+        } else {
+            let nextIndex = min(currentIndex, remaining.count - 1)
+            currentIndex = nextIndex
+            loadVideo(for: remaining[nextIndex])
+        }
+    }
+
+    private func triggerShare(bookmark: BookmarkItem) {
+        let caption = bookmark.caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shareCaption = caption.isEmpty ? "Reel by @\(bookmark.creatorHandle)" : caption
+
+        let localURL = LibraryPathResolver.shared.bookmarkFileURL(for: bookmark.reelID)
+        if FileManager.default.fileExists(atPath: localURL.path) {
+            self.shareItems = [localURL, shareCaption]
+            self.showShareSheet = true
+            return
+        }
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(bookmark.reelID).mp4")
+        if FileManager.default.fileExists(atPath: tempFile.path) {
+            self.shareItems = [tempFile, shareCaption]
+            self.showShareSheet = true
+            return
+        }
+
+        guard let videoURL = bookmark.videoUrl else { return }
+        Task {
+            do {
+                let (downloadedURL, _) = try await URLSession.shared.download(from: videoURL)
+                if FileManager.default.fileExists(atPath: tempFile.path) {
+                    try? FileManager.default.removeItem(at: tempFile)
+                }
+                try FileManager.default.moveItem(at: downloadedURL, to: tempFile)
+                await MainActor.run {
+                    self.shareItems = [tempFile, shareCaption]
+                    self.showShareSheet = true
+                }
+            } catch {
+                await MainActor.run {
+                    self.shareItems = [videoURL, shareCaption]
+                    self.showShareSheet = true
+                }
+            }
+        }
+    }
+
+    private func teardownPlayer() {
+        if let token = endObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            endObserverToken = nil
+        }
+        hideChromeWorkItem?.cancel()
+        hideChromeWorkItem = nil
+        player?.pause()
+        player = nil
     }
 }
 
-public struct EphemeralVideoContainer: UIViewRepresentable {
-    public let player: AVQueuePlayer
+public struct BookmarkVideoContainer: UIViewRepresentable {
+    public let player: AVPlayer
 
     public func makeUIView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
         view.playerLayer.player = player
+        view.playerLayer.videoGravity = .resizeAspect
         return view
     }
 
     public func updateUIView(_ uiView: PlayerContainerView, context: Context) {
         uiView.playerLayer.player = player
+        uiView.playerLayer.videoGravity = .resizeAspect
     }
 }

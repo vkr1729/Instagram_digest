@@ -33,8 +33,26 @@ final class EngineTests: XCTestCase {
         ]
 
         let (_, required, _) = coordinator.preflightStorage(reels: reels)
-        // Expected: 30 MB + 1.0 GB headroom = 1_030_000_000 bytes
-        XCTAssertEqual(required, 1_030_000_000)
+        // Contract (UAT-4): real sizes summed, no artificial headroom. 10 MB + 20 MB.
+        XCTAssertEqual(required, 30_000_000)
+    }
+
+    @MainActor
+    func testPreflightStorageCountsOnlyPendingReels() {
+        let coordinator = DownloadAllCoordinator.shared
+        // Unknown sizes fall back to the ~7.5 MB average reel size each.
+        let reels = [
+            ReelItem(id: "pending_u1", creatorHandle: "c", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/u1.mp4")!),
+            ReelItem(id: "pending_u2", creatorHandle: "c", caption: "", rank: 2, videoUrl: URL(string: "https://example.com/u2.mp4")!)
+        ]
+
+        let (_, required, _) = coordinator.preflightStorage(reels: reels, weekID: "test_week_no_files_xyz")
+        XCTAssertEqual(required, 15_000_000)
+
+        // Fully cached batch must require zero bytes, never a full re-measure.
+        let empty = coordinator.preflightStorage(reels: [], weekID: "test_week_no_files_xyz")
+        XCTAssertEqual(empty.requiredBytes, 0)
+        XCTAssertTrue(empty.isSufficient)
     }
 
     func testLivePinSetGenerationFencing() async {

@@ -63,18 +63,24 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     // MARK: - Preflight Storage Verification
 
-    /// Checks if device has sufficient storage: ManifestTotalBytes (or N * 20MB) + 1.0 GB Headroom
-    public func preflightStorage(reels: [ReelItem]) -> (isSufficient: Bool, requiredBytes: Int64, availableBytes: Int64) {
+    /// Checks if device has sufficient storage: sum of pending reel sizes (~7.5 MB average)
+    public func preflightStorage(reels: [ReelItem], weekID: String? = nil) -> (isSufficient: Bool, requiredBytes: Int64, availableBytes: Int64) {
+        let targetWeek = weekID ?? self.currentWeekID
+        let pending = reels.filter { reel in
+            if targetWeek.isEmpty { return true }
+            return !LibraryPathResolver.shared.isLocalFileAvailable(for: targetWeek, reelID: reel.id)
+        }
+        // Only pending reels count: when everything is already downloaded the
+        // requirement is zero, never a re-measure of the full batch.
         var estimatedTotal: Int64 = 0
-        for r in reels {
+        for r in pending {
             if let sb = r.sizeBytes, sb > 0 {
                 estimatedTotal += sb
             } else {
-                estimatedTotal += 20_000_000 // 20 MB fallback
+                estimatedTotal += 7_500_000 // 7.5 MB average
             }
         }
-        let headroom: Int64 = 1_000_000_000 // 1.0 GB headroom
-        let required = estimatedTotal + headroom
+        let required = estimatedTotal
 
         let cacheDir = LibraryPathResolver.shared.mediaCacheBaseURL
         var available: Int64 = 0
@@ -89,7 +95,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
     // MARK: - Queue Management
 
     public func startDownloadAll(reels: [ReelItem], weekID: String) {
-        let (sufficient, required, available) = preflightStorage(reels: reels)
+        let (sufficient, required, available) = preflightStorage(reels: reels, weekID: weekID)
         guard sufficient else {
             let reqMB = required / 1_000_000
             let availMB = available / 1_000_000
@@ -276,7 +282,33 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // Synchronously move the file to a sandbox temporary staging path BEFORE this delegate method returns!
+        // Otherwise, the iOS system automatically unlinks/deletes the file at `location` the moment the method returns.
+        let tempStagingURL = FileManager.default.temporaryDirectory.appendingPathComponent("staging_\(UUID().uuidString).tmp")
+        do {
+            try FileManager.default.moveItem(at: location, to: tempStagingURL)
+        } catch {
+            // Staging failed: the entry must still be retired with retry accounting,
+            // otherwise the slot leaks and the queue stalls in .downloading forever.
+            Task { @MainActor in
+                guard let entry = self.inFlightTasks.removeValue(forKey: downloadTask.taskIdentifier) else { return }
+                let item = entry.item
+                let retries = (self.retryCounts[item.id] ?? 0) + 1
+                self.retryCounts[item.id] = retries
+                if retries <= self.maxRetriesPerItem {
+                    self.queue.append(item)
+                } else {
+                    self.failedInBatch += 1
+                }
+                self.drainQueue()
+            }
+            return
+        }
+
         Task { @MainActor in
+            defer {
+                try? FileManager.default.removeItem(at: tempStagingURL)
+            }
             guard let entry = self.inFlightTasks.removeValue(forKey: downloadTask.taskIdentifier) else { return }
             let item = entry.item
             self.removePersistedResumeData(for: item.id)
@@ -287,7 +319,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                 if FileManager.default.fileExists(atPath: partURL.path) {
                     try? FileManager.default.removeItem(at: partURL)
                 }
-                try FileManager.default.moveItem(at: location, to: partURL)
+                try FileManager.default.moveItem(at: tempStagingURL, to: partURL)
 
                 try await MediaCacheManager.shared.promotePartFile(
                     from: partURL,
