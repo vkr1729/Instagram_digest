@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import AVFoundation
 @testable import InstagramDigest
 
 final class EngineTests: XCTestCase {
