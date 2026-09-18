@@ -153,6 +153,7 @@ public final class AVPlayerPool: ObservableObject {
         self.currentItems = items
         self.currentWeekID = weekID
         self.watchedLatchedReelIDs.removeAll()
+        self.currentIndex = -1
         guard !items.isEmpty else {
             // Empty playlist: park the pool in a defined state instead of
             // leaving currentIndex stale on a previous list.

@@ -5,6 +5,13 @@ import AVFoundation
 
 final class EngineTests: XCTestCase {
 
+    override func tearDown() async throws {
+        try await super.tearDown()
+        await MainActor.run {
+            AVPlayerPool.shared.setReels([], weekID: "reset")
+        }
+    }
+
     func testLivePinSetIncludesActivePoolReels() async {
         let manager = MediaCacheManager.shared
         await manager.setActiveVideoPoolReelIDs(["reel_active_1", "reel_active_2"])
