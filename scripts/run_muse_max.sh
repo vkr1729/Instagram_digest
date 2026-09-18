@@ -24,4 +24,6 @@ exec "${MUSE_BIN}" exec \
   --model muse-spark-1.3-contributor \
   --reasoning-effort max \
   --no-foreign-personal-context \
+  --disable-web-tools \
+  --context-compaction-strategy summary-preserved-suffix/v1 \
   "$@"

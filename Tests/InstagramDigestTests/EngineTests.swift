@@ -199,4 +199,117 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(coordinator.state, .idle, "Coordinator must stay .idle when playback stops")
         XCTAssertEqual(coordinator.overallProgress, 0.0)
     }
+
+    @MainActor
+    func testSlotRotationForwardContinuous() async throws {
+        let pool = AVPlayerPool.shared
+        let reels = [
+            ReelItem(id: "r0", creatorHandle: "c0", caption: "Caption 0", rank: 1, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/01_test_r0.mp4")!),
+            ReelItem(id: "r1", creatorHandle: "c1", caption: "Caption 1", rank: 2, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/02_test_r1.mp4")!),
+            ReelItem(id: "r2", creatorHandle: "c2", caption: "Caption 2", rank: 3, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/03_test_r2.mp4")!)
+        ]
+
+        pool.setReels(reels, weekID: "test_week_rot", startIndex: 0)
+        XCTAssertEqual(pool.currentIndex, 0)
+        XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "r0")
+
+        // Wait brief moment for async load of next slot
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        // Advance to 1
+        let prevNextSlot = pool.slotNext
+        pool.setCurrentIndex(1)
+
+        XCTAssertEqual(pool.currentIndex, 1)
+        // If slotNext was populated, it rotated into slotCurrent
+        if prevNextSlot.slotItem?.reel.id == "r1" {
+            XCTAssertTrue(pool.slotCurrent === prevNextSlot, "slotNext must be promoted to slotCurrent without teardown")
+            XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "r1")
+        }
+    }
+
+    func testRemoteBookmarkPayloadEncoding() throws {
+        let reel = ReelItem(
+            id: "test1234",
+            creatorHandle: "apple_creator",
+            caption: "Amazing reel #test",
+            rank: 1,
+            videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/01_creator_test1234.mp4")!,
+            thumbnailUrl: URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/test1234.jpg"),
+            category: "ai_tech"
+        )
+
+        let payload = DigestDataService.BookmarkPayload(reel: reel)
+        let data = try JSONEncoder().encode(payload)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertEqual(json?["id"] as? String, "test1234")
+        XCTAssertEqual(json?["video_url"] as? String, "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/01_creator_test1234.mp4")
+        XCTAssertEqual(json?["thumbnail_url"] as? String, "https://vkr1729.github.io/Instagram_digest/thumbnails/test1234.jpg")
+        XCTAssertEqual(json?["creator_handle"] as? String, "apple_creator")
+        XCTAssertEqual(json?["caption"] as? String, "Amazing reel #test")
+        XCTAssertEqual(json?["category"] as? String, "ai_tech")
+    }
+
+    @MainActor
+    func testAttachAppropriateSlotDirectly() {
+        let layout = UICollectionViewFlowLayout()
+        let vc = FeedCollectionViewController(collectionViewLayout: layout)
+        let reels = [
+            ReelItem(id: "r0", creatorHandle: "c", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/0.mp4")!),
+            ReelItem(id: "r1", creatorHandle: "c", caption: "", rank: 2, videoUrl: URL(string: "https://example.com/1.mp4")!)
+        ]
+        vc.updateReelsIfNeeded(reels, targetIndex: 0)
+
+        let cell = FeedCell(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        XCTAssertFalse(cell.playerContainerView?.isHidden ?? true, "playerContainerView must not be hidden initially")
+
+        vc.attachAppropriateSlot(to: cell, at: 0)
+        XCTAssertFalse(cell.playerContainerView?.isHidden ?? true, "playerContainerView must remain visible")
+        XCTAssertTrue(cell.playerContainerView?.playerLayer.player === AVPlayerPool.shared.slotCurrent.player)
+    }
+
+    @MainActor
+    func testLayerDetachmentEnforcesExclusiveOwnership() {
+        let pool = AVPlayerPool.shared
+        let layer1 = AVPlayerLayer()
+        let layer2 = AVPlayerLayer()
+
+        pool.attachLayer(layer1, to: pool.slotCurrent)
+        XCTAssertTrue(pool.slotCurrent.playerLayer === layer1)
+        XCTAssertTrue(layer1.player === pool.slotCurrent.player)
+
+        // Attaching layer2 to slotCurrent must detach layer1
+        pool.attachLayer(layer2, to: pool.slotCurrent)
+        XCTAssertTrue(pool.slotCurrent.playerLayer === layer2)
+        XCTAssertNil(layer1.player, "Previous layer must have player set to nil")
+
+        // Detaching layer2
+        pool.detachLayer(layer2)
+        XCTAssertNil(pool.slotCurrent.playerLayer)
+        XCTAssertNil(layer2.player)
+    }
+
+    @MainActor
+    func testSlotRotationBackwardContinuous() async throws {
+        let pool = AVPlayerPool.shared
+        let reels = [
+            ReelItem(id: "b0", creatorHandle: "c0", caption: "Caption 0", rank: 1, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/01_test_b0.mp4")!),
+            ReelItem(id: "b1", creatorHandle: "c1", caption: "Caption 1", rank: 2, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/02_test_b1.mp4")!)
+        ]
+
+        pool.setReels(reels, weekID: "test_week_back", startIndex: 1)
+        XCTAssertEqual(pool.currentIndex, 1)
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let prevSlot = pool.slotPrev
+        pool.setCurrentIndex(0)
+        XCTAssertEqual(pool.currentIndex, 0)
+
+        if prevSlot.slotItem?.reel.id == "b0" {
+            XCTAssertTrue(pool.slotCurrent === prevSlot, "slotPrev must be promoted to slotCurrent without teardown")
+            XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "b0")
+        }
+    }
 }

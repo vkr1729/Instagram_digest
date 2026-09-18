@@ -238,6 +238,7 @@ public struct ReelCardOverlayView: View {
                 }
             }
             .opacity(isChromeVisible ? 1.0 : 0.0)
+            .allowsHitTesting(isChromeVisible)
             .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
         }
     }

@@ -30,6 +30,7 @@ public final class AVPlayerPool: ObservableObject {
         public var didPlayToEndObserverToken: NSObjectProtocol?
         public var slotItem: SlotItem?
         public weak var playerLayer: AVPlayerLayer?
+        public var inFlightTask: Task<Void, Never>?
 
         public init(index: Int) {
             self.index = index
@@ -38,6 +39,8 @@ public final class AVPlayerPool: ObservableObject {
         }
 
         public func teardown(detachingLayer: Bool = false) {
+            inFlightTask?.cancel()
+            inFlightTask = nil
             player.pause()
             if let token = timeObserverToken {
                 player.removeTimeObserver(token)
@@ -66,9 +69,9 @@ public final class AVPlayerPool: ObservableObject {
     }
 
     // 3 slots: 0 -> prev (-1), 1 -> current (0), 2 -> next (+1)
-    public let slotPrev = Slot(index: 0)
-    public let slotCurrent = Slot(index: 1)
-    public let slotNext = Slot(index: 2)
+    public private(set) var slotPrev = Slot(index: 0)
+    public private(set) var slotCurrent = Slot(index: 1)
+    public private(set) var slotNext = Slot(index: 2)
 
     private var slots: [Slot] {
         [slotPrev, slotCurrent, slotNext]
@@ -100,7 +103,6 @@ public final class AVPlayerPool: ObservableObject {
     public var onWatchedMilestone: (@MainActor (ReelItem) -> Void)?
     public var onStallWatchdogTriggered: (@MainActor () -> Void)?
 
-    private var inFlightTasks: [Int: Task<Void, Never>] = [:] // slotIndex -> Task
     private var memoryPressureObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
@@ -199,11 +201,14 @@ public final class AVPlayerPool: ObservableObject {
 
     public func setCurrentIndex(_ newIndex: Int) {
         guard !currentItems.isEmpty, newIndex >= 0, newIndex < currentItems.count else { return }
+        if newIndex == currentIndex {
+            if !isPlaying, slotCurrent.player.currentItem != nil { play() }
+            return
+        }
 
         poolGeneration &+= 1
         let thisGeneration = poolGeneration
-
-        cancelAllInFlightTasks()
+        let oldIndex = self.currentIndex
 
         self.currentIndex = newIndex
         self.isLatched2x = false
@@ -223,26 +228,135 @@ public final class AVPlayerPool: ObservableObject {
             await MediaCacheManager.shared.setActiveVideoPoolReelIDs(boundIDs, generation: thisGeneration)
         }
 
-        // Configure Slot 1 (Current)
-        configureCurrentSlot(with: currItem, generation: thisGeneration)
-
-        // Check thermal state before preloading slots -1 and +1
         let isThermalThrottled = ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical
-        if !isThermalThrottled {
-            if let prev = prevItem {
+
+        // Check for contiguous forward step (+1) with already buffered slotNext
+        if oldIndex >= 0 && newIndex == oldIndex + 1 && slotNext.slotItem?.reel.id == currItem.id, let promotedItem = slotNext.currentItem {
+            // FORWARD ROTATION:
+            // slotNext is promoted to slotCurrent (already has buffer & layer attached).
+            // slotCurrent is demoted to slotPrev.
+            // slotPrev is recycled to become the new slotNext.
+            let oldPrev = slotPrev
+            let oldCurrent = slotCurrent
+            let promotedSlot = slotNext
+
+            // 1. Demote old current to prev: pause, mute, remove observers
+            if let token = oldCurrent.timeObserverToken {
+                oldCurrent.player.removeTimeObserver(token)
+                oldCurrent.timeObserverToken = nil
+            }
+            oldCurrent.statusCancellable?.cancel()
+            oldCurrent.statusCancellable = nil
+            if let token = oldCurrent.failedObserverToken {
+                NotificationCenter.default.removeObserver(token)
+                oldCurrent.failedObserverToken = nil
+            }
+            if let token = oldCurrent.didPlayToEndObserverToken {
+                NotificationCenter.default.removeObserver(token)
+                oldCurrent.didPlayToEndObserverToken = nil
+            }
+            oldCurrent.player.pause()
+            oldCurrent.player.isMuted = true
+
+            // 2. Promote slotNext to slotCurrent
+            slotCurrent = promotedSlot
+            slotPrev = oldCurrent
+            slotNext = oldPrev
+
+            // Ensure layer and playback state on promoted slot
+            slotCurrent.playerLayer?.player = slotCurrent.player
+            slotCurrent.playerLayer?.videoGravity = .resizeAspect
+            slotCurrent.player.isMuted = false
+            slotCurrent.player.volume = 1.0
+
+            let isLocal = LibraryPathResolver.shared.isLocalFileAvailable(for: currentWeekID, reelID: currItem.id)
+            observePlayerItemStatus(for: slotCurrent, item: promotedItem, reel: currItem, isLocal: isLocal, generation: thisGeneration)
+            attachTimeObserver(to: slotCurrent, reel: currItem)
+            self.isPlaying = true
+            slotCurrent.player.rate = effectiveRate
+            AudioSessionCoordinator.shared.activateSession()
+
+            // 3. Recycle oldPrev into slotNext to preload nextItem
+            if !isThermalThrottled, let next = nextItem {
+                configureSlot(slotNext, with: next, generation: thisGeneration)
+            } else {
+                slotNext.teardown()
+            }
+
+        // Check for contiguous backward step (-1) with already buffered slotPrev
+        } else if oldIndex >= 0 && newIndex == oldIndex - 1 && slotPrev.slotItem?.reel.id == currItem.id, let promotedItem = slotPrev.currentItem {
+            // BACKWARD ROTATION:
+            // slotPrev is promoted to slotCurrent.
+            // slotCurrent is demoted to slotNext.
+            // slotNext is recycled to become the new slotPrev.
+            let oldNext = slotNext
+            let oldCurrent = slotCurrent
+            let promotedSlot = slotPrev
+
+            // 1. Demote old current to next: pause, mute, remove observers
+            if let token = oldCurrent.timeObserverToken {
+                oldCurrent.player.removeTimeObserver(token)
+                oldCurrent.timeObserverToken = nil
+            }
+            oldCurrent.statusCancellable?.cancel()
+            oldCurrent.statusCancellable = nil
+            if let token = oldCurrent.failedObserverToken {
+                NotificationCenter.default.removeObserver(token)
+                oldCurrent.failedObserverToken = nil
+            }
+            if let token = oldCurrent.didPlayToEndObserverToken {
+                NotificationCenter.default.removeObserver(token)
+                oldCurrent.didPlayToEndObserverToken = nil
+            }
+            oldCurrent.player.pause()
+            oldCurrent.player.isMuted = true
+
+            // 2. Promote slotPrev to slotCurrent
+            slotCurrent = promotedSlot
+            slotNext = oldCurrent
+            slotPrev = oldNext
+
+            // Ensure layer and playback state on promoted slot
+            slotCurrent.playerLayer?.player = slotCurrent.player
+            slotCurrent.playerLayer?.videoGravity = .resizeAspect
+            slotCurrent.player.isMuted = false
+            slotCurrent.player.volume = 1.0
+
+            let isLocal = LibraryPathResolver.shared.isLocalFileAvailable(for: currentWeekID, reelID: currItem.id)
+            observePlayerItemStatus(for: slotCurrent, item: promotedItem, reel: currItem, isLocal: isLocal, generation: thisGeneration)
+            attachTimeObserver(to: slotCurrent, reel: currItem)
+            self.isPlaying = true
+            slotCurrent.player.rate = effectiveRate
+            AudioSessionCoordinator.shared.activateSession()
+
+            // 3. Recycle oldNext into slotPrev to preload prevItem
+            if !isThermalThrottled, let prev = prevItem {
                 configureSlot(slotPrev, with: prev, generation: thisGeneration)
             } else {
                 slotPrev.teardown()
             }
 
-            if let next = nextItem {
-                configureSlot(slotNext, with: next, generation: thisGeneration)
+        } else {
+            // NON-CONTIGUOUS JUMP or unbuffered slot: full reconfiguration
+            cancelAllInFlightTasks()
+            configureCurrentSlot(with: currItem, generation: thisGeneration)
+
+            if !isThermalThrottled {
+                if let prev = prevItem {
+                    configureSlot(slotPrev, with: prev, generation: thisGeneration)
+                } else {
+                    slotPrev.teardown()
+                }
+
+                if let next = nextItem {
+                    configureSlot(slotNext, with: next, generation: thisGeneration)
+                } else {
+                    slotNext.teardown()
+                }
             } else {
+                slotPrev.teardown()
                 slotNext.teardown()
             }
-        } else {
-            slotPrev.teardown()
-            slotNext.teardown()
         }
     }
 
@@ -273,9 +387,9 @@ public final class AVPlayerPool: ObservableObject {
 
         let assetOptions: [String: Any]? = isLocal ? nil : [AVURLAssetPreferPreciseDurationAndTimingKey: false]
         let asset = AVURLAsset(url: mediaURL, options: assetOptions)
-        inFlightTasks[slot.index]?.cancel()
-        inFlightTasks[slot.index] = Task { @MainActor [weak self] in
-            guard let self = self else { return }
+        slot.inFlightTask?.cancel()
+        slot.inFlightTask = Task { @MainActor [weak self, weak slot] in
+            guard let self = self, let slot = slot else { return }
             do {
                 if isLocal {
                     _ = try await asset.load(.isPlayable, .duration)
@@ -318,6 +432,7 @@ public final class AVPlayerPool: ObservableObject {
                 AudioSessionCoordinator.shared.activateSession()
 
             } catch {
+                if error is CancellationError { return }
                 guard self.poolGeneration == generation else { return }
                 self.handlePlaybackError(for: item, isLocal: isLocal)
             }
@@ -336,9 +451,9 @@ public final class AVPlayerPool: ObservableObject {
 
         let assetOptions: [String: Any]? = isLocal ? nil : [AVURLAssetPreferPreciseDurationAndTimingKey: false]
         let asset = AVURLAsset(url: mediaURL, options: assetOptions)
-        inFlightTasks[slot.index]?.cancel()
-        inFlightTasks[slot.index] = Task { @MainActor [weak self] in
-            guard let self = self else { return }
+        slot.inFlightTask?.cancel()
+        slot.inFlightTask = Task { @MainActor [weak self, weak slot] in
+            guard let self = self, let slot = slot else { return }
             do {
                 if isLocal {
                     _ = try await asset.load(.isPlayable, .duration)
@@ -361,6 +476,7 @@ public final class AVPlayerPool: ObservableObject {
                 slot.playerLayer?.videoGravity = .resizeAspect
                 slot.player.pause()
             } catch {
+                if error is CancellationError { return }
                 // Secondary slot loading failures can be silently ignored
             }
         }
@@ -377,8 +493,9 @@ public final class AVPlayerPool: ObservableObject {
         } else {
             // Last item: replay only after the seek completes, otherwise play()
             // can resume at the end position and re-fire DidPlayToEnd in a tight loop.
-            slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak slot] _ in
-                slot?.player.play()
+            slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak slot] _ in
+                guard let self = self, let s = slot, self.slotCurrent === s else { return }
+                s.player.rate = self.effectiveRate
             }
         }
     }
@@ -427,6 +544,10 @@ public final class AVPlayerPool: ObservableObject {
     // MARK: - Time Observer & Watched Triggers
 
     private func attachTimeObserver(to slot: Slot, reel: ReelItem) {
+        if let token = slot.timeObserverToken {
+            slot.player.removeTimeObserver(token)
+            slot.timeObserverToken = nil
+        }
         // Throttled 0.5s time observer ticks per contract
         let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
         slot.timeObserverToken = slot.player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak slot] time in
@@ -480,13 +601,18 @@ public final class AVPlayerPool: ObservableObject {
         let isLocal = slotCurrent.slotItem?.isLocal ?? false
         let tolerance = isLocal ? CMTime.zero : CMTime(seconds: 0.5, preferredTimescale: 600)
 
-        slotCurrent.player.seek(to: targetTime, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] finished in
-            guard let self = self, finished else { return }
+        let targetSlot = slotCurrent
+        let expectedReelID = slotCurrent.slotItem?.reel.id
+        let gen = self.poolGeneration
+
+        slotCurrent.player.seek(to: targetTime, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self, weak targetSlot] finished in
+            guard let self = self, let slot = targetSlot, finished else { return }
+            guard self.poolGeneration == gen, self.slotCurrent === slot, slot.slotItem?.reel.id == expectedReelID else { return }
             if self.isPlaying {
-                self.slotCurrent.player.rate = self.effectiveRate
+                slot.player.rate = self.effectiveRate
             }
             // Scrub past 35% trigger
-            if targetFraction >= 0.35, let reel = self.slotCurrent.slotItem?.reel {
+            if targetFraction >= 0.35, let reel = slot.slotItem?.reel {
                 self.onWatchedMilestone?(reel)
             }
         }
@@ -609,20 +735,15 @@ public final class AVPlayerPool: ObservableObject {
 
     /// On memory warning, evict slots -1 and +1 immediately and cancel their background tasks
     public func collapsePoolToCurrentSlotOnly() {
-        inFlightTasks[slotPrev.index]?.cancel()
-        inFlightTasks[slotPrev.index] = nil
         slotPrev.teardown()
-
-        inFlightTasks[slotNext.index]?.cancel()
-        inFlightTasks[slotNext.index] = nil
         slotNext.teardown()
     }
 
     private func cancelAllInFlightTasks() {
-        for (_, task) in inFlightTasks {
-            task.cancel()
+        for slot in slots {
+            slot.inFlightTask?.cancel()
+            slot.inFlightTask = nil
         }
-        inFlightTasks.removeAll()
     }
 
     private func handleDidEnterBackground() {
@@ -644,9 +765,42 @@ public final class AVPlayerPool: ObservableObject {
     }
 
     public func attachLayer(_ layer: AVPlayerLayer, forSlotIndex index: Int) {
-        let slot = slots.first { $0.index == index }
-        slot?.playerLayer = layer
-        layer.player = slot?.player
+        let slot: Slot?
+        switch index {
+        case 0: slot = slotPrev
+        case 1: slot = slotCurrent
+        case 2: slot = slotNext
+        default: slot = nil
+        }
+        if let s = slot {
+            attachLayer(layer, to: s)
+        }
+    }
+
+    public func attachLayer(_ layer: AVPlayerLayer, to slot: Slot) {
+        // Disconnect layer from any other slot
+        if slotCurrent !== slot && slotCurrent.playerLayer === layer { slotCurrent.playerLayer = nil }
+        if slotPrev !== slot && slotPrev.playerLayer === layer { slotPrev.playerLayer = nil }
+        if slotNext !== slot && slotNext.playerLayer === layer { slotNext.playerLayer = nil }
+
+        // Disconnect old layer from this slot if different
+        if let oldLayer = slot.playerLayer, oldLayer !== layer {
+            oldLayer.player = nil
+        }
+
+        slot.playerLayer = layer
+        if layer.player !== slot.player {
+            layer.player = slot.player
+        }
         layer.videoGravity = .resizeAspect
+    }
+
+    public func detachLayer(_ layer: AVPlayerLayer) {
+        if slotCurrent.playerLayer === layer { slotCurrent.playerLayer = nil }
+        if slotPrev.playerLayer === layer { slotPrev.playerLayer = nil }
+        if slotNext.playerLayer === layer { slotNext.playerLayer = nil }
+        if layer.player != nil {
+            layer.player = nil
+        }
     }
 }

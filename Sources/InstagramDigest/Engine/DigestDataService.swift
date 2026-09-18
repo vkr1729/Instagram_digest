@@ -96,4 +96,82 @@ public actor DigestDataService {
         // Lossy decode: one malformed R2 entry must not invalidate the whole list.
         return try LossyBookmarkList.decode(from: data)
     }
+
+    public static let defaultBookmarkApiBase = URL(string: "https://ig-digest-api.kedarvreddy.workers.dev")!
+
+    public struct BookmarkPayload: Codable, Sendable {
+        public let id: String
+        public let video_url: String
+        public let thumbnail_url: String
+        public let creator_handle: String
+        public let caption: String
+        public let category: String
+
+        public init(reel: ReelItem) {
+            self.id = reel.id
+            self.video_url = reel.videoUrl.absoluteString
+            self.thumbnail_url = reel.thumbnailUrl?.absoluteString ?? ""
+            self.creator_handle = reel.creatorHandle
+            self.caption = reel.caption ?? ""
+            self.category = reel.category ?? ""
+        }
+    }
+
+    /// Saves bookmark remotely via Cloudflare Worker, triggering Telegram video forwarding
+    @discardableResult
+    public func saveRemoteBookmark(
+        reel: ReelItem,
+        ownerKey: String? = nil,
+        apiBase: URL = defaultBookmarkApiBase
+    ) async throws -> Bool {
+        let key = ownerKey ?? UserDefaults.standard.string(forKey: "digest_owner_key") ?? ProcessInfo.processInfo.environment["OWNER_KEY"] ?? ""
+        let endpoint = apiBase.appendingPathComponent("api/bookmark")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue(key, forHTTPHeaderField: "X-Owner-Key")
+        }
+        let payload = BookmarkPayload(reel: reel)
+        request.httpBody = try JSONEncoder().encode(payload)
+        request.timeoutInterval = 15.0
+
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if http.statusCode == 403 {
+            throw URLError(.userAuthenticationRequired)
+        }
+        return (200...299).contains(http.statusCode)
+    }
+
+    /// Deletes bookmark remotely via Cloudflare Worker
+    @discardableResult
+    public func deleteRemoteBookmark(
+        reelID: String,
+        ownerKey: String? = nil,
+        apiBase: URL = defaultBookmarkApiBase
+    ) async throws -> Bool {
+        let key = ownerKey ?? UserDefaults.standard.string(forKey: "digest_owner_key") ?? ProcessInfo.processInfo.environment["OWNER_KEY"] ?? ""
+        let safeID = reelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? reelID
+        let endpoint = apiBase.appendingPathComponent("api/bookmark/\(safeID)")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "DELETE"
+        if !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue(key, forHTTPHeaderField: "X-Owner-Key")
+        }
+        request.timeoutInterval = 15.0
+
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if http.statusCode == 403 {
+            throw URLError(.userAuthenticationRequired)
+        }
+        return (200...299).contains(http.statusCode)
+    }
 }

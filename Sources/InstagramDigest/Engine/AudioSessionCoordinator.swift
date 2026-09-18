@@ -58,7 +58,7 @@ public final class AudioSessionCoordinator: Sendable {
             forName: AVAudioSession.interruptionNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
+        ) { @MainActor [weak self] notification in
             self?.handleInterruption(notification: notification)
         }
 
@@ -66,7 +66,7 @@ public final class AudioSessionCoordinator: Sendable {
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
+        ) { @MainActor [weak self] notification in
             self?.handleRouteChange(notification: notification)
         }
 
@@ -74,7 +74,7 @@ public final class AudioSessionCoordinator: Sendable {
             forName: AVAudioSession.mediaServicesWereResetNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
+        ) { @MainActor [weak self] notification in
             self?.handleMediaServicesReset(notification: notification)
         }
 
@@ -82,7 +82,7 @@ public final class AudioSessionCoordinator: Sendable {
             forName: AVAudioSession.silenceSecondaryAudioHintNotification,
             object: nil,
             queue: .main
-        ) { [weak self] notification in
+        ) { @MainActor [weak self] notification in
             self?.handleSecondaryAudioHint(notification: notification)
         }
     }

@@ -116,6 +116,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
 
             if AVPlayerPool.shared.isLatched2x {
                 AVPlayerPool.shared.setLatched2x(false)
+                return
             }
 
             parent.onTogglePlayPause()
@@ -227,7 +228,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             }
             let reel = parent.reels[indexPath.item]
             let cell = collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: reel)
-            viewController?.reattachPlayerToVisibleCells()
+            viewController?.attachAppropriateSlot(to: cell, at: indexPath.item)
             return cell
         }
 
@@ -237,27 +238,27 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             collectionView.bounds.size
         }
 
-        // MARK: - Scroll Settle Detection (80ms debounce)
+        // MARK: - Scroll Settle Detection (Immediate on deceleration end)
 
         public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            handleScrollSettle(scrollView)
+            handleScrollSettle(scrollView, immediate: true)
         }
 
         public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
-                handleScrollSettle(scrollView)
+                handleScrollSettle(scrollView, immediate: true)
             }
         }
 
         public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
-            handleScrollSettle(scrollView)
+            handleScrollSettle(scrollView, immediate: true)
         }
 
         public func scrollViewDidScroll(_ scrollView: UIScrollView) {
             viewController?.reattachPlayerToVisibleCells()
         }
 
-        private func handleScrollSettle(_ scrollView: UIScrollView) {
+        private func handleScrollSettle(_ scrollView: UIScrollView, immediate: Bool = false) {
             settleWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
@@ -290,8 +291,11 @@ public struct FeedPagerView: UIViewControllerRepresentable {
                 }
             }
             settleWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
-
+            if immediate {
+                workItem.perform()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
+            }
         }
 
         // MARK: - Prefetching
@@ -412,28 +416,26 @@ public final class FeedCollectionViewController: UICollectionViewController {
 
         for cell in collectionView.visibleCells {
             guard let indexPath = collectionView.indexPath(for: cell),
-                  let feedCell = cell as? FeedCell,
                   indexPath.item < currentReels.count else { continue }
-            let itemIndex = indexPath.item
-            if itemIndex == current {
-                feedCell.playerContainerView?.isHidden = false
-                if let pc = feedCell.playerContainerView {
-                    AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 1)
-                }
-            } else if itemIndex == current + 1 {
-                feedCell.playerContainerView?.isHidden = false
-                if let pc = feedCell.playerContainerView {
-                    AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 2)
-                }
-            } else if itemIndex == current - 1 {
-                feedCell.playerContainerView?.isHidden = false
-                if let pc = feedCell.playerContainerView {
-                    AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 0)
-                }
-            } else {
-                feedCell.playerContainerView?.isHidden = true
-                feedCell.playerContainerView?.playerLayer.player = nil
-            }
+            attachAppropriateSlot(to: cell, at: indexPath.item)
+        }
+    }
+
+    /// Attaches the corresponding AVPlayerPool slot to a cell based on its item index relative to current
+    public func attachAppropriateSlot(to cell: UICollectionViewCell, at itemIndex: Int) {
+        guard let feedCell = cell as? FeedCell,
+              let pc = feedCell.playerContainerView,
+              itemIndex < currentReels.count else { return }
+        pc.isHidden = false
+        let current = currentAttachedIndex
+        if itemIndex == current {
+            AVPlayerPool.shared.attachLayer(pc.playerLayer, to: AVPlayerPool.shared.slotCurrent)
+        } else if itemIndex == current + 1 {
+            AVPlayerPool.shared.attachLayer(pc.playerLayer, to: AVPlayerPool.shared.slotNext)
+        } else if itemIndex == current - 1 {
+            AVPlayerPool.shared.attachLayer(pc.playerLayer, to: AVPlayerPool.shared.slotPrev)
+        } else {
+            AVPlayerPool.shared.detachLayer(pc.playerLayer)
         }
     }
 
@@ -463,6 +465,7 @@ public final class FeedCollectionViewController: UICollectionViewController {
     /// Reconfigures visible cells on index change to attach/detach player layers without reloadData churn
     public func updateCurrentIndex(_ newIndex: Int) {
         guard newIndex >= 0, newIndex < currentReels.count else { return }
+        self.lastScrolledIndex = newIndex
         self.currentAttachedIndex = newIndex
         reattachPlayerToVisibleCells()
     }
@@ -522,6 +525,7 @@ public final class FeedCell: UICollectionViewCell {
     private func setupViews() {
         let pc = PlayerContainerView()
         pc.translatesAutoresizingMaskIntoConstraints = false
+        pc.isHidden = false
         contentView.addSubview(pc)
 
         NSLayoutConstraint.activate([
@@ -535,20 +539,13 @@ public final class FeedCell: UICollectionViewCell {
     }
 
     public func configure(reel: ReelItem, isCurrent: Bool) {
-        if isCurrent {
-            playerContainerView?.isHidden = false
-            if let pc = playerContainerView {
-                AVPlayerPool.shared.attachLayer(pc.playerLayer, forSlotIndex: 1)
-            }
-        } else {
-            playerContainerView?.isHidden = true
-            playerContainerView?.playerLayer.player = nil
-        }
+        playerContainerView?.isHidden = false
     }
 
     public override func prepareForReuse() {
         super.prepareForReuse()
-        playerContainerView?.playerLayer.player = nil
-        playerContainerView?.isHidden = true
+        if let pc = playerContainerView {
+            AVPlayerPool.shared.detachLayer(pc.playerLayer)
+        }
     }
 }

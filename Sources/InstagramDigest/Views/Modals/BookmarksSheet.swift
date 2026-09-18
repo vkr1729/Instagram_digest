@@ -14,6 +14,13 @@ public struct BookmarksSheet: View {
     @State private var isPurgingStorage: Bool = false
     @State private var errorMessage: String?
     @State private var activePlaybackIndex: Int? = nil
+    @State private var showOwnerKeyPrompt: Bool = false
+    @State private var ownerKeyInput: String = ""
+    @AppStorage("digest_owner_key") private var storedOwnerKey: String = ""
+
+    private var hasOwnerKey: Bool {
+        !storedOwnerKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -47,12 +54,26 @@ public struct BookmarksSheet: View {
                         ProgressView(value: fraction)
                             .tint(fraction > 0.9 ? .orange : .cyan)
 
-                        HStack {
+                        HStack(spacing: 12) {
                             Text("\(bookmarks.count) saved reels")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.5))
                                 .accessibilityIdentifier("BookmarksCountLabel")
                             Spacer()
+
+                            // Owner Key Link Button
+                            Button {
+                                ownerKeyInput = storedOwnerKey
+                                showOwnerKeyPrompt = true
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: hasOwnerKey ? "key.fill" : "key")
+                                    Text(hasOwnerKey ? "Key Linked" : "Link Key")
+                                }
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(hasOwnerKey ? .yellow : .cyan)
+                            }
+                            .accessibilityIdentifier("LinkOwnerKeyButton")
 
                             // Free Local Storage Action Button
                             Button {
@@ -197,6 +218,23 @@ public struct BookmarksSheet: View {
             .task {
                 await refreshLedger()
             }
+            .alert("Cloudflare Owner Key", isPresented: $showOwnerKeyPrompt) {
+                TextField("Owner Key", text: $ownerKeyInput)
+                Button("Save") {
+                    let trimmed = ownerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    storedOwnerKey = trimmed
+                    UserDefaults.standard.set(trimmed, forKey: "digest_owner_key")
+                }
+                if hasOwnerKey {
+                    Button("Unlink Key", role: .destructive) {
+                        storedOwnerKey = ""
+                        UserDefaults.standard.removeObject(forKey: "digest_owner_key")
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Enter the OWNER_KEY secret configured in your Cloudflare Worker to enable Telegram sync and R2 bookmarks.")
+            }
         }
     }
 
@@ -217,6 +255,7 @@ public struct BookmarksSheet: View {
         let reelID = item.reelID
         Task {
             await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
+            _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
         }
         modelContext.delete(item)
         do {

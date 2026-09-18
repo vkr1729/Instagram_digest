@@ -116,6 +116,9 @@ struct FeedMainView: View {
     // Captured when a sheet pauses playback so dismiss without selection can
     // resume instead of stranding the feed paused.
     @State private var wasPlayingBeforeSheet: Bool = false
+    @State private var showOwnerKeyAlert: Bool = false
+    @State private var ownerKeyInput: String = ""
+    @State private var activeBookmarkTasks: [String: Task<Void, Never>] = [:]
 
     // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
@@ -180,6 +183,7 @@ struct FeedMainView: View {
                     onTogglePlayPause: {
                         if pool.isLatched2x {
                             pool.setLatched2x(false)
+                            return
                         }
                         pool.togglePlayPause()
                         withAnimation(.easeInOut(duration: 0.25)) {
@@ -280,6 +284,7 @@ struct FeedMainView: View {
                     Spacer()
                 }
                 .opacity(isChromeVisible ? 1.0 : 0.0)
+                .allowsHitTesting(isChromeVisible)
                 .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
             }
 
@@ -345,6 +350,24 @@ struct FeedMainView: View {
         }
         .onAppear {
             setupPoolCallbacks()
+        }
+        .alert("Link Cloudflare Owner Key", isPresented: $showOwnerKeyAlert) {
+            TextField("Enter Owner Key", text: $ownerKeyInput)
+            Button("Save & Sync") {
+                let trimmed = ownerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    UserDefaults.standard.set(trimmed, forKey: "digest_owner_key")
+                    if !pool.currentItems.isEmpty, activeIndex >= 0, activeIndex < pool.currentItems.count {
+                        let reel = pool.currentItems[activeIndex]
+                        Task {
+                            _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
+                        }
+                    }
+                }
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Enter your Cloudflare Worker OWNER_KEY to forward bookmarked reels directly to your private Telegram chat.")
         }
     }
 
@@ -645,9 +668,12 @@ struct FeedMainView: View {
                 modelContext.rollback()
             }
 
-            Task {
+            activeBookmarkTasks[reelID]?.cancel()
+            activeBookmarkTasks[reelID] = Task {
                 await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
                 await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
+                guard !Task.isCancelled else { return }
+                _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
             }
             triggerBookmarkPopAnimation()
         } else {
@@ -670,19 +696,30 @@ struct FeedMainView: View {
                 modelContext.rollback()
             }
 
-            if isLocal {
-                let rID = reel.id
-                let wID = weekID
-                let sBytes = reel.sizeBytes ?? 0
-                Task {
+            let rID = reel.id
+            let wID = weekID
+            let sBytes = reel.sizeBytes ?? 0
+            activeBookmarkTasks[rID]?.cancel()
+            activeBookmarkTasks[rID] = Task {
+                if isLocal {
                     _ = try? await MediaCacheManager.shared.keepBookmarkOffline(
                         weekID: wID,
                         reelID: rID,
                         fallbackSizeBytes: sBytes
                     )
                 }
+                guard !Task.isCancelled else { return }
+                // Remote Cloudflare Worker sync -> Telegram forwarding
+                _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
             }
             triggerBookmarkPopAnimation()
+
+            // Prompt user if owner key is not yet configured on this device
+            let currentKey = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
+            if currentKey.isEmpty {
+                ownerKeyInput = ""
+                showOwnerKeyAlert = true
+            }
         }
     }
 
