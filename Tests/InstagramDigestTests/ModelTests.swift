@@ -61,6 +61,36 @@ final class ModelTests: XCTestCase {
         XCTAssertNotNil(manifest.generatedAt)
     }
 
+    func testDigestManifestDedupesDuplicateIDs() throws {
+        // IOS-P0-3: duplicate reel IDs crash ForEach(id:) in GridView.
+        let json = """
+        {
+            "run_date": "2026-09-17",
+            "items": [
+                {"id": "dup", "creator_handle": "alice", "rank": 1,
+                 "video_url": "https://pub-r2.dev/dup.mp4"},
+                {"id": "ok", "creator_handle": "bob", "rank": 2,
+                 "video_url": "https://pub-r2.dev/ok.mp4"},
+                {"id": "dup", "creator_handle": "mallory", "rank": 3,
+                 "video_url": "https://pub-r2.dev/dup2.mp4"}
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let manifest = try JSONDecoder().decode(DigestManifest.self, from: json)
+        XCTAssertEqual(manifest.items.map { $0.id }, ["dup", "ok"])
+        XCTAssertEqual(manifest.items[0].creatorHandle, "alice")
+    }
+
+    func testReelItemRejectsRelativeVideoURL() throws {
+        // IOS-P2-9: relative video URLs must fail decode (lossy-skipped),
+        // never publish an unplayable card.
+        let json = """
+        {"id": "rel", "creator_handle": "alice", "rank": 1, "video_url": "foo.mp4"}
+        """.data(using: .utf8)!
+        XCTAssertThrowsError(try JSONDecoder().decode(ReelItem.self, from: json))
+    }
+
     func testBookmarkItemStatusAndURL() {
         let item = BookmarkItem(
             reelID: "reel_01",

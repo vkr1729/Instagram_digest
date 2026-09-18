@@ -40,6 +40,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
     private var urlSession: URLSession!
     private var cancellables = Set<AnyCancellable>()
     private var watchdogResumeTask: Task<Void, Never>?
+    private var notificationTokens: [NSObjectProtocol] = []
 
     private var hasActiveDownloads: Bool {
         !queue.isEmpty || !inFlightTasks.isEmpty
@@ -153,6 +154,11 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         for (_, entry) in inFlightTasks {
             entry.task.suspend()
         }
+        // IOS-P2-11: surface the paused state so the sheet's .paused branch
+        // is reachable; drainQueue is gated on isSuspended so no extra work starts.
+        if case .downloading = state {
+            state = .paused
+        }
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
@@ -163,6 +169,10 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         }
         if hasActiveDownloads {
             UIApplication.shared.isIdleTimerDisabled = true
+        }
+        // Restore the downloading state before draining so the gate passes.
+        if case .paused = state {
+            state = .downloading(completed: completedInBatch, total: totalInBatch, currentReelID: inFlightTasks.values.first?.item.reel.id)
         }
         drainQueue()
     }
@@ -197,9 +207,14 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             let tasksToSuspend = Array(inFlightTasks.keys.prefix(excessCount))
             for taskID in tasksToSuspend {
                 if let entry = inFlightTasks.removeValue(forKey: taskID) {
-                    entry.task.cancel { resumeData in
-                        if let data = resumeData {
-                            self.persistResumeData(data, for: entry.item.id)
+                    // IOS-P0-2: cancel(handler:) runs on the URLSession
+                    // delegate queue, not MainActor. Hop before touching
+                    // actor state, and capture self weakly.
+                    entry.task.cancel { [weak self] resumeData in
+                        guard let data = resumeData else { return }
+                        let reelID = entry.item.id
+                        Task { @MainActor [weak self] in
+                            self?.persistResumeData(data, for: reelID)
                         }
                     }
                     queue.insert(entry.item, at: 0)
@@ -311,7 +326,6 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             }
             guard let entry = self.inFlightTasks.removeValue(forKey: downloadTask.taskIdentifier) else { return }
             let item = entry.item
-            self.removePersistedResumeData(for: item.id)
 
             do {
                 let partURL = LibraryPathResolver.shared.localPartFileURL(for: item.weekID, reelID: item.reel.id)
@@ -327,6 +341,11 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                     reelID: item.reel.id,
                     expectedSizeBytes: item.reel.sizeBytes
                 )
+
+                // IOS-P1-8: delete resume data only after the atomic
+                // promotion succeeds. A crash between the .part move and
+                // promotion must keep resume bytes for a cheap retry.
+                self.removePersistedResumeData(for: item.id)
 
                 self.completedInBatch += 1
             } catch {
@@ -386,41 +405,55 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             }
             .store(in: &cancellables)
 
-        NotificationCenter.default.addObserver(
-            forName: ProcessInfo.thermalStateDidChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.activeConcurrency = self.computeTargetConcurrency()
-                self.drainQueue()
+        // IOS-P2-10: store observer tokens so deinit can remove them;
+        // discarded tokens leak and double-fire drainQueue after re-init.
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: ProcessInfo.thermalStateDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.activeConcurrency = self.computeTargetConcurrency()
+                    self.drainQueue()
+                }
             }
-        }
+        )
     }
 
     private func setupLifecycleObservers() {
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.suspendQueue()
-            }
-        }
-
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.willEnterForegroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                if self.hasActiveDownloads {
-                    self.resumeQueue()
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.suspendQueue()
                 }
             }
+        )
+
+        notificationTokens.append(
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.willEnterForegroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if self.hasActiveDownloads {
+                        self.resumeQueue()
+                    }
+                }
+            }
+        )
+    }
+
+    deinit {
+        for token in notificationTokens {
+            NotificationCenter.default.removeObserver(token)
         }
     }
 }

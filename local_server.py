@@ -57,7 +57,39 @@ def _pipeline_busy() -> bool:
     with _EXPAND_LOCK:
         if _EXPAND_STATE["is_running"]:
             return True
-    return False
+    return _cross_process_pipeline_busy()
+
+
+def _cross_process_pipeline_busy() -> bool:
+    """True when a cron/manual CLI run holds data/.pipeline.lock (PY-P1-2).
+
+    The in-process _PIPELINE_LOCK cannot see separate processes; a stale lock
+    file (crash leftovers) must not block the dashboard forever, so any error
+    probing it fails open (returns False) and the worker's own
+    run_full_sync/run_expand lock still guards the race.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    try:
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(config.DATA_DIR / ".pipeline.lock"),
+                     os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return False
+    finally:
+        os.close(fd)
 
 
 def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
@@ -74,7 +106,17 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 "last_run": main_module.get_last_run_info(),
             }
 
-    if not _PIPELINE_LOCK.acquire(blocking=False):
+    # Cross-process probe FIRST (PY-P1-2): a cron/manual CLI run holds
+    # data/.pipeline.lock, which the in-process lock cannot see. Probing
+    # before acquiring keeps ownership unambiguous below.
+    cross_busy = _cross_process_pipeline_busy()
+    acquired = _PIPELINE_LOCK.acquire(blocking=False)
+    if not acquired or cross_busy:
+        if acquired:
+            try:
+                _PIPELINE_LOCK.release()
+            except RuntimeError:
+                pass
         with _SYNC_LOCK:
             snapshot = dict(_SYNC_STATE)
         return {
@@ -94,13 +136,12 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
     def _worker():
         try:
             logger.info("Background sync thread started: refreshing Chrome cookies...")
-            cookie_exp = config.ROOT_DIR / "cookie_exporter.py"
-            if cookie_exp.exists():
-                try:
-                    import subprocess
-                    subprocess.run([_cookie_python(), str(cookie_exp)], capture_output=True, text=True, timeout=25)
-                except Exception as c_err:
-                    logger.warning("Failed refreshing cookies before sync: %s", c_err)
+            if not refresh_cookies_or_abort(pipeline="ad-hoc-sync"):
+                with _SYNC_LOCK:
+                    _SYNC_STATE["is_running"] = False
+                    _SYNC_STATE["status"] = "failed"
+                    _SYNC_STATE["last_error"] = "cookie refresh failed; login session missing"
+                return
 
             last_run = main_module.get_last_run_info()
             since_ts = None
@@ -193,7 +234,15 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
                 "state": dict(_EXPAND_STATE),
             }
 
-    if not _PIPELINE_LOCK.acquire(blocking=False):
+    # Cross-process probe FIRST (PY-P1-2): see trigger_adhoc_sync_task.
+    cross_busy = _cross_process_pipeline_busy()
+    acquired = _PIPELINE_LOCK.acquire(blocking=False)
+    if not acquired or cross_busy:
+        if acquired:
+            try:
+                _PIPELINE_LOCK.release()
+            except RuntimeError:
+                pass
         with _EXPAND_LOCK:
             snapshot = dict(_EXPAND_STATE)
         return {
@@ -212,13 +261,12 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
     def _worker():
         try:
             logger.info("Background expand thread started for +%d reels...", count)
-            cookie_exp = config.ROOT_DIR / "cookie_exporter.py"
-            if cookie_exp.exists():
-                try:
-                    import subprocess
-                    subprocess.run([_cookie_python(), str(cookie_exp)], capture_output=True, text=True, timeout=25)
-                except Exception as c_err:
-                    logger.warning("Failed refreshing cookies before expand: %s", c_err)
+            if not refresh_cookies_or_abort(pipeline="expand"):
+                with _EXPAND_LOCK:
+                    _EXPAND_STATE["is_running"] = False
+                    _EXPAND_STATE["status"] = "failed"
+                    _EXPAND_STATE["last_error"] = "cookie refresh failed; login session missing"
+                return
 
             ret = main_module.run_expand(target_count=count, deploy=deploy)
             with _EXPAND_LOCK:
@@ -294,6 +342,39 @@ def refresh_cookies_status() -> dict[str, Any]:
         "has_sessionid": "sessionid" in cookies,
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def refresh_cookies_or_abort(pipeline: str) -> bool:
+    """Refresh Chrome cookies and validate a login session exists (PY-P1-6).
+
+    Returns True when the exporter ran AND cookies.json carries a sessionid.
+    Returns False otherwise, after raising the dashboard cookie-attention
+    banner: starting extraction on a known-dead session burns hours before
+    aborting at session validation, so workers must abort early instead.
+    Never raises.
+    """
+    try:
+        status = refresh_cookies_status()
+    except Exception as exc:
+        logger.warning("Cookie refresh before %s failed: %s", pipeline, exc)
+        return False
+    if not status.get("success"):
+        logger.warning("Cookie refresh before %s failed: %s", pipeline, status.get("error"))
+        try:
+            raise_cookie_attention(pipeline=pipeline,
+                                   reason="Cookie refresh failed before run; press refresh to verify the login")
+        except Exception:
+            pass
+        return False
+    if not status.get("has_sessionid"):
+        logger.warning("Cookie refresh before %s found no sessionid; aborting early.", pipeline)
+        try:
+            raise_cookie_attention(pipeline=pipeline,
+                                   reason="Chrome has no Instagram login session; log into instagram.com first")
+        except Exception:
+            pass
+        return False
+    return True
 
 
 def _schedule_server_shutdown(delay: float = 0.5) -> int:

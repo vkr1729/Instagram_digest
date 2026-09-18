@@ -1,5 +1,18 @@
 import Foundation
 
+/// Accepts only absolute http(s) URLs. `URL(string:)` also parses relative
+/// paths ("foo.mp4") and custom schemes, which fail later in URLSession /
+/// AVPlayer — reject them at decode time so the lossy decoders skip the
+/// entry instead of publishing an unplayable card (IOS-P2-9).
+func httpURL(from string: String?) -> URL? {
+    guard let string = string,
+          let url = URL(string: string),
+          let scheme = url.scheme?.lowercased(),
+          (scheme == "http" || scheme == "https"),
+          url.host != nil else { return nil }
+    return url
+}
+
 /// Codable root manifest returned by data.json on GitHub Pages or local cache.
 public struct DigestManifest: Sendable, Codable {
     public let weekId: String
@@ -58,6 +71,7 @@ public struct DigestManifest: Sendable, Codable {
 
         // Lossy decoding: one corrupt reel must never wipe the entire feed
         var decodedItems: [ReelItem] = []
+        var seenIDs = Set<String>()
         if var itemsContainer = try? container.nestedUnkeyedContainer(forKey: .items) {
             // Bounded loop: a decoder that fails to advance past a corrupt entry
             // must never spin forever on a hostile payload.
@@ -65,7 +79,11 @@ public struct DigestManifest: Sendable, Codable {
             while !itemsContainer.isAtEnd, guardCount < 10_000 {
                 guardCount += 1
                 if let reel = try? itemsContainer.decode(ReelItem.self) {
-                    decodedItems.append(reel)
+                    // IOS-P0-3: duplicate IDs crash ForEach(id:) in GridView.
+                    // Keep the first occurrence; drop later duplicates.
+                    if seenIDs.insert(reel.id).inserted {
+                        decodedItems.append(reel)
+                    }
                 } else {
                     // Advance past invalid item of any shape (object, array, primitive)
                     _ = try? itemsContainer.decode(AnyDecodableValue.self)
@@ -181,7 +199,7 @@ public struct BookmarkRemoteDTO: Sendable, Codable {
         var resolvedThumb: URL? = nil
         for key in [CodingKeys.thumbnailUrl, .altThumbnailUrl, .thumbnail, .poster] {
             if let str = try? container.decode(String.self, forKey: key),
-               let url = URL(string: str) {
+               let url = httpURL(from: str) {
                 resolvedThumb = url
                 break
             }
@@ -191,7 +209,7 @@ public struct BookmarkRemoteDTO: Sendable, Codable {
         var resolvedVideo: URL? = nil
         for key in [CodingKeys.videoUrl, .altVideoUrl, .r2Url] {
             if let str = try? container.decode(String.self, forKey: key),
-               let url = URL(string: str) {
+               let url = httpURL(from: str) {
                 resolvedVideo = url
                 break
             }
@@ -257,14 +275,19 @@ public enum LossyBookmarkList {
         if let strict = try? decoder.decode([BookmarkRemoteDTO].self, from: data) {
             return strict
         }
-        struct Wrapped: Decodable {
-            var bookmarks: [BookmarkRemoteDTO]?
-            var items: [BookmarkRemoteDTO]?
-            enum CodingKeys: String, CodingKey { case bookmarks, items }
-        }
-        if let wrapped = try? decoder.decode(Wrapped.self, from: data),
-           let list = wrapped.bookmarks ?? wrapped.items {
-            return list
+        // IOS-P1-9: the wrapped shape must be lossy too. Each element is
+        // re-encoded in isolation so one malformed entry can never poison a
+        // shared decoder and wipe the whole list.
+        if let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let arr = (raw["bookmarks"] ?? raw["items"]) as? [Any] {
+            var output: [BookmarkRemoteDTO] = []
+            for element in arr {
+                guard JSONSerialization.isValidJSONObject(element),
+                      let elData = try? JSONSerialization.data(withJSONObject: element),
+                      let dto = try? decoder.decode(BookmarkRemoteDTO.self, from: elData) else { continue }
+                output.append(dto)
+            }
+            return output
         }
         // Fully lossy element-by-element pass: malformed entries are skipped.
         var output: [BookmarkRemoteDTO] = []

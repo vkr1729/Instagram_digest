@@ -63,6 +63,10 @@ def _pipeline_file_lock() -> Iterator[None]:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = config.DATA_DIR / ".pipeline.lock"
     if fcntl is None:  # pragma: no cover - non-POSIX fallback
+        # PY-P2-1: no exclusion possible here — say so loudly instead of
+        # silently allowing concurrent digest mutations.
+        logger.warning("fcntl unavailable: cross-process pipeline lock disabled; "
+                       "avoid concurrent cron/manual/dashboard runs on this platform.")
         yield
         return
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
@@ -132,6 +136,20 @@ def _digest_item_count() -> int:
         return len(items) if isinstance(items, list) else 0
     except Exception:
         return 0
+
+
+def _persisted_digest_week() -> str:
+    """Return the run_date the persisted live digest points at ("" when missing/unreadable).
+
+    The Pages feed and the iOS app play this week's R2 keys until a new
+    save_digest_batch lands, so the JIT purger must never delete it first.
+    """
+    try:
+        payload = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+        week = payload.get("run_date") or ""
+        return week if isinstance(week, str) else ""
+    except Exception:
+        return ""
 
 
 # Sync progress stages that may be resumed. The load gate and the reuse gate
@@ -452,8 +470,14 @@ def _run_full_sync(
                             logger.info(
                                 "Ignoring candidates_cache.json (run parameters changed)."
                             )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # PY-P2-2: quarantine corrupt bytes so every retry stops
+                    # failing identically on the same torn file.
+                    _quarantine_corrupt(candidates_cache_file, exc)
+                    try:
+                        candidates_cache_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             if cache_hit:
                 # A fresh cache covers every creator post-gate; nothing to visit.
                 extraction_complete = True
@@ -596,9 +620,16 @@ def _run_full_sync(
                         "Viability gate failed: %d candidates (expected >=%d), %d/%d creators empty. Aborting.",
                         len(candidates), int(MIN_CANDIDATE_RATIO * expected_total), empty_total, len(per_source)
                     )
+                    # PY-P1-5: retire banked work instead of deleting it. A
+                    # transient empty-grid/soft-block (0 candidates) must not
+                    # destroy done_map/candidates a retry could resume; the
+                    # retire renames out of the sync_progress_*.json namespace
+                    # so neither this pipeline nor resume_pending.sh picks it
+                    # up, while bytes stay available for forensics.
                     for hopeless in {sync_checkpoint, sync_read_path}:
                         try:
-                            hopeless.unlink(missing_ok=True)
+                            if hopeless.exists():
+                                _retire_sync_file(hopeless, "viability gate failed")
                         except OSError:
                             pass
                     _alert_sync_abort(
@@ -878,15 +909,27 @@ def _run_full_sync(
 
         ranked_reels = budgeted_reels
 
-        # 5C & 5D: Just-In-Time Purge & Pre-Flight Quota Check
+        # 5C & 5D: Pre-Flight Quota Check, then Just-In-Time Purge as fallback
+        # PY-P0-1 ordering: the live digest still points at last week's R2
+        # keys until save_digest_batch lands below, so purging first turns any
+        # crash/quota abort between here and the save into a live-feed 404.
+        # Check against current usage first; purge only on quota failure (the
+        # new batch physically cannot fit otherwise), keep the persisted live
+        # week either way, and rely on the post-publish rolling purges below
+        # to reclaim the old week once the new digest is durable.
+        live_week = _persisted_digest_week()
+        keep_weeks = {live_week} if live_week and live_week != week_id else set()
         if config.R2_ACCOUNT_ID:
-            # Option A: Purge previous weeks' feed videos from R2 immediately before upload
-            storage_r2.purge_previous_weeks_videos(current_week_id=week_id)
             # Pre-flight quota check against actual known batch size
             if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
-                logger.error("Pre-flight quota check failed before upload. Aborting to protect Cloudflare free limits.")
-                _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
-                return 1
+                logger.warning(
+                    "Pre-flight quota check failed; JIT-purging previous weeks before aborting.")
+                storage_r2.purge_previous_weeks_videos(
+                    current_week_id=week_id, keep_week_ids=keep_weeks)
+                if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
+                    logger.error("Pre-flight quota check failed before upload. Aborting to protect Cloudflare free limits.")
+                    _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
+                    return 1
 
         # 5E: Parallel R2 Upload Phase
         existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
@@ -1461,6 +1504,26 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     return 0
 
 
+def _build_only(deploy: bool = False) -> int:
+    """Compile the static site from the live digest batch (lock must be held)."""
+    site_builder.build_site()
+    if deploy:
+        return _deploy_only()
+    return 0
+
+
+def _deploy_only() -> int:
+    """Deploy the compiled site to GitHub Pages (lock must be held)."""
+    if _digest_item_count() < MIN_DEPLOY_ITEMS:
+        logger.error(
+            "Digest has fewer than %d items; refusing to deploy over the previous digest.",
+            MIN_DEPLOY_ITEMS,
+        )
+        return 2
+    site_builder.deploy_to_gh_pages()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=f"Instagram Digest v{config.APP_VERSION} — Weekly High-Signal Reel Curator")
     parser.add_argument("--sync", action="store_true", help="Run full weekly extraction, ranking, and sync")
@@ -1492,29 +1555,24 @@ def main() -> int:
         extractor.sync_following_accounts(force=True)
         return 0
 
-    # Build only mode
+    # Build only mode (digest-mutating: reads the live batch while sync/expand
+    # may rewrite it — hold the same cross-process lock).
     if args.build_only:
-        site_builder.build_site()
-        if args.deploy:
-            if _digest_item_count() < MIN_DEPLOY_ITEMS:
-                logger.error(
-                    "Digest has fewer than %d items; refusing to deploy over the previous digest.",
-                    MIN_DEPLOY_ITEMS,
-                )
-                return 2
-            site_builder.deploy_to_gh_pages()
-        return 0
+        try:
+            with _pipeline_file_lock():
+                return _build_only(deploy=args.deploy)
+        except PipelineBusy as exc:
+            logger.error("%s; refusing to start.", exc)
+            return 3
 
     # Deploy only mode
     if args.deploy and not args.sync and not args.ad_hoc:
-        if _digest_item_count() < MIN_DEPLOY_ITEMS:
-            logger.error(
-                "Digest has fewer than %d items; refusing to deploy over the previous digest.",
-                MIN_DEPLOY_ITEMS,
-            )
-            return 2
-        site_builder.deploy_to_gh_pages()
-        return 0
+        try:
+            with _pipeline_file_lock():
+                return _deploy_only()
+        except PipelineBusy as exc:
+            logger.error("%s; refusing to start.", exc)
+            return 3
 
     days_back = args.days_back
     since_ts = None

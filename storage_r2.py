@@ -268,7 +268,10 @@ def purge_unreferenced_r2_videos() -> list[str]:
         return []
 
 
-def purge_previous_weeks_videos(current_week_id: str) -> list[str]:
+def purge_previous_weeks_videos(
+    current_week_id: str,
+    keep_week_ids: set[str] | None = None,
+) -> list[str]:
     """
     Purge previous weeks' video objects on Cloudflare R2 immediately before uploading a new batch.
 
@@ -279,7 +282,11 @@ def purge_previous_weeks_videos(current_week_id: str) -> list[str]:
     Safety Invariants:
     1. NEVER purges keys under bookmarks/ (governed exclusively by Worker/D1 cap).
     2. NEVER purges keys under videos/{current_week_id}/ (keeps new/resumed files safe).
-    3. Strictly scoped to prefix "videos/".
+    3. NEVER purges keys under videos/{live week}/ when keep_week_ids names the
+       week the persisted digest still points at: a crash or quota abort between
+       this purge and the new save_digest_batch must leave live playback working
+       (PY-P0-1). The kept week is reclaimed by the post-publish rolling purges.
+    4. Strictly scoped to prefix "videos/".
     """
     s3 = get_s3_client()
     if not s3:
@@ -290,7 +297,10 @@ def purge_previous_weeks_videos(current_week_id: str) -> list[str]:
         logger.warning("No current_week_id provided; aborting previous-week purge.")
         return []
 
-    keep_prefix = f"videos/{current_week_id}/"
+    keep_prefixes = {f"videos/{current_week_id}/"}
+    for wk in keep_week_ids or ():
+        if wk and isinstance(wk, str):
+            keep_prefixes.add(f"videos/{wk}/")
     stale_keys: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
 
@@ -300,7 +310,7 @@ def purge_previous_weeks_videos(current_week_id: str) -> list[str]:
                 key = obj.get("Key", "")
                 if not key.startswith("videos/") or key.startswith("bookmarks/"):
                     continue
-                if key.startswith(keep_prefix):
+                if any(key.startswith(prefix) for prefix in keep_prefixes):
                     continue
                 stale_keys.append(key)
 
@@ -422,12 +432,38 @@ def upload_reel_to_r2(
 
         try:
             logger.info("Uploading %s to R2 (%s)...", local_file.name, r2_key)
-            s3.upload_file(
-                str(local_file),
-                config.R2_BUCKET_NAME,
-                r2_key,
-                ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=1209600, immutable"},
-            )
+            last_exc: Exception | None = None
+            for attempt in range(1, 4):
+                try:
+                    s3.upload_file(
+                        str(local_file),
+                        config.R2_BUCKET_NAME,
+                        r2_key,
+                        ExtraArgs={"ContentType": "video/mp4", "CacheControl": "public, max-age=1209600, immutable"},
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    # Refresh the client on connection-level failures: a stale
+                    # pooled connection fails every retry identically (PY-P2-7).
+                    try:
+                        from botocore.exceptions import EndpointConnectionError, ConnectionClosedError
+                        if isinstance(exc, (EndpointConnectionError, ConnectionClosedError)):
+                            fresh = get_s3_client()
+                            if fresh is not None:
+                                s3 = fresh
+                    except ImportError:
+                        pass
+                    if attempt < 3:
+                        import random as _random
+                        import time as _time
+                        wait = (2.0 ** attempt) + _random.uniform(0, 1.0)
+                        logger.warning("R2 upload attempt %d/3 failed for %s: %s; retrying in %.1fs.",
+                                       attempt, key_name, exc, wait)
+                        _time.sleep(wait)
+            if last_exc is not None:
+                raise last_exc
             logger.info("Uploaded successfully: %s", public_url)
             if existing_keys is not None:
                 with _R2_KEYS_LOCK:

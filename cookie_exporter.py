@@ -74,16 +74,38 @@ def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
 
 
 def _secure_write_text(path: Path, content: str) -> None:
-    """Write a credential-bearing file readable only by its owner (0600)."""
-    # Create restricted from the first byte: no world-readable window.
+    """Write a credential-bearing file atomically, readable only by its owner (0600).
+
+    A torn cookies.json (power loss mid-write) fails _inject_cookies and aborts
+    the next run, so the write goes temp + fsync + os.replace with a directory
+    fsync (PY-P1-10). The temp is created in the target directory so the
+    replace is atomic on the same filesystem.
+    """
+    import tempfile as _tempfile
+
     data = content.encode("utf-8")
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = _tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.tmp-")
     try:
+        # Restrict from the first byte: no world-readable window.
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+        except OSError:
+            dir_fd = -1
+        if dir_fd >= 0:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except BaseException:
         try:
-            os.close(fd)
+            os.unlink(tmp_name)
         except OSError:
             pass
         raise
@@ -122,12 +144,15 @@ def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
     with tempfile.NamedTemporaryFile() as tmp:
         shutil.copy2(cookie_db_path, tmp.name)
         conn = sqlite3.connect(tmp.name)
-        c = conn.cursor()
-        c.execute(
-            "SELECT host_key, name, path, expires_utc, is_secure, encrypted_value "
-            "FROM cookies WHERE host_key LIKE '%instagram.com%'"
-        )
-        rows = c.fetchall()
+        try:
+            c = conn.cursor()
+            c.execute(
+                "SELECT host_key, name, path, expires_utc, is_secure, encrypted_value "
+                "FROM cookies WHERE host_key LIKE '%instagram.com%'"
+            )
+            rows = c.fetchall()
+        finally:
+            conn.close()
         for host, name, path, expires, is_secure, enc_val in rows:
             enc_bytes = bytes(enc_val)
             val = decrypt_chrome_cookie(enc_bytes, key, iv)
@@ -145,7 +170,6 @@ def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
                 sec = "TRUE" if is_secure else "FALSE"
                 exp = str(int(expires / 1000000) if expires else 2147483647)
                 netscape_lines.append(f"{host}\t{flag}\t{path}\t{sec}\t{exp}\t{name}\t{val}")
-        conn.close()
 
     json_path = output_dir / "cookies.json"
     txt_path = output_dir / "cookies.txt"

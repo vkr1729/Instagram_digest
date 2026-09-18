@@ -187,7 +187,7 @@ public struct DownloadAllSheet: View {
                                 }
                             }
 
-                        case .completed, .failed, .paused:
+                        case .completed, .paused:
                             Button {
                                 dismiss()
                             } label: {
@@ -200,6 +200,35 @@ public struct DownloadAllSheet: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
                             .accessibilityIdentifier("DownloadDoneButton")
+
+                        case .failed:
+                            VStack(spacing: 12) {
+                                Button {
+                                    coordinator.startDownloadAll(reels: reels, weekID: weekID)
+                                } label: {
+                                    Text("Retry")
+                                        .font(.system(size: 16, weight: .bold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 16)
+                                        .background(Color.white)
+                                        .foregroundColor(.black)
+                                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                                }
+                                .accessibilityIdentifier("DownloadRetryButton")
+
+                                Button {
+                                    dismiss()
+                                } label: {
+                                    Text("Done")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 14)
+                                        .background(Color.white.opacity(0.15))
+                                        .foregroundColor(.white)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .accessibilityIdentifier("DownloadDoneButton")
+                            }
                         }
                     }
                     .padding(.horizontal, 20)

@@ -80,6 +80,7 @@ public struct FeedPagerView: UIViewControllerRepresentable {
         weak var viewController: FeedCollectionViewController?
         private var settleWorkItem: DispatchWorkItem?
         public var lastActiveIndex: Int = 0
+        private var lastBoundaryPage: Int = -1
         private(set) var cellRegistration: UICollectionView.CellRegistration<FeedCell, ReelItem>!
 
         private let hapticGenerator = UIImpactFeedbackGenerator(style: .medium)
@@ -255,7 +256,16 @@ public struct FeedPagerView: UIViewControllerRepresentable {
         }
 
         public func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            viewController?.reattachPlayerToVisibleCells()
+            // IOS-P2-16: didScroll fires at 60fps; reattaching layers on
+            // every tick churns slot.playerLayer. Only reattach when crossing
+            // a page boundary (the visible set actually changed).
+            let height = scrollView.bounds.height
+            guard height > 0 else { return }
+            let page = Int(round(scrollView.contentOffset.y / height))
+            if page != lastBoundaryPage {
+                lastBoundaryPage = page
+                viewController?.reattachPlayerToVisibleCells()
+            }
         }
 
         private func handleScrollSettle(_ scrollView: UIScrollView, immediate: Bool = false) {
@@ -264,7 +274,16 @@ public struct FeedPagerView: UIViewControllerRepresentable {
                 guard let self = self else { return }
                 guard !self.parent.reels.isEmpty else { return }
                 if let vc = self.viewController, vc.pendingInitialScrollIndex != nil {
-                    return
+                    // IOS-P2-17: a pending launch-resume scroll must not
+                    // swallow this genuine user settle. Consume pending at
+                    // the settled page, then process the settle normally.
+                    let height = scrollView.bounds.height
+                    guard height > 0 else { return }
+                    let page = max(0, min(self.parent.reels.count - 1,
+                                          Int(round(scrollView.contentOffset.y / height))))
+                    vc.pendingInitialScrollIndex = nil
+                    vc.updateCurrentIndex(page)
+                    self.lastBoundaryPage = page
                 }
                 let height = scrollView.bounds.height
                 guard height > 0 else { return }
@@ -338,9 +357,11 @@ public final class FeedCollectionViewController: UICollectionViewController {
             let seekPanGesture = SeekPanGestureRecognizer(target: coord, action: #selector(FeedPagerView.Coordinator.handleSeekPan(_:)))
             seekPanGesture.delegate = coord
 
-            tapGesture.require(toFail: longPressGesture)
-            seekPanGesture.require(toFail: longPressGesture)
-
+            // IOS-P2-15: no require(toFail: longPress). The 0.5s
+            // minimumPressDuration delayed every tap and every seek start.
+            // Disambiguation is already handled: SeekPan fails itself on
+            // vertical dominance, and handleTap ignores taps for 0.1s after
+            // a long-press zone fires via suppressNextTap.
             collectionView.addGestureRecognizer(tapGesture)
             collectionView.addGestureRecognizer(longPressGesture)
             collectionView.addGestureRecognizer(seekPanGesture)
@@ -441,7 +462,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
 
     /// Only reloads data when reels collection identity actually changes (prevents reloadData churn)
     public func updateReelsIfNeeded(_ newReels: [ReelItem], targetIndex: Int? = nil) {
-        if currentReels != newReels {
+        // IOS-P2-13: compare IDs only. Full-struct equality reloads on
+        // caption/size churn with the same playlist, flashing the feed.
+        if currentReels.map(\.id) != newReels.map(\.id) {
             self.currentReels = newReels
             self.currentAttachedIndex = targetIndex ?? -1
             // Reset so scrollToCurrentIndexIfNeeded(0) fires on category switch

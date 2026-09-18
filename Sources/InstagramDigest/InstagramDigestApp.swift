@@ -173,6 +173,11 @@ struct FeedMainView: View {
                         isCaptionExpanded = false
                         saveLastActiveReel(index: newIndex)
                         pool.setCurrentIndex(newIndex)
+                        if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                isChromeVisible = !pool.isPlaying
+                            }
+                        }
                     },
                     onScrollEnded: { uptime in
                         lastScrollEndTime = uptime
@@ -186,8 +191,10 @@ struct FeedMainView: View {
                             return
                         }
                         pool.togglePlayPause()
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            isChromeVisible = !pool.isPlaying
+                        if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                isChromeVisible = !pool.isPlaying
+                            }
                         }
                     },
                     onSeekPreview: { fraction in
@@ -225,8 +232,10 @@ struct FeedMainView: View {
                     isCaptionExpanded: isCaptionExpanded,
                     onTogglePlayPause: {
                         pool.togglePlayPause()
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            isChromeVisible = !pool.isPlaying
+                        if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                isChromeVisible = !pool.isPlaying
+                            }
                         }
                     },
                     onTriggerBookmark: {
@@ -341,6 +350,12 @@ struct FeedMainView: View {
         }
         .onChange(of: showBookmarksSheet) { _, isPresented in
             resumeFeedAfterSheet(isPresented: isPresented)
+        }
+        .onChange(of: pool.isPlaying) { _, isPlaying in
+            guard !ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isChromeVisible = !isPlaying
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             saveLastActiveReel(index: activeIndex)
@@ -457,6 +472,11 @@ struct FeedMainView: View {
                 self.activeIndex = resumeIndex
                 if !fetched.items.isEmpty {
                     self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: resumeIndex)
+                    if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            self.isChromeVisible = !self.pool.isPlaying
+                        }
+                    }
                 }
                 // Load historical watched state immediately after manifest arrives
                 refreshWatchedReels()
@@ -531,6 +551,11 @@ struct FeedMainView: View {
         // All three sheets are mutually exclusive, so any dismiss resumes.
         if !showGridSheet && !showDownloadSheet && !showBookmarksSheet {
             pool.play()
+            if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    isChromeVisible = false
+                }
+            }
         }
     }
 
@@ -636,6 +661,12 @@ struct FeedMainView: View {
         activeIndex = targetIndex
         saveLastActiveReel(index: targetIndex)
         pool.setCurrentIndex(targetIndex)
+        wasPlayingBeforeSheet = true
+        if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isChromeVisible = false
+            }
+        }
     }
 
     private func refreshWatchedReels() {

@@ -4,6 +4,9 @@ import SwiftData
 /// Serialized async actor managing local disk cache, LivePinSet protection,
 /// 1.5 GB bookmark cap with LRU eviction, and .part download atomic promotion.
 public actor MediaCacheManager {
+    // IOS-P0-1: SwiftData ModelContext is MainActor-confined. Every method
+    // below that touches the context is @MainActor; pure file-I/O helpers
+    // (evictLocalFeedFile, promotePartFile, diskFileSize) stay on the actor.
     public static let shared = MediaCacheManager()
 
     /// 1.5 GB cap for offline bookmarked videos
@@ -54,6 +57,7 @@ public actor MediaCacheManager {
     /// Strictly verifies files in the isolated Bookmarks directory.
     /// If a previously cached bookmark file is missing, marks localStatus = .evicted.
     /// Never auto-promotes an evicted bookmark to cached from feed downloads.
+    @MainActor
     public func reconcileBookmarkStorageLedger() async {
         guard let container = modelContainer else { return }
         let context = ModelContext(container)
@@ -92,6 +96,7 @@ public actor MediaCacheManager {
 
     /// Returns the live set of reel IDs that must NEVER be deleted from disk:
     /// LivePinSet = { reelID | BookmarkItem.localStatus == .cached && file exists } ∪ AVPlayerPool.activeReelIDs
+    @MainActor
     public func computeLivePinSet() async -> Set<String> {
         var pinSet = activeVideoPoolReelIDs
 
@@ -113,6 +118,7 @@ public actor MediaCacheManager {
     }
 
     /// Purges an older week's cache directory during weekly rollover, strictly protecting the LivePinSet.
+    @MainActor
     public func purgeOldWeekDirectory(oldWeekID: String) async {
         let livePins = await computeLivePinSet()
         let sanitizedPins = Set(livePins.map { LibraryPathResolver.sanitizeComponent($0) })
@@ -162,6 +168,10 @@ public actor MediaCacheManager {
 
     /// Serialized local file eviction for corrupted local feed files (called by failure ladder)
     public func evictLocalFeedFile(weekID: String, reelID: String) {
+        // IOS-P1-1: never evict a reel the pool is actively playing or
+        // preloading, and never evict when an isolated bookmark copy exists
+        // (delete only the corrupt feed copy, keep the bookmark intact).
+        guard !activeVideoPoolReelIDs.contains(reelID) else { return }
         let fileURL = pathResolver.localFileURL(for: weekID, reelID: reelID)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try? FileManager.default.removeItem(at: fileURL)
@@ -172,10 +182,15 @@ public actor MediaCacheManager {
 
     /// Ensures space is available under the 1.5 GB cap before saving an offline bookmark.
     /// Pre-rejects files larger than the cap. Evicts oldest non-bound bookmarks by lastAccessedAt.
+    @MainActor
     public func ensureSpaceForBookmark(incomingBytes: Int64) async throws {
         // Pre-reject oversized admissions before touching existing files
         guard incomingBytes <= Self.maxBookmarkStorageBytes else {
             throw CacheError.insufficientStorage("Bookmark item exceeds maximum 1.5 GB capacity.")
+        }
+        // IOS-P2-4: never evict into a purge in flight.
+        guard !isPurging else {
+            throw CacheError.insufficientStorage("Bookmark storage purge in progress; retry shortly.")
         }
 
         if totalBookmarkBytes + incomingBytes <= Self.maxBookmarkStorageBytes {
@@ -219,6 +234,9 @@ public actor MediaCacheManager {
                     // Item removal failed, skip ledger decrement
                 }
             } else {
+                // IOS-P2-1: missing file must also clear the ledger share,
+                // otherwise the cap stays inflated until next launch.
+                totalBookmarkBytes = max(0, totalBookmarkBytes - candidate.sizeBytes)
                 candidate.localStatus = .evicted
             }
         }
@@ -232,7 +250,12 @@ public actor MediaCacheManager {
 
     /// Keep Offline action for a bookmark by ID: ensures space and copies media file to Bookmarks directory.
     /// Operates completely within actor context to avoid non-Sendable @Model crossing actor boundaries.
+    @MainActor
     public func keepBookmarkOffline(weekID: String, reelID: String, fallbackSizeBytes: Int64 = 0) async throws {
+        // IOS-P2-4: a purge in flight may delete the destination mid-copy.
+        guard !isPurging else {
+            throw CacheError.insufficientStorage("Bookmark storage purge in progress; retry shortly.")
+        }
         let fm = FileManager.default
         let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
 
@@ -252,9 +275,15 @@ public actor MediaCacheManager {
                 item.localStatus = .cached
                 if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
                     item.sizeBytes = size
-                    self.totalBookmarkBytes += size
+                    do {
+                        try context.save()
+                        self.totalBookmarkBytes += size
+                    } catch {
+                        context.rollback()
+                    }
+                } else {
+                    try? context.save()
                 }
-                try? context.save()
             }
             return
         }
@@ -271,22 +300,25 @@ public actor MediaCacheManager {
             // Perform disk copy off-actor to avoid blocking actor during large file I/O
             let dest = bookmarkDestURL
             let src = feedURL
+            let resolver = self.pathResolver
             try await Task.detached {
                 let fileMgr = FileManager.default
-                try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                try resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
                 if fileMgr.fileExists(atPath: dest.path) {
                     try? fileMgr.removeItem(at: dest)
                 }
                 try fileMgr.copyItem(at: src, to: dest)
-                try LibraryPathResolver.shared.applyProtectionAndBackupExclusion(to: dest)
+                try resolver.applyProtectionAndBackupExclusion(to: dest)
             }.value
 
             item.localStatus = .cached
             item.sizeBytes = fileSize
             item.lastAccessedAt = Date()
-            self.totalBookmarkBytes += fileSize
             do {
                 try context.save()
+                // IOS-P1-2: ledger moves only after the DB save succeeds;
+                // a rollback must not leave phantom bytes counted.
+                self.totalBookmarkBytes += fileSize
             } catch {
                 context.rollback()
             }
@@ -295,26 +327,34 @@ public actor MediaCacheManager {
             let estimatedBytes = item.sizeBytes > 0 ? item.sizeBytes : (fallbackSizeBytes > 0 ? fallbackSizeBytes : 10_000_000)
             try await ensureSpaceForBookmark(incomingBytes: estimatedBytes)
 
-            let (tempURL, _) = try await URLSession.shared.download(from: remoteURL)
+            // IOS-P2-3: bounded session so a stalled worker cannot hang
+            // keepBookmarkOffline forever (shared session has no timeouts).
+            let boundedConfig = URLSessionConfiguration.ephemeral
+            boundedConfig.timeoutIntervalForRequest = 15
+            boundedConfig.timeoutIntervalForResource = 60
+            let boundedSession = URLSession(configuration: boundedConfig)
+            let (tempURL, _) = try await boundedSession.download(from: remoteURL)
             let dest = bookmarkDestURL
             let actualBytes: Int64 = Self.diskFileSize(atPath: tempURL.path) ?? estimatedBytes
+            let resolver = self.pathResolver
 
             try await Task.detached {
                 let fileMgr = FileManager.default
-                try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                try resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
                 if fileMgr.fileExists(atPath: dest.path) {
                     try? fileMgr.removeItem(at: dest)
                 }
                 try fileMgr.moveItem(at: tempURL, to: dest)
-                try LibraryPathResolver.shared.applyProtectionAndBackupExclusion(to: dest)
+                try resolver.applyProtectionAndBackupExclusion(to: dest)
             }.value
 
             item.localStatus = .cached
             item.sizeBytes = actualBytes
             item.lastAccessedAt = Date()
-            self.totalBookmarkBytes += actualBytes
             do {
                 try context.save()
+                // IOS-P1-2: ledger moves only after the DB save succeeds.
+                self.totalBookmarkBytes += actualBytes
             } catch {
                 context.rollback()
             }
@@ -324,6 +364,7 @@ public actor MediaCacheManager {
     }
 
     /// Synchronizes remote bookmark manifests into SwiftData without downgrading localStatus
+    @MainActor
     public func syncRemoteBookmarks(dtos: [BookmarkRemoteDTO]) async {
         guard let container = modelContainer else { return }
         let context = ModelContext(container)
@@ -332,12 +373,16 @@ public actor MediaCacheManager {
         do {
             let descriptor = FetchDescriptor<BookmarkItem>()
             let existingList = try context.fetch(descriptor)
-            // Duplicate-safe map: pre-existing duplicate reelIDs must never fatalError.
+            // Duplicate-safe map: pre-existing duplicate reelIDs collapse to
+            // the first row; extras are deleted so the unique constraint holds
+            // on disk instead of persisting forever (IOS-P2-12).
             var existingMap: [String: BookmarkItem] = [:]
             existingMap.reserveCapacity(existingList.count)
             for item in existingList {
                 if existingMap[item.reelID] == nil {
                     existingMap[item.reelID] = item
+                } else {
+                    context.delete(item)
                 }
             }
 
@@ -382,6 +427,7 @@ public actor MediaCacheManager {
     }
 
     /// Serialized deletion of a bookmark's offline file (avoids orphaned files on unbookmark or delete)
+    @MainActor
     public func deleteBookmarkFile(reelID: String) {
         let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
         let fm = FileManager.default
@@ -390,6 +436,24 @@ public actor MediaCacheManager {
                 self.totalBookmarkBytes = max(0, self.totalBookmarkBytes - size)
             }
             try? fm.removeItem(at: bookmarkDestURL)
+        }
+        // IOS-P1-5: sync the DB row so the UI stops showing "Saved offline"
+        // and computeLivePinSet stops pinning a deleted file.
+        if let container = modelContainer {
+            let context = ModelContext(container)
+            let descriptor = FetchDescriptor<BookmarkItem>(
+                predicate: #Predicate { $0.reelID == reelID }
+            )
+            if let item = (try? context.fetch(descriptor))?.first,
+               item.localStatus != .evicted {
+                item.localStatus = .evicted
+                item.sizeBytes = 0
+                do {
+                    try context.save()
+                } catch {
+                    context.rollback()
+                }
+            }
         }
     }
 
@@ -401,14 +465,18 @@ public actor MediaCacheManager {
     /// 3. Deletes completed cached bookmark MP4s from Bookmarks directory.
     /// 4. Updates evicted rows in SwiftData.
     /// 5. Resets totalBookmarkBytes ledger, resumes download queue, and resets isPurging.
+    @MainActor
     public func freeBookmarkStorage() async {
         isPurging = true
 
         // 1. Suspend downloads
         await downloadSuspensionHandler?(true)
+        // IOS-P1-6: every exit path resumes downloads and clears the flag.
+        defer {
+            self.isPurging = false
+        }
 
         guard let container = modelContainer else {
-            isPurging = false
             await downloadSuspensionHandler?(false)
             return
         }
@@ -419,7 +487,6 @@ public actor MediaCacheManager {
         )
 
         guard let bookmarks = try? context.fetch(descriptor) else {
-            isPurging = false
             await downloadSuspensionHandler?(false)
             return
         }
@@ -441,8 +508,14 @@ public actor MediaCacheManager {
             if fm.fileExists(atPath: fileURL.path) {
                 try? fm.removeItem(at: fileURL)
             }
-
-            bookmark.localStatus = .evicted
+            // IOS-P1-7: only mark evicted when the file is actually gone. A
+            // failed delete must keep the row cached (and counted) so the
+            // 1.5 GB cap cannot be bypassed by phantom evictions.
+            if !fm.fileExists(atPath: fileURL.path) {
+                bookmark.localStatus = .evicted
+            } else if let size = Self.diskFileSize(atPath: fileURL.path) {
+                remainingBytes += size
+            }
         }
 
         try? context.save()
@@ -450,7 +523,6 @@ public actor MediaCacheManager {
 
         // Resume downloads and clear purging flag
         await downloadSuspensionHandler?(false)
-        self.isPurging = false
     }
 
     // MARK: - .part File Promotion & Validation
@@ -479,7 +551,11 @@ public actor MediaCacheManager {
         }
 
         if let expected = expectedSizeBytes, expected > 0 {
-            if actualSize != expected {
+            // IOS-P1-3: manifest sizeBytes is often an estimate, so require
+            // the file to be within 10% (or 1 MB) instead of exact equality.
+            // Strict equality discarded valid downloads and retried 3x.
+            let lowerBound = min(Int64(Double(expected) * 0.9), expected - 1_000_000)
+            if actualSize < max(1, lowerBound) {
                 try? fm.removeItem(at: temporaryURL)
                 throw CacheError.sizeMismatch(expected: expected, actual: actualSize)
             }
@@ -490,7 +566,12 @@ public actor MediaCacheManager {
 
         // Atomic replacement via replaceItemAt or atomic move
         if fm.fileExists(atPath: destinationURL.path) {
-            _ = try? fm.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+            // IOS-P1-4: a failed replace must surface, never silently leave
+            // the old/corrupt destination while reporting success.
+            guard let _ = try? fm.replaceItemAt(destinationURL, withItemAt: temporaryURL) else {
+                try? fm.removeItem(at: temporaryURL)
+                throw CacheError.corruptedFile("Atomic replace failed for \(reelID)")
+            }
         } else {
             try fm.moveItem(at: temporaryURL, to: destinationURL)
         }

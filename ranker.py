@@ -248,19 +248,23 @@ def save_digest_batch(ranked_items: list[dict[str, Any]], run_date: str | None =
     if not run_date:
         run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    now_iso = datetime.now(timezone.utc).isoformat()
     payload = {
         "run_date": run_date,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now_iso,
+        "generated_at": now_iso,
         "count": len(ranked_items),
         "items": ranked_items,
     }
-    atomic_io.durable_write_json(config.DIGEST_BATCH_FILE, payload)
-
-    # Also archive by week_id for multi-week switching
+    # Archive first, then the live batch pointer (PY-P2-8): a crash between
+    # the two writes must leave the archive ahead, never the live batch
+    # ahead of the archive (that confuses the orphan-purge week resolution).
     if hasattr(config, "DIGESTS_DIR"):
         config.DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
         archive_path = config.DIGESTS_DIR / f"{run_date}.json"
         atomic_io.durable_write_json(archive_path, payload)
+
+    atomic_io.durable_write_json(config.DIGEST_BATCH_FILE, payload)
 
     logger.info("Saved Top %d digest batch to %s", len(ranked_items), config.DIGEST_BATCH_FILE)
     return config.DIGEST_BATCH_FILE

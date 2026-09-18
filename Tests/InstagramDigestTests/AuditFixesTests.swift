@@ -73,6 +73,40 @@ final class AuditFixesTests: XCTestCase {
         XCTAssertEqual(dtos.map { $0.id }, ["wrapped_1"])
     }
 
+    func testLossyBookmarkListSkipsBadEntryInWrappedShape() throws {
+        // IOS-P1-9: one malformed entry in the wrapped shape must not wipe the list.
+        let json = """
+        {
+            "bookmarks": [
+                {
+                    "id": "w_good",
+                    "creator_handle": "erin",
+                    "video_url": "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/w_good.mp4"
+                },
+                {"id": "w_bad", "creator_handle": "mallory"},
+                {
+                    "id": "w_good2",
+                    "creator_handle": "frank",
+                    "video_url": "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/w_good2.mp4"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let dtos = try LossyBookmarkList.decode(from: json)
+        XCTAssertEqual(dtos.map { $0.id }, ["w_good", "w_good2"])
+    }
+
+    func testBookmarkDTORejectsRelativeVideoURL() throws {
+        // IOS-P2-9: a relative bookmark video URL invalidates the entry; the
+        // lossy list skips it (empty result, no throw for array shapes).
+        let json = """
+        [{"id": "rel_bm", "creator_handle": "alice", "video_url": "foo.mp4"}]
+        """.data(using: .utf8)!
+        let dtos = try LossyBookmarkList.decode(from: json)
+        XCTAssertTrue(dtos.isEmpty)
+    }
+
     // MARK: - Duplicate-safe bookmark sync
 
     func testSyncRemoteBookmarksDedupesRepeatedIDs() async throws {

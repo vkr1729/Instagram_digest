@@ -15,7 +15,10 @@ public final class SeekPanGestureRecognizer: UIPanGestureRecognizer {
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
         if let touch = touches.first {
-            initialTouchLocation = touch.location(in: view)
+            // IOS-P2-18: window space, matching the handler (which uses
+            // view.window). Collection-view space is shifted by contentOffset,
+            // so vertical scroll inflated Δy and falsely failed seeks.
+            initialTouchLocation = touch.location(in: view?.window ?? view)
         }
         isDisambiguated = false
     }
@@ -24,7 +27,7 @@ public final class SeekPanGestureRecognizer: UIPanGestureRecognizer {
         super.touchesMoved(touches, with: event)
         guard !isDisambiguated, let touch = touches.first else { return }
 
-        let current = touch.location(in: view)
+        let current = touch.location(in: view?.window ?? view)
         let deltaX = abs(current.x - initialTouchLocation.x)
         let deltaY = abs(current.y - initialTouchLocation.y)
 

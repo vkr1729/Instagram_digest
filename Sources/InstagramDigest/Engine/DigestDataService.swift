@@ -50,6 +50,7 @@ public actor DigestDataService {
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
                 // Cache to disk
+                try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
                 try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
                 try? data.write(to: cacheFileURL, options: .atomic)
                 return manifest
@@ -82,19 +83,36 @@ public actor DigestDataService {
         throw URLError(.cannotConnectToHost)
     }
 
-    /// Fetches remote bookmarks manifest from Cloudflare R2 worker
+    /// Fetches remote bookmarks manifest from Cloudflare R2 worker.
+    /// Falls back to the last good disk cache (mirroring fetchManifest) so a
+    /// flaky worker serves stale bookmarks instead of an empty list.
     public func fetchRemoteBookmarks(from url: URL = defaultBookmarksURL) async throws -> [BookmarkRemoteDTO] {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 15.0
+        let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent("bookmarks_cache.json")
 
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        do {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.timeoutInterval = 15.0
+
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+
+            // Lossy decode: one malformed R2 entry must not invalidate the whole list.
+            let dtos = try LossyBookmarkList.decode(from: data)
+            try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
+            try? data.write(to: cacheFileURL, options: .atomic)
+            return dtos
+        } catch {
+            // Offline fallback: last good cache wins over an empty list.
+            if FileManager.default.fileExists(atPath: cacheFileURL.path),
+               let cachedData = try? Data(contentsOf: cacheFileURL),
+               let cached = try? LossyBookmarkList.decode(from: cachedData) {
+                return cached
+            }
+            throw error
         }
-
-        // Lossy decode: one malformed R2 entry must not invalidate the whole list.
-        return try LossyBookmarkList.decode(from: data)
     }
 
     public static let defaultBookmarkApiBase = URL(string: "https://ig-digest-api.kedarvreddy.workers.dev")!

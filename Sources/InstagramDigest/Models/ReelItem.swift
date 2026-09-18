@@ -104,16 +104,19 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
             ?? (try? container.decode(String.self, forKey: .altRankDisplay))
         self.rankDisplay = rankDisp ?? String(format: "#%02d", self.rank)
 
-        // Resolve video URL from multiple candidate keys
+        // Resolve video URL from multiple candidate keys (absolute http(s) only)
         var resolvedVideoURL: URL? = nil
-        if let str = try? container.decode(String.self, forKey: .videoUrl), let url = URL(string: str) {
-            resolvedVideoURL = url
-        } else if let str = try? container.decode(String.self, forKey: .altVideoUrl), let url = URL(string: str) {
-            resolvedVideoURL = url
-        } else if let str = try? container.decode(String.self, forKey: .r2Url), let url = URL(string: str) {
-            resolvedVideoURL = url
-        } else if let str = try? container.decode(String.self, forKey: .localUrl), let url = URL(string: str) {
-            resolvedVideoURL = url
+        if let str = try? container.decode(String.self, forKey: .videoUrl) {
+            resolvedVideoURL = httpURL(from: str)
+        }
+        if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .altVideoUrl) {
+            resolvedVideoURL = httpURL(from: str)
+        }
+        if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .r2Url) {
+            resolvedVideoURL = httpURL(from: str)
+        }
+        if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .localUrl) {
+            resolvedVideoURL = httpURL(from: str)
         }
 
         guard let validVideoURL = resolvedVideoURL else {
@@ -128,7 +131,8 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         // Resolve thumbnail URL, preferring stable GitHub Pages CDN over expired fbcdn links
         var resolvedThumb: URL? = nil
         for key in [CodingKeys.thumbnailUrl, .altThumbnailUrl, .camelThumbnailUrl, .poster] {
-            if let str = try? container.decode(String.self, forKey: key), let url = URL(string: str) {
+            if let str = try? container.decode(String.self, forKey: key),
+               let url = httpURL(from: str) {
                 if url.host?.contains("fbcdn.net") != true {
                     resolvedThumb = url
                     break

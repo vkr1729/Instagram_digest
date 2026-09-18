@@ -238,6 +238,11 @@ public struct ReelCardOverlayView: View {
                 }
             }
             .opacity(isChromeVisible ? 1.0 : 0.0)
+            // Only the interactive rows (buttons, caption) claim touches:
+            // the VStack has no background so gaps, the Spacer and the
+            // progress bar (allowsHitTesting(false) above) pass horizontal
+            // seek pans through to the collection view (IOS-P1-10 verified:
+            // no container-level blocker; controls must keep their taps).
             .allowsHitTesting(isChromeVisible)
             .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
         }
@@ -267,7 +272,19 @@ public struct PlayerLayerView: UIViewRepresentable {
     }
 
     public func updateUIView(_ uiView: PlayerContainerView, context: Context) {
-        AVPlayerPool.shared.attachLayer(uiView.playerLayer, forSlotIndex: slotIndex)
+        // IOS-P2-14: progress ticks (2x/s) must not churn the layer binding.
+        let pool = AVPlayerPool.shared
+        let expectedPlayer: AVPlayer? = {
+            switch slotIndex {
+            case 0: return pool.slotPrev.player
+            case 1: return pool.slotCurrent.player
+            case 2: return pool.slotNext.player
+            default: return nil
+            }
+        }()
+        if uiView.playerLayer.player !== expectedPlayer {
+            pool.attachLayer(uiView.playerLayer, forSlotIndex: slotIndex)
+        }
     }
 
     public static func dismantleUIView(_ uiView: PlayerContainerView, coordinator: ()) {

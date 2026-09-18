@@ -69,7 +69,23 @@ def build_site(
     """
     if not digest_data:
         if config.DIGEST_BATCH_FILE.exists():
-            digest_data = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+            try:
+                digest_data = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+            except Exception as exc:
+                # Torn batch must never kill the build: quarantine for
+                # forensics and fall back to an empty digest (PY-P1-4).
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+                    backup = config.DIGEST_BATCH_FILE.with_name(
+                        f"{config.DIGEST_BATCH_FILE.name}.corrupt-{ts}")
+                    backup.write_bytes(config.DIGEST_BATCH_FILE.read_bytes())
+                    logger.warning("Quarantined corrupt %s to %s: %s",
+                                   config.DIGEST_BATCH_FILE, backup, exc)
+                except Exception:
+                    logger.warning("Unreadable %s; building empty site: %s",
+                                   config.DIGEST_BATCH_FILE, exc)
+                digest_data = {"run_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "items": []}
         else:
             digest_data = {"run_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "items": []}
 
@@ -174,6 +190,11 @@ def build_site(
         matches = list(week_video_dir.glob(f"*_{reel_id}.mp4"))
         if not matches:
             return
+        # PY-P2-5: multiple rank prefixes for one id resolve newest-by-mtime
+        # (re-ranks leave stale prefixed copies); warn loudly on ffmpeg
+        # timeout instead of silently skipping (was: debug-level, invisible).
+        if len(matches) > 1:
+            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         # Render to temp names (ffmpeg needs the .jpg extension to pick the
         # encoder), then publish atomically: a timeout can never leave a
         # truncated JPEG that later runs treat as "already generated".
@@ -200,7 +221,7 @@ def build_site(
                 os.replace(tmp_thumb, thumb_file)
                 os.replace(tmp_portrait, portrait_file)
         except Exception as exc:
-            logger.debug("Thumbnail generation failed for %s: %s", reel_id, exc)
+            logger.warning("Thumbnail generation failed for %s: %s", reel_id, exc)
         finally:
             for t in (tmp_thumb, tmp_portrait):
                 t.unlink(missing_ok=True)
@@ -403,12 +424,18 @@ def build_site(
     # 5. Write .nojekyll for GitHub Pages
     atomic_io.durable_write_text(config.SITE_DIR / ".nojekyll", "")
 
-    # 6. Copy PWA and Apple Touch Icon assets
+    # 6. Copy PWA and Apple Touch Icon assets (atomic: temp + replace, PY-P2-8)
     assets_dir = config.ROOT_DIR / "assets"
     for icon_name in ["apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon.svg"]:
         src_icon = assets_dir / icon_name
         if src_icon.exists():
-            shutil.copy2(src_icon, config.SITE_DIR / icon_name)
+            dest_icon = config.SITE_DIR / icon_name
+            try:
+                _tmp_icon = dest_icon.with_name(f".{dest_icon.name}.tmp-{os.getpid()}")
+                shutil.copy2(src_icon, _tmp_icon)
+                os.replace(_tmp_icon, dest_icon)
+            except OSError as exc:
+                logger.warning("Icon copy failed for %s: %s", icon_name, exc)
 
     # 7. Write Web App Manifest for iOS/Android Add to Home Screen
     manifest_data = {
@@ -457,9 +484,44 @@ def build_site(
     return r2_index_path, local_index_path
 
 
+def _pages_bundle_is_remote(site_dir: Path) -> bool:
+    """True when the rendered data.json has at least one remote (http) video URL.
+
+    An all-local /videos/ bundle means R2 was unconfigured at build time;
+    pushing it to Pages ships 404 cards (PY-P1-9). Empty or missing bundles
+    are also refused. Never raises.
+    """
+    try:
+        payload = json.loads((site_dir / "data.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not items:
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in ("video_url", "r2_url"):
+            url = str(item.get(key) or "")
+            if url.startswith("http://") or url.startswith("https://"):
+                return True
+    return False
+
+
 def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.GH_PAGES_REPO) -> bool:
-    """Deploy site_dir contents to orphan gh-pages branch with force push."""
+    """Deploy site_dir contents to orphan gh-pages branch with force push.
+
+    Refuses when the rendered data.json carries local /videos/ URLs with R2
+    unconfigured: those 404 on Pages (PY-P1-9). Local preview stays available
+    via local_index.html served by the dashboard.
+    """
     logger.info("Deploying Instagram Digest to GitHub Pages (%s)...", repo_url)
+
+    if not _pages_bundle_is_remote(site_dir):
+        logger.error(
+            "Refusing to deploy: site data.json has no remote R2 video URLs "
+            "(R2 unconfigured?). Serve local_index.html from the dashboard instead.")
+        return False
 
     if not shutil.which("git"):
         logger.error("Git is not found; skipping GitHub Pages deployment.")

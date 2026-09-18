@@ -116,7 +116,10 @@ public struct LibraryPathResolver: Sendable {
                let number = attrs[.size] as? NSNumber {
                 return number.int64Value > 0
             }
-            return true
+            // IOS-P2-5: an attribute read failure (permission/transient I/O)
+            // must not report the file as playable; that sends the pool into
+            // the failure ladder on an unreadable file.
+            return false
         }
         return false
     }

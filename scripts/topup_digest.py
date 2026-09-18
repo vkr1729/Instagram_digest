@@ -53,12 +53,17 @@ def topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", depl
 
 
 def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", deploy: bool = True) -> int:
-    # 1. Load active digest
+    # 1. Load active digest (quarantine corrupt bytes for forensics, PY-P1-4)
     if not config.DIGEST_BATCH_FILE.exists():
         logger.error("Active digest %s does not exist.", config.DIGEST_BATCH_FILE)
         return 1
 
-    digest_data = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+    try:
+        digest_data = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        main._quarantine_corrupt(config.DIGEST_BATCH_FILE, exc)
+        logger.error("Active digest %s is corrupt; quarantined, refusing to continue.", config.DIGEST_BATCH_FILE)
+        return 1
     existing_items: list[dict[str, Any]] = digest_data.get("items", [])
     if len(existing_items) < watched_count:
         logger.error("Active digest has %d items, fewer than watched_count %d.", len(existing_items), watched_count)
@@ -94,7 +99,13 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
         logger.error("Candidates cache %s not found.", candidates_cache_file)
         return 1
 
-    cached = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
+    cached = None
+    try:
+        cached = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        main._quarantine_corrupt(candidates_cache_file, exc)
+        logger.error("Candidates cache %s is corrupt; quarantined.", candidates_cache_file)
+        return 1
     cands = cached.get("candidates", []) if isinstance(cached, dict) else []
     logger.info("Loaded %d candidates from %s.", len(cands), candidates_cache_file.name)
 
@@ -124,6 +135,28 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
         extra = [c for c in unseen if c.get("id") not in ranked_ids]
         ranked_new.extend(extra[:needed_new - len(ranked_new)])
     logger.info("Selected %d top new candidate reels.", len(ranked_new))
+
+    # PY-P1-8: mirror main.py's cutoff filter — never backfill unranked,
+    # undated, or stale reels past the recency window. Ranked items carry
+    # real timestamps; raw cache extras with timestamp==0 or older than the
+    # cutoff are dropped instead of appended (UAT-2.3).
+    cutoff_ts = int(time.time()) - 7 * 86400
+    fresh_new = []
+    dropped_stale = 0
+    for r in ranked_new:
+        ts = r.get("timestamp") or 0
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            ts = 0
+        if ts and ts >= cutoff_ts:
+            fresh_new.append(r)
+        else:
+            dropped_stale += 1
+    if dropped_stale:
+        logger.warning("Dropping %d stale/undated backfill reels past the 7-day cutoff.", dropped_stale)
+    ranked_new = fresh_new
+    logger.info("Selected %d fresh new candidate reels within date window.", len(ranked_new))
 
     # 6. Migrate kept reels to ranks 1..len(kept_items) in new_week_id
     reindexed_kept: list[dict[str, Any]] = []
@@ -162,11 +195,8 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
 
     with extractor.InstagramSession() as session:
         for idx, r in enumerate(ranked_new):
-            new_rank = len(reindexed_kept) + idx + 1
             clean_handle = main._safe_component(r.get("creator_handle"), "creator")
             rid = main._safe_component(r.get("id"), "reel")
-            filename = f"{new_rank:02d}_{clean_handle}_{rid}.mp4"
-            dest_path = new_video_dir / filename
 
             # Same anti-automation pacing as the weekly pipeline: never hammer
             # reel pages back-to-back from the owner's session.
@@ -180,8 +210,21 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
             except Exception as exc:
                 logger.debug("Enrich metadata error for %s: %s", r.get("id"), exc)
 
+            # Mirror main.py: enriched reels older than the cutoff (or still
+            # undated) are dropped, never downloaded or published.
+            try:
+                enriched_ts = int(r.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                enriched_ts = 0
+            if not enriched_ts or enriched_ts < cutoff_ts:
+                logger.warning("Dropping stale/undated reel %s after enrich; skipping download.", r.get("id"))
+                continue
+
+            new_rank = len(reindexed_kept) + len(enriched_new) + 1
             r["rank"] = new_rank
             r["rank_display"] = f"#{new_rank:02d}"
+            filename = f"{new_rank:02d}_{clean_handle}_{rid}.mp4"
+            dest_path = new_video_dir / filename
 
             # Download video if not already present
             if not (dest_path.exists() and dest_path.stat().st_size > 0):

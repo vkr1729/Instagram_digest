@@ -95,6 +95,8 @@ def test_local_server_trigger_adhoc_sync(monkeypatch):
 
     monkeypatch.setattr(main, "run_full_sync", dummy_run_full_sync)
     monkeypatch.setattr(main, "get_last_run_info", lambda: {"timestamp": time.time() - 86400, "last_run_utc": "2026-09-10T00:00:00Z", "week_id": "2026-09-10"})
+    # Cookie gate is covered separately; the trigger lifecycle test assumes a healthy session.
+    monkeypatch.setattr(local_server, "refresh_cookies_or_abort", lambda pipeline: True)
 
     # Reset state
     with local_server._SYNC_LOCK:
@@ -115,3 +117,59 @@ def test_local_server_trigger_adhoc_sync(monkeypatch):
     with local_server._SYNC_LOCK:
         assert local_server._SYNC_STATE["is_running"] is False
         assert local_server._SYNC_STATE["status"] == "completed"
+
+
+def _drain_trigger_state(timeout_s: float = 5.0) -> None:
+    """Wait for any in-flight trigger worker (prior test) to release the pipeline lock."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        with local_server._SYNC_LOCK:
+            sync_idle = not local_server._SYNC_STATE["is_running"]
+        with local_server._EXPAND_LOCK:
+            expand_idle = not local_server._EXPAND_STATE["is_running"]
+        if sync_idle and expand_idle and local_server._PIPELINE_LOCK.acquire(blocking=False):
+            try:
+                return
+            finally:
+                try:
+                    local_server._PIPELINE_LOCK.release()
+                except RuntimeError:
+                    pass
+        time.sleep(0.05)
+
+
+def test_trigger_aborts_early_on_dead_cookie_session(monkeypatch):
+    """PY-P1-6: a dead cookie session must abort before run_full_sync, not after hours."""
+    _drain_trigger_state()
+    calls = []
+    monkeypatch.setattr(local_server, "refresh_cookies_or_abort", lambda pipeline: False)
+    monkeypatch.setattr(main, "run_full_sync",
+                        lambda **kw: calls.append(kw) or (_ for _ in ()).throw(AssertionError("must not run")))
+    with local_server._SYNC_LOCK:
+        local_server._SYNC_STATE["is_running"] = False
+        local_server._SYNC_STATE["status"] = "idle"
+
+    res = local_server.trigger_adhoc_sync_task()
+    assert res["success"] is True
+    assert res["status"] == "started"
+    time.sleep(0.3)
+    assert calls == []
+    with local_server._SYNC_LOCK:
+        assert local_server._SYNC_STATE["is_running"] is False
+        assert local_server._SYNC_STATE["status"] == "failed"
+
+
+def test_trigger_reports_busy_when_cli_holds_file_lock(tmp_path, monkeypatch):
+    """PY-P1-2: dashboard must report already_running while a CLI run holds the file lock."""
+    import config
+    import main as main_module
+    _drain_trigger_state()
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    with local_server._SYNC_LOCK:
+        local_server._SYNC_STATE["is_running"] = False
+        local_server._SYNC_STATE["status"] = "idle"
+    with main_module._pipeline_file_lock():
+        assert local_server._cross_process_pipeline_busy() is True
+        res = local_server.trigger_adhoc_sync_task()
+    assert res["success"] is True
+    assert res["status"] == "already_running"

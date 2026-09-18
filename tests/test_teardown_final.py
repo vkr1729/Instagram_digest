@@ -662,3 +662,182 @@ def test_p3_38_pin_docs_honest():
 
 def test_p3_39_tracking_claim_scoped():
     assert "only third-party request" in _src("README.md")
+
+
+# --------------------------------------------------------------------------
+# FINAL AUDIT (2026-09-18): P0/P1/P2 regression tests
+# --------------------------------------------------------------------------
+
+def test_audit_p0_jit_purge_keeps_live_week(monkeypatch):
+    """PY-P0-1: JIT purge must keep the week the persisted digest points at."""
+    from datetime import datetime, timezone
+
+    live_week = "2026-09-10"
+    new_week = "2026-09-17"
+
+    def _obj(key):
+        return {"Key": key, "Size": 1024, "LastModified": datetime.now(timezone.utc)}
+
+    class _FakePaginator:
+        def paginate(self, Bucket, Prefix=None, **kw):
+            return [{"Contents": [
+                _obj(f"videos/{live_week}/01_a_x.mp4"),
+                _obj(f"videos/{new_week}/01_b_y.mp4"),
+                _obj("videos/2026-09-03/01_old_z.mp4"),
+            ]}]
+
+    class _FakeS3:
+        def get_paginator(self, name):
+            return _FakePaginator()
+
+        def delete_objects(self, Bucket, Delete, **kw):
+            keys = [o["Key"] for o in Delete["Objects"]]
+            return {"Deleted": [{"Key": k} for k in keys], "Errors": []}
+
+    monkeypatch.setattr(storage_r2, "get_s3_client", lambda: _FakeS3())
+    purged = storage_r2.purge_previous_weeks_videos(
+        current_week_id=new_week, keep_week_ids={live_week})
+    assert f"videos/{live_week}/01_a_x.mp4" not in purged
+    assert f"videos/{new_week}/01_b_y.mp4" not in purged
+    assert "videos/2026-09-03/01_old_z.mp4" in purged
+
+
+def test_audit_p1_corrupt_sources_quarantined(tmp_path, monkeypatch):
+    """PY-P1-3: torn sources.json is quarantined, not silently replaced."""
+    monkeypatch.setattr(config, "SOURCES_FILE", tmp_path / "sources.json")
+    (tmp_path / "sources.json").write_text('{"handles": [broken', encoding="utf-8")
+    assert extractor.load_sources() == []
+    assert len(list(tmp_path.glob("sources.json.corrupt-*"))) == 1
+
+
+def test_audit_p1_nonlist_sources_quarantined(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SOURCES_FILE", tmp_path / "sources.json")
+    (tmp_path / "sources.json").write_text('{"handles": ["a"]}', encoding="utf-8")
+    assert extractor.load_sources() == []
+    assert len(list(tmp_path.glob("sources.json.corrupt-*"))) == 1
+
+
+def test_audit_p1_handleless_sources_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SOURCES_FILE", tmp_path / "sources.json")
+    (tmp_path / "sources.json").write_text(json.dumps([
+        {"handle": "alice", "enabled": True},
+        {"name": "no-handle"},
+        "junk",
+    ]), encoding="utf-8")
+    loaded = extractor.load_sources()
+    assert [s["handle"] for s in loaded] == ["alice"]
+
+
+def test_audit_p1_topup_quarantines_corrupt_digest(tmp_path, monkeypatch):
+    """PY-P1-4: corrupt active digest is quarantined; topup exits 1."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "data" / "top100_digest.json")
+    (tmp_path / "data").mkdir(parents=True)
+    (tmp_path / "data" / "top100_digest.json").write_text('{"items": [broken', encoding="utf-8")
+    ret = topup_digest.topup_digest(watched_count=1, new_week_id="2026-09-14", deploy=False)
+    assert ret == 1
+    assert len(list((tmp_path / "data").glob("top100_digest.json.corrupt-*"))) == 1
+
+
+def test_audit_p1_topup_drops_stale_backfill(tmp_path, monkeypatch):
+    """PY-P1-8: undated/stale backfill reels never reach the new digest."""
+    import time as _time
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", data_dir / "top100_digest.json")
+    monkeypatch.setattr(config, "DIGESTS_DIR", data_dir / "digests")
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    monkeypatch.setattr(config, "LAST_RUN_FILE", data_dir / "last_run.json")
+    monkeypatch.setattr(config, "BLACKLIST_FILE", data_dir / "blacklist.json")
+
+    old_week = "2026-09-11"
+    kept = _reel("k2", "carol")
+    (data_dir / "top100_digest.json").write_text(json.dumps({
+        "run_date": old_week, "count": 2,
+        "items": [_reel("k1", "carol"), kept],
+    }))
+    now = int(_time.time())
+    fresh = dict(_reel("n1", "dave"), timestamp=now - 3600)
+    stale = dict(_reel("n2", "erin"), timestamp=now - 30 * 86400)
+    undated = dict(_reel("n3", "fred"))
+    undated["timestamp"] = 0
+    (data_dir / "candidates_cache.json").write_text(json.dumps({
+        "candidates": [fresh, stale, undated],
+    }))
+    old_videos = tmp_path / "videos" / old_week
+    old_videos.mkdir(parents=True)
+    (old_videos / "05_carol_k2.mp4").write_bytes(b"x" * 60000)
+
+    sources = [
+        {"handle": "carol", "category": "niche", "enabled": True},
+        {"handle": "dave", "category": "health", "enabled": True},
+        {"handle": "erin", "category": "health", "enabled": True},
+        {"handle": "fred", "category": "health", "enabled": True},
+    ]
+    monkeypatch.setattr(extractor, "load_sources", lambda: sources)
+    monkeypatch.setattr(extractor, "InstagramSession", lambda: _FakeSession())
+    monkeypatch.setattr(extractor, "human_pause", lambda **k: 0.0)
+    monkeypatch.setattr(
+        extractor, "extract_single_reel_metadata",
+        lambda r, session=None: {**r, "timestamp": r.get("timestamp") or 0},
+    )
+    monkeypatch.setattr(
+        extractor, "download_reel_video",
+        lambda url, path, video_cdn_url=None, session=None, **k: (
+            Path(path).parent.mkdir(parents=True, exist_ok=True),
+            Path(path).write_bytes(b"y" * 60000), True)[2])
+    monkeypatch.setattr(
+        storage_r2, "upload_reel_to_r2",
+        lambda local_file, week_id, key_name, existing_keys=None:
+            f"https://cdn.test/videos/{week_id}/{key_name}")
+    monkeypatch.setattr(storage_r2, "get_existing_r2_keys", lambda prefix="videos/": set())
+    monkeypatch.setattr(site_builder, "build_site", lambda **kw: None)
+
+    ret = topup_digest.topup_digest(watched_count=1, new_week_id="2026-09-14", deploy=False)
+    assert ret == 0
+    saved = json.loads((data_dir / "top100_digest.json").read_text())
+    assert [i["id"] for i in saved["items"]] == ["k2", "n1"]
+
+
+def test_audit_p1_deploy_refuses_local_bundle(tmp_path, monkeypatch):
+    """PY-P1-9: deploy_to_gh_pages refuses an all-local /videos/ bundle."""
+    (tmp_path / "data.json").write_text(json.dumps({
+        "run_date": "2026-09-06", "count": 1,
+        "items": [{"id": "x", "video_url": "/videos/2026-09-06/01_a_x.mp4"}],
+    }), encoding="utf-8")
+    assert site_builder._pages_bundle_is_remote(tmp_path) is False
+    assert site_builder.deploy_to_gh_pages(site_dir=tmp_path) is False
+
+
+def test_audit_p2_generated_at_emitted(tmp_path, monkeypatch):
+    """PY-P2-6: digest batch carries generated_at for the iOS decoder."""
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "top100_digest.json")
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
+    ranker.save_digest_batch([_reel("r1", "alice")], run_date="2026-09-06")
+    payload = json.loads((tmp_path / "top100_digest.json").read_text())
+    assert payload["generated_at"] == payload["created_at"]
+
+
+def test_audit_p2_corrupt_candidates_cache_quarantined(tmp_path, monkeypatch):
+    """PY-P2-2: torn candidates_cache.json is quarantined, not retried forever."""
+    import main as main_module
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    sentinel = tmp_path / "top100_digest.json"
+    sentinel.write_text('{"sentinel": true}')
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", sentinel)
+    (tmp_path / "candidates_cache.json").write_text('{"candidates": [broken', encoding="utf-8")
+    monkeypatch.setattr(extractor, "load_sources", lambda: [
+        {"handle": "alice", "category": "entertainment", "enabled": True},
+    ])
+    monkeypatch.setattr(extractor, "InstagramSession", lambda: _FakeSession())
+    monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [])
+    monkeypatch.setattr(extractor, "extract_single_reel_metadata", lambda r, session=None: r)
+
+    rc = main_module.run_full_sync(dry_run=False, deploy=False, days_back=7, limit_per_creator=15)
+    assert rc == 2
+    assert not (tmp_path / "candidates_cache.json").exists()
+    assert len(list(tmp_path.glob("candidates_cache.json.corrupt-*"))) == 1
+    assert json.loads(sentinel.read_text()) == {"sentinel": True}

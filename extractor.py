@@ -142,18 +142,54 @@ def get_blacklisted_creators() -> set[str]:
 
 
 def load_sources() -> list[dict[str, Any]]:
-    """Load tracked creators from sources.json, excluding blacklisted channels."""
+    """Load tracked creators from sources.json, excluding blacklisted channels.
+
+    A corrupt file is quarantined for forensics (never silently replaced with
+    [] — the run would otherwise abort at "no active sources" with bytes lost).
+    Non-list payloads and entries without a handle are rejected, since the
+    ranker keys everything off creator_handle.
+    """
     if not config.SOURCES_FILE.exists():
         return []
     try:
-        sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
-        blacklist = get_blacklisted_creators()
-        if blacklist:
-            return [s for s in sources if s.get("handle", "").lower().replace("@", "") not in blacklist]
-        return sources
+        raw = config.SOURCES_FILE.read_text(encoding="utf-8")
     except Exception as exc:
         logger.error("Error reading sources.json: %s", exc)
         return []
+    try:
+        sources = json.loads(raw)
+    except Exception as exc:
+        logger.error("Error parsing sources.json: %s", exc)
+        _quarantine_sources_file(exc)
+        return []
+    if not isinstance(sources, list):
+        logger.error("sources.json is not a list (%s); quarantining.", type(sources).__name__)
+        _quarantine_sources_file(ValueError("sources.json payload is not a list"))
+        return []
+    valid_sources: list[dict[str, Any]] = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        if not clean_handle(s.get("handle")):
+            logger.warning("Skipping sources.json entry without a handle: %r", s)
+            continue
+        valid_sources.append(s)
+    blacklist = get_blacklisted_creators()
+    if blacklist:
+        return [s for s in valid_sources if s.get("handle", "").lower().replace("@", "") not in blacklist]
+    return valid_sources
+
+
+def _quarantine_sources_file(exc: Exception) -> None:
+    """Preserve corrupt sources.json bytes alongside for forensics."""
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = config.SOURCES_FILE.with_name(f"{config.SOURCES_FILE.name}.corrupt-{ts}")
+        backup.write_bytes(config.SOURCES_FILE.read_bytes())
+        logger.warning("Quarantined corrupt %s to %s: %s", config.SOURCES_FILE, backup, exc)
+    except Exception:
+        logger.warning("Unreadable %s; treating sources as empty: %s", config.SOURCES_FILE, exc)
 
 
 def save_sources(sources: list[dict[str, Any]]) -> None:
@@ -997,6 +1033,35 @@ def extract_creator_reels(
     return results
 
 
+def _downloaded_mp4_is_playable(path: Path) -> bool:
+    """Validate a downloaded file is a real playable MP4 (PY-P1-7).
+
+    The 50 KB size gate alone passes truncated MP4s and HTML error pages,
+    which then upload as video/mp4 and fail only in iOS playback. ffprobe
+    must exit 0 with a positive duration; missing ffprobe fails open (the
+    size gate still applies) so minimal CI images keep working. Never raises.
+    """
+    try:
+        if not path.exists() or path.stat().st_size <= 50000:
+            return False
+    except OSError:
+        return False
+    if shutil.which("ffprobe") is None:
+        return True
+    try:
+        res = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration,size",
+             "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res.returncode != 0:
+            return False
+        fmt = json.loads(res.stdout or "{}").get("format", {})
+        return float(fmt.get("duration") or 0) > 0
+    except Exception:
+        return False
+
+
 def download_reel_video(
     reel_url: str,
     output_path: Path,
@@ -1037,6 +1102,22 @@ def download_reel_video(
             try:
                 logger.info("Downloading reel stream (attempt %d/%d): %s...", attempt, max_retries, reel_url)
                 with requests.get(cdn_target, headers=headers, stream=True, timeout=45) as r:
+                    if r.status_code == 429:
+                        # Rate-limited: honor Retry-After, else exponential
+                        # backoff with jitter (PY-P2-4). No point hammering.
+                        retry_after = 0.0
+                        try:
+                            retry_after = float(r.headers.get("Retry-After") or 0)
+                        except (TypeError, ValueError):
+                            retry_after = 0.0
+                        wait = max(retry_after, (2.0 ** attempt) + random.uniform(0, 2.0))
+                        logger.warning("CDN rate-limited (429); backing off %.1fs.", wait)
+                        time.sleep(wait)
+                        continue
+                    if r.status_code in (403, 404, 410):
+                        # Ban/gone: retrying in seconds never heals these.
+                        logger.warning("Stream request returned status %d; skipping to yt-dlp fallback.", r.status_code)
+                        break
                     if r.status_code == 200:
                         _ct = (r.headers.get("Content-Type") or "").lower()
                         if "text/html" in _ct:
@@ -1052,20 +1133,22 @@ def download_reel_video(
                                         if _dl > 250 * 1024 * 1024:
                                             raise ValueError("CDN download exceeded 250MB cap")
 
-                        if temp_path.exists() and temp_path.stat().st_size > 50000:
+                        if _downloaded_mp4_is_playable(temp_path):
                             temp_path.replace(output_path)
                             logger.info("Successfully downloaded %.2f MB to %s",
                                         output_path.stat().st_size / (1024 * 1024), output_path.name)
                             return True
                         else:
-                            logger.warning("Downloaded stream too small (%d bytes), retrying...",
+                            logger.warning("Downloaded stream failed integrity check (%d bytes), retrying...",
                                            temp_path.stat().st_size if temp_path.exists() else 0)
+                            temp_path.unlink(missing_ok=True)
                     else:
                         logger.warning("Stream request returned status %d", r.status_code)
             except Exception as exc:
                 logger.warning("Stream download exception on attempt %d: %s", attempt, exc)
 
-            time.sleep(1.0 * attempt)
+            if attempt < max_retries:
+                time.sleep((2.0 ** attempt) + random.uniform(0, 2.0))
 
     # 3. Fallback to yt-dlp (with concurrency throttle & automatic retry)
     logger.info("Direct stream unavailable or failed; falling back to yt-dlp for %s", reel_url)
@@ -1085,12 +1168,13 @@ def download_reel_video(
         try:
             with _YTDLP_SEMAPHORE:
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if res.returncode == 0 and temp_path.exists() and temp_path.stat().st_size > 50000:
+            if res.returncode == 0 and _downloaded_mp4_is_playable(temp_path):
                 temp_path.replace(output_path)
                 logger.info("Successfully downloaded %.2f MB via yt-dlp to %s",
                             output_path.stat().st_size / (1024 * 1024), output_path.name)
                 return True
             else:
+                temp_path.unlink(missing_ok=True)
                 err_snippet = (res.stderr or "").strip()[-250:]
                 logger.warning("yt-dlp attempt %d failed (code %d): %s", attempt, res.returncode, err_snippet)
         except Exception as exc:

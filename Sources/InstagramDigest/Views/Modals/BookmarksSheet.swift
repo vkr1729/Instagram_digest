@@ -307,6 +307,9 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private var currentBookmark: BookmarkItem? {
+        if let id = scrolledReelID, let match = bookmarks.first(where: { $0.reelID == id }) {
+            return match
+        }
         guard !bookmarks.isEmpty, currentIndex >= 0, currentIndex < bookmarks.count else { return nil }
         return bookmarks[currentIndex]
     }
@@ -321,7 +324,7 @@ public struct BookmarkPlayerOverlay: View {
                     ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
                         ZStack {
                             Color.black
-                            if index == currentIndex, let p = player {
+                            if (bookmark.reelID == scrolledReelID || (scrolledReelID == nil && index == currentIndex)), let p = player {
                                 BookmarkVideoContainer(player: p)
                             }
                         }
@@ -553,6 +556,7 @@ public struct BookmarkPlayerOverlay: View {
         avPlayer.automaticallyWaitsToMinimizeStalling = !isLocal
         self.player = avPlayer
         self.isPlaying = true
+        AudioSessionCoordinator.shared.activateSession()
         avPlayer.play()
 
         endObserverToken = NotificationCenter.default.addObserver(
@@ -600,18 +604,25 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func handleUnsave(bookmark: BookmarkItem) {
-        onDeleteBookmark(bookmark)
-        // If other bookmarks exist, switch to next available bookmark
         let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
         if remaining.isEmpty {
-            player?.pause()
+            teardownPlayer()
+            onDeleteBookmark(bookmark)
             onClose()
-        } else {
-            let nextIndex = min(currentIndex, remaining.count - 1)
-            currentIndex = nextIndex
-            scrolledReelID = remaining[nextIndex].reelID
-            loadVideo(for: remaining[nextIndex])
+            return
         }
+
+        // Determine next bookmark to play and load it first so the scroll anchor is preserved
+        let targetIndex = min(currentIndex, remaining.count - 1)
+        let nextBookmark = remaining[targetIndex]
+
+        currentIndex = targetIndex
+        scrolledReelID = nextBookmark.reelID
+        isCaptionExpanded = false
+        loadVideo(for: nextBookmark)
+
+        // Delete the unsaved item from database
+        onDeleteBookmark(bookmark)
     }
 
     private func triggerShare(bookmark: BookmarkItem) {
@@ -672,7 +683,10 @@ public struct BookmarkVideoContainer: UIViewRepresentable {
     }
 
     public func updateUIView(_ uiView: PlayerContainerView, context: Context) {
-        uiView.playerLayer.player = player
+        if uiView.playerLayer.player !== player {
+            uiView.playerLayer.player = player
+        }
         uiView.playerLayer.videoGravity = .resizeAspect
+        uiView.setNeedsLayout()
     }
 }
