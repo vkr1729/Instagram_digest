@@ -4,9 +4,8 @@ import SwiftData
 /// Serialized async actor managing local disk cache, LivePinSet protection,
 /// 1.5 GB bookmark cap with LRU eviction, and .part download atomic promotion.
 public actor MediaCacheManager {
-    // IOS-P0-1: SwiftData ModelContext is MainActor-confined. Every method
-    // below that touches the context is @MainActor; pure file-I/O helpers
-    // (evictLocalFeedFile, promotePartFile, diskFileSize) stay on the actor.
+    // MediaCacheManager actor synchronizes cache ledger, LivePinSet, and bookmark operations.
+    // SwiftData operations instantiate an actor-local ModelContext from the shared ModelContainer.
     public static let shared = MediaCacheManager()
 
     /// 1.5 GB cap for offline bookmarked videos
@@ -57,7 +56,6 @@ public actor MediaCacheManager {
     /// Strictly verifies files in the isolated Bookmarks directory.
     /// If a previously cached bookmark file is missing, marks localStatus = .evicted.
     /// Never auto-promotes an evicted bookmark to cached from feed downloads.
-    @MainActor
     public func reconcileBookmarkStorageLedger() async {
         guard let container = modelContainer else { return }
         let context = ModelContext(container)
@@ -96,7 +94,6 @@ public actor MediaCacheManager {
 
     /// Returns the live set of reel IDs that must NEVER be deleted from disk:
     /// LivePinSet = { reelID | BookmarkItem.localStatus == .cached && file exists } ∪ AVPlayerPool.activeReelIDs
-    @MainActor
     public func computeLivePinSet() async -> Set<String> {
         var pinSet = activeVideoPoolReelIDs
 
@@ -118,7 +115,6 @@ public actor MediaCacheManager {
     }
 
     /// Purges an older week's cache directory during weekly rollover, strictly protecting the LivePinSet.
-    @MainActor
     public func purgeOldWeekDirectory(oldWeekID: String) async {
         let livePins = await computeLivePinSet()
         let sanitizedPins = Set(livePins.map { LibraryPathResolver.sanitizeComponent($0) })
@@ -182,7 +178,6 @@ public actor MediaCacheManager {
 
     /// Ensures space is available under the 1.5 GB cap before saving an offline bookmark.
     /// Pre-rejects files larger than the cap. Evicts oldest non-bound bookmarks by lastAccessedAt.
-    @MainActor
     public func ensureSpaceForBookmark(incomingBytes: Int64) async throws {
         // Pre-reject oversized admissions before touching existing files
         guard incomingBytes <= Self.maxBookmarkStorageBytes else {
@@ -250,7 +245,6 @@ public actor MediaCacheManager {
 
     /// Keep Offline action for a bookmark by ID: ensures space and copies media file to Bookmarks directory.
     /// Operates completely within actor context to avoid non-Sendable @Model crossing actor boundaries.
-    @MainActor
     public func keepBookmarkOffline(weekID: String, reelID: String, fallbackSizeBytes: Int64 = 0) async throws {
         // IOS-P2-4: a purge in flight may delete the destination mid-copy.
         guard !isPurging else {
@@ -364,7 +358,6 @@ public actor MediaCacheManager {
     }
 
     /// Synchronizes remote bookmark manifests into SwiftData without downgrading localStatus
-    @MainActor
     public func syncRemoteBookmarks(dtos: [BookmarkRemoteDTO]) async {
         guard let container = modelContainer else { return }
         let context = ModelContext(container)
@@ -427,7 +420,6 @@ public actor MediaCacheManager {
     }
 
     /// Serialized deletion of a bookmark's offline file (avoids orphaned files on unbookmark or delete)
-    @MainActor
     public func deleteBookmarkFile(reelID: String) {
         let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
         let fm = FileManager.default
@@ -465,7 +457,6 @@ public actor MediaCacheManager {
     /// 3. Deletes completed cached bookmark MP4s from Bookmarks directory.
     /// 4. Updates evicted rows in SwiftData.
     /// 5. Resets totalBookmarkBytes ledger, resumes download queue, and resets isPurging.
-    @MainActor
     public func freeBookmarkStorage() async {
         isPurging = true
 
