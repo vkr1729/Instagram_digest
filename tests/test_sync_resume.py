@@ -291,3 +291,51 @@ def test_dry_run_leaves_progress_untouched(tmp_path):
             main.run_full_sync(deploy=False, dry_run=True)
     assert sorted(calls) == ["alice", "bob", "cara"]
     assert target.read_text(encoding="utf-8") == before
+
+
+def test_deficit_ranked_checkpoint_resumes_via_feed_topup(tmp_path):
+    """When sync_progress has stage 'publishing' or 'shortfall_paused' with fewer reels
+    than TOP_DIGEST_COUNT, resume proceeds directly to feed top-up to fill the deficit
+    without re-scraping channels."""
+    banked = [_cand(f"banked_{i}", "alice") for i in range(52)]
+    for idx, r in enumerate(banked, 1):
+        r["rank"] = idx
+        r["rank_display"] = f"#{idx:02d}"
+
+    staged = {
+        "version": 1, "week_id": _real_week_id(), "days_back": 7,
+        "limit_per_creator": 15, "since_timestamp": None,
+        "stage": "publishing",
+        "ranked": banked,
+    }
+    target = tmp_path / f"sync_progress_{_real_week_id()}.json"
+    target.write_text(json.dumps(staged), encoding="utf-8")
+
+    discovered_ext = [_cand(f"ext_{i}", "creator_ext") for i in range(198)]
+    feed_calls = []
+
+    def _fake_feed(session, target_count, existing_ids=None, active_sources=None, max_evaluations=None):
+        feed_calls.append({"target_count": target_count, "existing_count": len(existing_ids or set())})
+        return list(discovered_ext)
+
+    with _sync_env(tmp_path):
+        with (
+            patch.object(extractor, "extract_creator_reels",
+                         side_effect=AssertionError("channel extraction must be skipped on deficit resume")),
+            patch.object(extractor, "extract_single_reel_metadata",
+                         side_effect=AssertionError("enrichment must be skipped on deficit resume")),
+            patch.object(extractor, "extract_external_reels_from_feed", side_effect=_fake_feed),
+            patch.object(extractor, "download_reel_video", side_effect=_fake_download_ok),
+            patch.object(main.storage_r2, "upload_reel_to_r2",
+                         side_effect=lambda p, week_id, key_name, existing_keys: f"https://r2.example/{key_name}"),
+        ):
+            assert main.run_full_sync(deploy=False) == 0
+
+    assert len(feed_calls) == 1
+    assert feed_calls[0]["target_count"] == config.TOP_DIGEST_COUNT - 52
+    assert feed_calls[0]["existing_count"] == 52
+
+    digest = json.loads((tmp_path / "top100_digest.json").read_text(encoding="utf-8"))
+    assert len(digest["items"]) == 250
+    assert digest["items"][0]["id"] == "banked_0"
+    assert digest["items"][52]["id"] == "ext_0"

@@ -929,7 +929,7 @@
     feed.addEventListener('touchend', () => {
       if (isHorizontalScrubbing && currentActiveCard) {
         const video = currentActiveCard.querySelector('.reel-video');
-        if (video && video.duration && video.readyState > 0) {
+        if (video && (video.duration || video.readyState > 0)) {
           video.currentTime = scrubTargetTime;
           if (scrubTargetTime / video.duration >= 0.35 && !currentActiveCard.dataset.markedWatched) {
             currentActiveCard.dataset.markedWatched = 'true';

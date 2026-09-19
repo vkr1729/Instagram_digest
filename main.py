@@ -155,7 +155,7 @@ def _persisted_digest_week() -> str:
 # Sync progress stages that may be resumed. The load gate and the reuse gate
 # below must agree: "publishing" still carries the ranked list, so a
 # mid-publish crash resumes at downloads instead of re-extracting.
-RESUMABLE_SYNC_STAGES = ("extracting", "enriched", "ranked", "publishing", "cooling_down")
+RESUMABLE_SYNC_STAGES = ("extracting", "enriched", "ranked", "publishing", "cooling_down", "shortfall_paused")
 # Stages whose banked ranked list can be reused directly, skipping extraction.
 RANKED_SYNC_STAGES = ("ranked", "publishing")
 
@@ -244,11 +244,12 @@ def run_full_sync(
     days_back: int = 7,
     limit_per_creator: int = 15,
     since_timestamp: int | None = None,
+    resume: bool = False,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     try:
         with _pipeline_file_lock():
-            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp)
+            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume)
     except PipelineBusy as exc:
         logger.error("%s; refusing to start.", exc)
         return 3
@@ -260,6 +261,7 @@ def _run_full_sync(
     days_back: int = 7,
     limit_per_creator: int = 15,
     since_timestamp: int | None = None,
+    resume: bool = False,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -382,13 +384,70 @@ def _run_full_sync(
         except Exception as io_err:
             logger.warning("Failed writing sync progress: %s", io_err)
 
+    # AI Recommendation Engine: discover or reload similar creators for Tier 2
+    import recommendations
+    recommended_creators: list[dict[str, Any]] = []
+    if sync_progress and sync_progress.get("recommended_creators"):
+        recommended_creators = sync_progress["recommended_creators"]
+        logger.info("Reusing %d frozen recommended creators from sync checkpoint.", len(recommended_creators))
+    elif not dry_run:
+        try:
+            logger.info("Discovering AI-recommended creators via agy -p (600s per-category timeout)...")
+            recommended_creators = recommendations.refresh_recommendations(timeout_per_category=600)
+        except Exception as exc:
+            logger.warning("Failed refreshing recommended creators: %s", exc)
+            recommended_creators = recommendations.load_recommended_creators()
+    else:
+        recommended_creators = recommendations.load_recommended_creators()
+
+    all_sources = list(active_sources)
+    existing_handles = {s["handle"].lower().replace("@", "") for s in active_sources if "handle" in s}
+    for rec in recommended_creators:
+        rh = rec.get("handle", "").lower().replace("@", "")
+        if rh and rh not in existing_handles:
+            all_sources.append({
+                "handle": rh,
+                "name": rec.get("name") or rh,
+                "category": rec.get("category", "entertainment"),
+                "enabled": True,
+                "is_recommended": True,
+            })
+
     ranked_reels: list[dict[str, Any]] = []
     resume_ranked: list[dict[str, Any]] | None = None
-    if sync_progress and sync_progress.get("stage") in RANKED_SYNC_STAGES:
-        banked_ranked = [
-            r for r in sync_progress.get("ranked", [])
-            if isinstance(r, dict) and r.get("id")
-        ]
+    is_shortfall_resume = False
+    banked_paths_map: dict[str, Path] = {}
+    banked_urls_map: dict[str, str] = {}
+
+    banked_ranked = [
+        r for r in (sync_progress.get("ranked", []) if sync_progress else [])
+        if isinstance(r, dict) and r.get("id")
+    ]
+
+    if sync_progress and (
+        sync_progress.get("stage") == "shortfall_paused"
+        or (
+            sync_progress.get("stage") in RANKED_SYNC_STAGES
+            and len(banked_ranked) < config.TOP_DIGEST_COUNT
+        )
+    ):
+        if banked_ranked:
+            is_shortfall_resume = True
+            ranked_reels = banked_ranked
+            logger.info(
+                "Resuming weekly sync with deficit (%d / %d reels banked). Proceeding directly to Tier 3 feed top-up...",
+                len(ranked_reels),
+                config.TOP_DIGEST_COUNT,
+            )
+            for rid, pstr in (sync_progress.get("downloaded_paths") or {}).items():
+                p = Path(pstr)
+                if p.exists():
+                    banked_paths_map[rid] = p
+            for rid, url in (sync_progress.get("uploaded_url_map") or {}).items():
+                if url:
+                    banked_urls_map[rid] = url
+
+    elif sync_progress and sync_progress.get("stage") in RANKED_SYNC_STAGES:
         if banked_ranked:
             resume_ranked = banked_ranked
             logger.info(
@@ -399,423 +458,525 @@ def _run_full_sync(
         ranked_reels = resume_ranked
     else:
         with extractor.InstagramSession() as session:
-            # Seed from an aborted run's staged progress: skip creators already
-            # visited and reuse banked candidates/enrichment.
-            done_map: dict[str, bool] = {}
-            banked_enriched: dict[str, dict[str, Any]] = {}
-            banked_shortlist: list[dict[str, Any]] | None = None
-            extraction_complete = False
-            if sync_progress and sync_progress.get("stage") in ("extracting", "enriched", "cooling_down"):
-                banked_cands = [
-                    r for r in sync_progress.get("candidates", [])
-                    if isinstance(r, dict) and r.get("id")
-                ]
-                if banked_cands and not candidates:
-                    candidates = banked_cands
-                done_map = {
-                    str(h): bool(e) for h, e in (sync_progress.get("done") or {}).items()
-                }
-                banked_enriched = {
-                    r["id"]: r for r in sync_progress.get("enriched", [])
-                    if isinstance(r, dict) and r.get("id")
-                }
-                stored_shortlist = [
-                    r for r in sync_progress.get("shortlist", [])
-                    if isinstance(r, dict) and r.get("id")
-                ]
-                banked_shortlist = stored_shortlist or None
-                extraction_complete = sync_progress.get("stage") == "enriched" or bool(
-                    sync_progress.get("extraction_complete")
-                )
-                if done_map or banked_cands:
-                    logger.info(
-                        "Seeded %d candidates (%d creators visited) from sync progress.",
-                        len(candidates), len(done_map),
-                    )
-            candidates_cache_file = config.DATA_DIR / "candidates_cache.json"
-            cache_hit = False
-            if candidates_cache_file.exists() and not candidates:
-                # `not candidates` keeps banked resume candidates in charge:
-                # they are fresher (the run that wrote them was in flight),
-                # and the resume path continues extraction to completion
-                # anyway, so the cache can never improve on them.
-                try:
-                    if time.time() - candidates_cache_file.stat().st_mtime < 12 * 3600:
-                        cached = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
-                        cached_items = (
-                            cached.get("candidates") if isinstance(cached, dict) else None
-                        )
-                        params_match = (
-                            isinstance(cached, dict)
-                            and cached.get("version") == 1
-                            and cached.get("since_timestamp") == since_timestamp
-                            and cached.get("days_back") == days_back
-                            and cached.get("limit_per_creator") == limit_per_creator
-                        )
-                        if isinstance(cached_items, list) and params_match:
-                            candidates = [
-                                c for c in cached_items
-                                if isinstance(c, dict) and c.get("id")
-                            ]
-                            logger.info(
-                                "Loaded %d candidate reels from fresh candidates_cache.json.",
-                                len(candidates),
-                            )
-                            cache_hit = True
-                        elif isinstance(cached, list):
-                            logger.info(
-                                "Ignoring legacy candidates_cache.json (no run parameters); re-extracting."
-                            )
-                        else:
-                            logger.info(
-                                "Ignoring candidates_cache.json (run parameters changed)."
-                            )
-                except Exception as exc:
-                    # PY-P2-2: quarantine corrupt bytes so every retry stops
-                    # failing identically on the same torn file.
-                    _quarantine_corrupt(candidates_cache_file, exc)
+            # If resuming from shortfall_paused / deficit, skip candidate extraction and ranking completely!
+            if is_shortfall_resume:
+                deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
+                if deficit > 0 and not dry_run:
+                    logger.info("Tier 3 Top-up: discovering up to %d external reels from feed (max 2,000 evaluations)...", deficit)
                     try:
-                        candidates_cache_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-            if cache_hit:
-                # A fresh cache covers every creator post-gate; nothing to visit.
-                extraction_complete = True
-
-            per_source: list[tuple[dict[str, Any], str, int]] = []
-            for src in ordered_sources:
-                handle = src.get("handle", "")
-                if not handle:
-                    continue
-                cat = src.get("category", "")
-                max_candidate_reels = 6 if cat == "food" else min(limit_per_creator, 5)
-                per_source.append((src, handle, max_candidate_reels))
-            expected_total = sum(max_n for _, _, max_n in per_source)
-            remaining_sources = [
-                (src, handle, max_n) for src, handle, max_n in per_source
-                if handle not in done_map
-            ]
-            extraction_total = len(remaining_sources) + len(done_map)
-            if extraction_complete:
-                remaining_sources = []
-            visited_this_run = 0
-            if remaining_sources:
-                empty_streak = 0
-                if not _ensure_valid_session(session):
-                    if candidates or done_map:
-                        _write_sync_progress("extracting", {
-                            "done": done_map, "candidates": candidates,
-                            "extraction_complete": False,
-                            "total_sources": extraction_total,
-                        })
-                    _alert_sync_abort("Instagram session blocked", "validation failed after one cookie refresh")
-                    try:
-                        local_server.raise_cookie_attention(
-                            pipeline="weekly-sync",
-                            reason="Session validation failed; press refresh to verify the login",
-                        )
-                    except Exception as popup_err:
-                        logger.warning("Failed raising cookie attention popup: %s", popup_err)
-                    return 2
-                try:
-                    def _extract_with_backoff(handle, max_candidate_reels):
-                        # Rate limits sleep through the night instead of killing
-                        # the run; login redirects re-raise at once (dead cookies
-                        # won't heal by waiting). Heartbeats keep the dashboard
-                        # progress file fresh during long sleeps.
-                        for attempt in range(len(RATE_LIMIT_WAITS_MIN) + 1):
+                        existing_ids = {r["id"] for r in ranked_reels}
+                        external_reels = []
+                        for feed_attempt in (1, 2):
                             try:
-                                return extractor.extract_creator_reels(
-                                    handle=handle,
-                                    max_reels=max_candidate_reels,
-                                    days_back=days_back,
-                                    fast_mode=True,  # Fast discovery from reels tab
+                                external_reels = extractor.extract_external_reels_from_feed(
                                     session=session,
+                                    target_count=deficit,
+                                    existing_ids=existing_ids,
+                                    active_sources=all_sources,
+                                    max_evaluations=2000,
                                 )
-                            except extractor.InstagramBlocked as exc:
-                                msg = str(exc)
-                                if "/accounts/login" in msg or "login_required" in msg:
-                                    raise
-                                if attempt >= len(RATE_LIMIT_WAITS_MIN):
-                                    logger.error(
-                                        "Rate limit persists after %d backoffs on @%s; aborting with banked progress.",
-                                        attempt, handle,
-                                    )
-                                    raise
-                                wait_min = RATE_LIMIT_WAITS_MIN[attempt]
-                                logger.warning(
-                                    "Rate limit on @%s (%s). Sleeping %d min (retry %d/%d)...",
-                                    handle, msg, wait_min, attempt + 1, len(RATE_LIMIT_WAITS_MIN),
+                                break
+                            except extractor.CookieExpiredException as exc:
+                                if "/accounts/login" in str(exc) or "login_required" in str(exc):
+                                    break
+                                if feed_attempt == 1:
+                                    logger.warning("Rate limit during feed top-up; sleeping %d min...", FEED_RETRY_WAIT_MIN)
+                                    time.sleep(FEED_RETRY_WAIT_MIN * 60)
+                        if external_reels:
+                            logger.info("Discovered %d external reels from feed for top-up.", len(external_reels))
+                            combined = ranked_reels + external_reels
+                            for idx, r in enumerate(combined, 1):
+                                r["rank"] = idx
+                                r["rank_display"] = f"#{idx:02d}"
+                            ranked_reels = combined
+                    except Exception as topup_err:
+                        logger.warning("Error during shortfall top-up: %s", topup_err)
+            else:
+                # Seed from an aborted run's staged progress: skip creators already
+                # visited and reuse banked candidates/enrichment.
+                done_map: dict[str, bool] = {}
+                banked_enriched: dict[str, dict[str, Any]] = {}
+                banked_shortlist: list[dict[str, Any]] | None = None
+                extraction_complete = False
+                if sync_progress and sync_progress.get("stage") in ("extracting", "enriched", "cooling_down"):
+                    banked_cands = [
+                        r for r in sync_progress.get("candidates", [])
+                        if isinstance(r, dict) and r.get("id")
+                    ]
+                    if banked_cands and not candidates:
+                        candidates = banked_cands
+                    done_map = {
+                        str(h): bool(e) for h, e in (sync_progress.get("done") or {}).items()
+                    }
+                    banked_enriched = {
+                        r["id"]: r for r in sync_progress.get("enriched", [])
+                        if isinstance(r, dict) and r.get("id")
+                    }
+                    stored_shortlist = [
+                        r for r in sync_progress.get("shortlist", [])
+                        if isinstance(r, dict) and r.get("id")
+                    ]
+                    banked_shortlist = stored_shortlist or None
+                    extraction_complete = sync_progress.get("stage") == "enriched" or bool(
+                        sync_progress.get("extraction_complete")
+                    )
+                    if done_map or banked_cands:
+                        logger.info(
+                            "Seeded %d candidates (%d creators visited) from sync progress.",
+                            len(candidates), len(done_map),
+                        )
+                candidates_cache_file = config.DATA_DIR / "candidates_cache.json"
+                cache_hit = False
+                if candidates_cache_file.exists() and not candidates:
+                    # `not candidates` keeps banked resume candidates in charge:
+                    # they are fresher (the run that wrote them was in flight),
+                    # and the resume path continues extraction to completion
+                    # anyway, so the cache can never improve on them.
+                    try:
+                        if time.time() - candidates_cache_file.stat().st_mtime < 12 * 3600:
+                            cached = json.loads(candidates_cache_file.read_text(encoding="utf-8"))
+                            cached_items = (
+                                cached.get("candidates") if isinstance(cached, dict) else None
+                            )
+                            params_match = (
+                                isinstance(cached, dict)
+                                and cached.get("version") == 1
+                                and cached.get("since_timestamp") == since_timestamp
+                                and cached.get("days_back") == days_back
+                                and cached.get("limit_per_creator") == limit_per_creator
+                            )
+                            if isinstance(cached_items, list) and params_match:
+                                candidates = [
+                                    c for c in cached_items
+                                    if isinstance(c, dict) and c.get("id")
+                                ]
+                                logger.info(
+                                    "Loaded %d candidate reels from fresh candidates_cache.json.",
+                                    len(candidates),
                                 )
-                                _write_sync_progress("cooling_down", {
-                                    "done": done_map, "candidates": candidates,
-                                    "extraction_complete": False,
-                                    "total_sources": extraction_total,
-                                    "blocked_handle": handle,
-                                    "resumes_in_min": wait_min,
-                                })
-                                time.sleep(wait_min * 60)
-                        raise AssertionError("unreachable backoff exit")
-                    # Ensure candidate gathering covers all active creators so every creator is represented
-                    for idx, (src, handle, max_candidate_reels) in enumerate(remaining_sources, 1):
-                        cat = src.get("category", "")
-                        logger.info("[%d/%d] Extracting candidate reels for @%s (%s)...", idx, len(remaining_sources), handle, cat)
-                        reels = _extract_with_backoff(handle, max_candidate_reels)
-                        done_map[handle] = not reels
-                        visited_this_run += 1
-                        if not reels:
-                            empty_streak += 1
-                            if empty_streak >= 2:
-                                pause = min(120, 10 * 2 ** (empty_streak - 2))
-                                logger.warning("Two empty creators in a row; backing off %ds.", pause)
-                                time.sleep(pause)
-                        else:
-                            empty_streak = 0
+                                cache_hit = True
+                            elif isinstance(cached, list):
+                                logger.info(
+                                    "Ignoring legacy candidates_cache.json (no run parameters); re-extracting."
+                                )
+                            else:
+                                logger.info(
+                                    "Ignoring candidates_cache.json (run parameters changed)."
+                                )
+                    except Exception as exc:
+                        # PY-P2-2: quarantine corrupt bytes so every retry stops
+                        # failing identically on the same torn file.
+                        _quarantine_corrupt(candidates_cache_file, exc)
+                        try:
+                            candidates_cache_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                if cache_hit:
+                    # A fresh cache covers every creator post-gate; nothing to visit.
+                    extraction_complete = True
 
-                        candidates.extend(reels)
-                        mu, sigma, floor = CREATOR_PAUSE
-                        extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
-                        if visited_this_run % CREATOR_BREAK_EVERY == 0:
-                            rest = random.uniform(*CREATOR_BREAK_SECS)
-                            logger.info("Low-profile break: resting %.0fs after %d creators...",
-                                        rest, visited_this_run)
-                            time.sleep(rest)
-                        if visited_this_run % 5 == 0:
+                per_source: list[tuple[dict[str, Any], str, int]] = []
+                for src in ordered_sources:
+                    handle = src.get("handle", "")
+                    if not handle:
+                        continue
+                    cat = src.get("category", "")
+                    max_candidate_reels = 6 if cat == "food" else min(limit_per_creator, 5)
+                    per_source.append((src, handle, max_candidate_reels))
+                expected_total = sum(max_n for _, _, max_n in per_source)
+                remaining_sources = [
+                    (src, handle, max_n) for src, handle, max_n in per_source
+                    if handle not in done_map
+                ]
+                extraction_total = len(remaining_sources) + len(done_map)
+                if extraction_complete:
+                    remaining_sources = []
+                visited_this_run = 0
+                if remaining_sources:
+                    empty_streak = 0
+                    if not _ensure_valid_session(session):
+                        if candidates or done_map:
                             _write_sync_progress("extracting", {
                                 "done": done_map, "candidates": candidates,
                                 "extraction_complete": False,
                                 "total_sources": extraction_total,
                             })
-                except extractor.InstagramBlocked as exc:
-                    logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
+                        _alert_sync_abort("Instagram session blocked", "validation failed after one cookie refresh")
+                        try:
+                            local_server.raise_cookie_attention(
+                                pipeline="weekly-sync",
+                                reason="Session validation failed; press refresh to verify the login",
+                            )
+                        except Exception as popup_err:
+                            logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                        return 2
+                    try:
+                        def _extract_with_backoff(handle, max_candidate_reels):
+                            # Rate limits sleep through the night instead of killing
+                            # the run; login redirects re-raise at once (dead cookies
+                            # won't heal by waiting). Heartbeats keep the dashboard
+                            # progress file fresh during long sleeps.
+                            for attempt in range(len(RATE_LIMIT_WAITS_MIN) + 1):
+                                try:
+                                    return extractor.extract_creator_reels(
+                                        handle=handle,
+                                        max_reels=max_candidate_reels,
+                                        days_back=days_back,
+                                        fast_mode=True,  # Fast discovery from reels tab
+                                        session=session,
+                                    )
+                                except extractor.InstagramBlocked as exc:
+                                    msg = str(exc)
+                                    if "/accounts/login" in msg or "login_required" in msg:
+                                        raise
+                                    if attempt >= len(RATE_LIMIT_WAITS_MIN):
+                                        logger.error(
+                                            "Rate limit persists after %d backoffs on @%s; aborting with banked progress.",
+                                            attempt, handle,
+                                        )
+                                        raise
+                                    wait_min = RATE_LIMIT_WAITS_MIN[attempt]
+                                    logger.warning(
+                                        "Rate limit on @%s (%s). Sleeping %d min (retry %d/%d)...",
+                                        handle, msg, wait_min, attempt + 1, len(RATE_LIMIT_WAITS_MIN),
+                                    )
+                                    _write_sync_progress("cooling_down", {
+                                        "done": done_map, "candidates": candidates,
+                                        "extraction_complete": False,
+                                        "total_sources": extraction_total,
+                                        "blocked_handle": handle,
+                                        "resumes_in_min": wait_min,
+                                    })
+                                    time.sleep(wait_min * 60)
+                            raise AssertionError("unreachable backoff exit")
+                        # Ensure candidate gathering covers all active creators so every creator is represented
+                        for idx, (src, handle, max_candidate_reels) in enumerate(remaining_sources, 1):
+                            cat = src.get("category", "")
+                            logger.info("[%d/%d] Extracting candidate reels for @%s (%s)...", idx, len(remaining_sources), handle, cat)
+                            reels = _extract_with_backoff(handle, max_candidate_reels)
+                            done_map[handle] = not reels
+                            visited_this_run += 1
+                            if not reels:
+                                empty_streak += 1
+                                if empty_streak >= 2:
+                                    pause = min(120, 10 * 2 ** (empty_streak - 2))
+                                    logger.warning("Two empty creators in a row; backing off %ds.", pause)
+                                    time.sleep(pause)
+                            else:
+                                empty_streak = 0
+
+                            candidates.extend(reels)
+                            mu, sigma, floor = CREATOR_PAUSE
+                            extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
+                            if visited_this_run % CREATOR_BREAK_EVERY == 0:
+                                rest = random.uniform(*CREATOR_BREAK_SECS)
+                                logger.info("Low-profile break: resting %.0fs after %d creators...",
+                                            rest, visited_this_run)
+                                time.sleep(rest)
+                            if visited_this_run % 5 == 0:
+                                _write_sync_progress("extracting", {
+                                    "done": done_map, "candidates": candidates,
+                                    "extraction_complete": False,
+                                    "total_sources": extraction_total,
+                                })
+                    except extractor.InstagramBlocked as exc:
+                        logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
+                        _write_sync_progress("extracting", {
+                            "done": done_map, "candidates": candidates,
+                            "extraction_complete": False,
+                            "total_sources": extraction_total,
+                        })
+                        if "/accounts/login" in str(exc) or "login_required" in str(exc):
+                            # Cookie death in the creator path (login redirect
+                            # surfaces as InstagramBlocked, not CookieExpired):
+                            # same email + popup treatment as the feed path.
+                            try:
+                                import notifier
+                                notifier.send_cookie_alert_email()
+                            except Exception as alert_err:
+                                logger.warning("Failed to send cookie alert email: %s", alert_err)
+                            try:
+                                local_server.raise_cookie_attention(
+                                    pipeline="weekly-sync",
+                                    reason="Instagram session expired during creator extraction",
+                                )
+                            except Exception as popup_err:
+                                logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                        else:
+                            _alert_sync_abort("Instagram session blocked", str(exc))
+                        return 2
+
+                    empty_total = sum(1 for was_empty in done_map.values() if was_empty)
+                    if (len(candidates) < MIN_CANDIDATE_RATIO * expected_total
+                            or empty_total > MAX_EMPTY_CREATOR_RATIO * len(per_source)):
+                        logger.error(
+                            "Viability gate failed: %d candidates (expected >=%d), %d/%d creators empty. Aborting.",
+                            len(candidates), int(MIN_CANDIDATE_RATIO * expected_total), empty_total, len(per_source)
+                        )
+                        # PY-P1-5: retire banked work instead of deleting it. A
+                        # transient empty-grid/soft-block (0 candidates) must not
+                        # destroy done_map/candidates a retry could resume; the
+                        # retire renames out of the sync_progress_*.json namespace
+                        # so neither this pipeline nor resume_pending.sh picks it
+                        # up, while bytes stay available for forensics.
+                        for hopeless in {sync_checkpoint, sync_read_path}:
+                            try:
+                                if hopeless.exists():
+                                    _retire_sync_file(hopeless, "viability gate failed")
+                            except OSError:
+                                pass
+                        _alert_sync_abort(
+                            "viability gate failed",
+                            f"{len(candidates)} candidates, {empty_total}/{len(per_source)} creators empty",
+                        )
+                        return 2
+
+                    logger.info("Extracted total %d candidate reels across creators.", len(candidates))
+                    try:
+                        import atomic_io
+                        atomic_io.durable_write_json(candidates_cache_file, {
+                            "version": 1,
+                            "since_timestamp": since_timestamp,
+                            "days_back": days_back,
+                            "limit_per_creator": limit_per_creator,
+                            "written_at": time.time(),
+                            "candidates": candidates,
+                        })
+                    except Exception:
+                        pass
                     _write_sync_progress("extracting", {
                         "done": done_map, "candidates": candidates,
-                        "extraction_complete": False,
+                        "extraction_complete": True,
                         "total_sources": extraction_total,
+                        "recommended_creators": recommended_creators,
                     })
-                    if "/accounts/login" in str(exc) or "login_required" in str(exc):
-                        # Cookie death in the creator path (login redirect
-                        # surfaces as InstagramBlocked, not CookieExpired):
-                        # same email + popup treatment as the feed path.
+
+                # Tier 2: Recommended Creators (up to 8 reels per creator, pinned + unpinned)
+                if recommended_creators:
+                    logger.info("Tier 2: Extracting candidate reels for %d recommended creators...", len(recommended_creators))
+                    rec_by_cat: dict[str, list[dict[str, Any]]] = {}
+                    for rec in recommended_creators:
+                        c = rec.get("category", "entertainment")
+                        rec_by_cat.setdefault(c, []).append(rec)
+                    ordered_recs: list[dict[str, Any]] = []
+                    rec_max_len = max((len(rec_by_cat.get(c, [])) for c in cats), default=0)
+                    for i in range(rec_max_len):
+                        for c in cats:
+                            if i < len(rec_by_cat.get(c, [])):
+                                ordered_recs.append(rec_by_cat[c][i])
+
+                    for rec in ordered_recs:
+                        h = rec.get("handle", "")
+                        if not h or h in done_map:
+                            continue
+                        if len(candidates) >= config.TOP_DIGEST_COUNT * 2 and visited_this_run >= 18:
+                            logger.info("Candidate pool reached %d; stopping Tier 2 recommended discovery.", len(candidates))
+                            break
                         try:
-                            import notifier
-                            notifier.send_cookie_alert_email()
-                        except Exception as alert_err:
-                            logger.warning("Failed to send cookie alert email: %s", alert_err)
-                        try:
-                            local_server.raise_cookie_attention(
-                                pipeline="weekly-sync",
-                                reason="Instagram session expired during creator extraction",
+                            logger.info("Tier 2: Extracting reels for recommended @%s (%s)...", h, rec.get("category", ""))
+                            rec_reels = extractor.extract_creator_reels(
+                                handle=h,
+                                max_reels=8,
+                                days_back=days_back,
+                                fast_mode=True,
+                                session=session,
+                                include_pinned=True,
                             )
-                        except Exception as popup_err:
-                            logger.warning("Failed raising cookie attention popup: %s", popup_err)
-                    else:
-                        _alert_sync_abort("Instagram session blocked", str(exc))
-                    return 2
+                            done_map[h] = not rec_reels
+                            visited_this_run += 1
+                            for r in rec_reels:
+                                r["is_recommended"] = True
+                            candidates.extend(rec_reels)
+                            mu, sigma, floor = CREATOR_PAUSE
+                            extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
+                        except Exception as rec_err:
+                            logger.warning("Tier 2 extraction error on @%s: %s", h, rec_err)
 
-                empty_total = sum(1 for was_empty in done_map.values() if was_empty)
-                if (len(candidates) < MIN_CANDIDATE_RATIO * expected_total
-                        or empty_total > MAX_EMPTY_CREATOR_RATIO * len(per_source)):
-                    logger.error(
-                        "Viability gate failed: %d candidates (expected >=%d), %d/%d creators empty. Aborting.",
-                        len(candidates), int(MIN_CANDIDATE_RATIO * expected_total), empty_total, len(per_source)
+                # Combine active sources with recommended creators and build per-creator caps
+                all_sources = list(active_sources)
+                existing_handles = {s["handle"].lower().replace("@", "") for s in active_sources if "handle" in s}
+                for rec in recommended_creators:
+                    rh = rec.get("handle", "").lower().replace("@", "")
+                    if rh and rh not in existing_handles:
+                        all_sources.append({
+                            "handle": rh,
+                            "name": rec.get("name") or rh,
+                            "category": rec.get("category", "entertainment"),
+                            "enabled": True,
+                            "is_recommended": True,
+                        })
+
+                caps_map: dict[str, int] = {}
+                for s in active_sources:
+                    h = s.get("handle", "").lower().replace("@", "")
+                    if h:
+                        caps_map[h] = config.MAX_PER_CREATOR
+                for rec in recommended_creators:
+                    h = rec.get("handle", "").lower().replace("@", "")
+                    if h:
+                        caps_map[h] = 8
+
+                # 4. Two-Pass Selection & Ranking (C3):
+                # Pass 1: Cheap reach-only ranking to shortlist (2x top digest size)
+                if banked_shortlist is not None:
+                    shortlist = banked_shortlist
+                    logger.info("Reusing %d banked shortlist reels from sync progress.", len(shortlist))
+                else:
+                    shortlist = ranker.rank_top_reels(
+                        candidates=candidates,
+                        sources=all_sources,
+                        top_n=config.TOP_DIGEST_COUNT * 2,
+                        max_per_creator={h: cap + 2 for h, cap in caps_map.items()},
+                        shuffle=False,
                     )
-                    # PY-P1-5: retire banked work instead of deleting it. A
-                    # transient empty-grid/soft-block (0 candidates) must not
-                    # destroy done_map/candidates a retry could resume; the
-                    # retire renames out of the sync_progress_*.json namespace
-                    # so neither this pipeline nor resume_pending.sh picks it
-                    # up, while bytes stay available for forensics.
-                    for hopeless in {sync_checkpoint, sync_read_path}:
+
+                # Enrich shortlist with real metadata and filter by cutoff date.
+                cutoff_ts = since_timestamp if since_timestamp is not None else int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
+                shortlist_ids = [r.get("id") for r in shortlist]
+                todo = [r for r in shortlist if r.get("id") not in banked_enriched]
+                enriched_by_id: dict[str, dict[str, Any]] = {
+                    rid: banked_enriched[rid] for rid in shortlist_ids
+                    if rid in banked_enriched
+                }
+                if banked_enriched:
+                    logger.info(
+                        "Reusing %d banked enriched reels; enriching %d remaining.",
+                        len(enriched_by_id), len(todo),
+                    )
+                else:
+                    logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s, max_workers=2)...", len(shortlist), cutoff_ts)
+
+                newly_enriched = 0
+                if todo:
+                    # Serial enrichment contract (max_workers=ENRICH_WORKERS == 1):
+                    # Reuse the existing authenticated `session` directly on the main thread.
+                    def _enrich_item(r: dict[str, Any]) -> dict[str, Any] | None:
                         try:
-                            if hopeless.exists():
-                                _retire_sync_file(hopeless, "viability gate failed")
-                        except OSError:
-                            pass
-                    _alert_sync_abort(
-                        "viability gate failed",
-                        f"{len(candidates)} candidates, {empty_total}/{len(per_source)} creators empty",
-                    )
-                    return 2
+                            mu, sigma, floor = ENRICH_PAUSE
+                            if not dry_run:
+                                extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
+                            m = extractor.extract_single_reel_metadata(r, session=session)
+                            if not m:
+                                return None
+                            # Pinned reels are exempt from cutoff date
+                            if not m.get("is_pinned") and (m.get("timestamp") or 0) < cutoff_ts:
+                                return None
+                            return m
+                        except Exception as exc:
+                            logger.debug("Enrichment error on reel %s: %s", r.get("id"), exc)
+                            return None
 
-                logger.info("Extracted total %d candidate reels across creators.", len(candidates))
-                try:
-                    import atomic_io
-                    atomic_io.durable_write_json(candidates_cache_file, {
-                        "version": 1,
-                        "since_timestamp": since_timestamp,
-                        "days_back": days_back,
-                        "limit_per_creator": limit_per_creator,
-                        "written_at": time.time(),
-                        "candidates": candidates,
-                    })
-                except Exception:
-                    pass
-                _write_sync_progress("extracting", {
-                    "done": done_map, "candidates": candidates,
+                    for r in todo:
+                        try:
+                            res = _enrich_item(r)
+                            if res and res.get("id"):
+                                enriched_by_id[res["id"]] = res
+                                newly_enriched += 1
+                                if newly_enriched % 25 == 0:
+                                    _write_sync_progress("enriched", {
+                                        "candidates": candidates,
+                                        "shortlist": shortlist,
+                                        "enriched": list(enriched_by_id.values()),
+                                        "extraction_complete": True,
+                                        "recommended_creators": recommended_creators,
+                                    })
+                        except Exception as exc:
+                            logger.debug("Enrichment iteration error: %s", exc)
+
+                enriched = [enriched_by_id[rid] for rid in shortlist_ids if rid in enriched_by_id]
+                logger.info("Enriched %d valid reels within date window out of %d candidates.", len(enriched), len(shortlist))
+                _write_sync_progress("enriched", {
+                    "candidates": candidates,
+                    "shortlist": shortlist,
+                    "enriched": enriched,
                     "extraction_complete": True,
-                    "total_sources": extraction_total,
+                    "recommended_creators": recommended_creators,
                 })
 
-            # 4. Two-Pass Selection & Ranking (C3):
-            # Pass 1: Cheap reach-only ranking to shortlist (2x top digest size)
-            if banked_shortlist is not None:
-                shortlist = banked_shortlist
-                logger.info("Reusing %d banked shortlist reels from sync progress.", len(shortlist))
-            else:
-                shortlist = ranker.rank_top_reels(
-                    candidates=candidates,
-                    sources=active_sources,
-                    top_n=config.TOP_DIGEST_COUNT * 2,
-                    max_per_creator=config.MAX_PER_CREATOR + 2,
-                    shuffle=False,
+                # Pass 2: Final ranking on enriched candidates only
+                ranked_reels = ranker.rank_top_reels(
+                    candidates=enriched,
+                    sources=all_sources,
+                    top_n=config.TOP_DIGEST_COUNT,
+                    max_per_creator=caps_map,
                 )
 
-            # Enrich shortlist with real metadata and filter by cutoff date.
-            # Capped at 2 concurrent browsers drawn from a session pool (was: 6
-            # workers each spawning a fresh browser per reel). Sessions are
-            # checked out exclusively, so a page is never shared across threads.
-            cutoff_ts = since_timestamp if since_timestamp is not None else int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
-            shortlist_ids = [r.get("id") for r in shortlist]
-            todo = [r for r in shortlist if r.get("id") not in banked_enriched]
-            enriched_by_id: dict[str, dict[str, Any]] = {
-                rid: banked_enriched[rid] for rid in shortlist_ids
-                if rid in banked_enriched
-            }
-            if banked_enriched:
-                logger.info(
-                    "Reusing %d banked enriched reels; enriching %d remaining.",
-                    len(enriched_by_id), len(todo),
-                )
-            else:
-                logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s, max_workers=2)...", len(shortlist), cutoff_ts)
-
-            newly_enriched = 0
-            if todo:
-                # Serial enrichment contract (max_workers=ENRICH_WORKERS == 1):
-                # Reuse the existing authenticated `session` directly on the main thread.
-                # Spawning separate processes or threads with Playwright's sync API triggers
-                # greenlet thread-switch conflicts or duplicate asyncio loop collisions.
-                def _enrich_item(r: dict[str, Any]) -> dict[str, Any] | None:
+                # Pass 3: External Reels Discovery to fill remaining quota up to TOP_DIGEST_COUNT (Tier 3)
+                deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
+                if deficit > 0 and not dry_run:
+                    logger.info(
+                        "Channels produced %d reels (%d below target %d). Discovering external high-signal reels from feed...",
+                        len(ranked_reels), deficit, config.TOP_DIGEST_COUNT
+                    )
                     try:
-                        mu, sigma, floor = ENRICH_PAUSE
-                        extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
-                        m = extractor.extract_single_reel_metadata(r, session=session)
-                        if not m or (m.get("timestamp") or 0) < cutoff_ts:
-                            return None
-                        return m
-                    except Exception as exc:
-                        logger.debug("Enrichment error on reel %s: %s", r.get("id"), exc)
-                        return None
-
-                for r in todo:
-                    try:
-                        res = _enrich_item(r)
-                        if res and res.get("id"):
-                            enriched_by_id[res["id"]] = res
-                            newly_enriched += 1
-                            if newly_enriched % 25 == 0:
-                                _write_sync_progress("enriched", {
-                                    "candidates": candidates,
-                                    "shortlist": shortlist,
-                                    "enriched": list(enriched_by_id.values()),
-                                    "extraction_complete": True,
-                                })
-                    except Exception as exc:
-                        logger.debug("Enrichment iteration error: %s", exc)
-
-            enriched = [enriched_by_id[rid] for rid in shortlist_ids if rid in enriched_by_id]
-            logger.info("Enriched %d valid reels within date window out of %d candidates.", len(enriched), len(shortlist))
-            _write_sync_progress("enriched", {
-                "candidates": candidates,
-                "shortlist": shortlist,
-                "enriched": enriched,
-                "extraction_complete": True,
-            })
-
-            # Pass 2: Final ranking on enriched candidates only (no fallback:
-            # ranking the un-enriched shortlist would reintroduce stale/undated reels)
-            ranked_reels = ranker.rank_top_reels(
-                candidates=enriched,
-                sources=active_sources,
-                top_n=config.TOP_DIGEST_COUNT,
-                max_per_creator=config.MAX_PER_CREATOR,
-            )
-
-            # Pass 3: External Reels Discovery to fill remaining quota up to TOP_DIGEST_COUNT
-            deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
-            if deficit > 0 and not dry_run:
-                logger.info(
-                    "Followed channels produced %d reels (%d below target %d). Discovering external high-signal reels...",
-                    len(ranked_reels), deficit, config.TOP_DIGEST_COUNT
-                )
-                try:
-                    existing_ids = {r["id"] for r in ranked_reels}
-                    external_reels = []
-                    feed_blocked = None
-                    for feed_attempt in (1, 2):
-                        try:
-                            external_reels = extractor.extract_external_reels_from_feed(
-                                session=session,
-                                target_count=deficit,
-                                existing_ids=existing_ids,
-                                active_sources=active_sources,
-                            )
-                            feed_blocked = None
-                            break
-                        except extractor.CookieExpiredException as exc:
-                            # Feed blocks masquerade as cookie deaths (login URL
-                            # check inside the extractor). Only true login
-                            # redirects skip the retry: sleeping won't fix those.
-                            feed_blocked = exc
-                            if "/accounts/login" in str(exc) or "login_required" in str(exc):
-                                break
-                            if feed_attempt == 1:
-                                logger.warning(
-                                    "Rate limit during feed discovery; sleeping %d min, then one retry...",
-                                    FEED_RETRY_WAIT_MIN,
+                        existing_ids = {r["id"] for r in ranked_reels}
+                        external_reels = []
+                        feed_blocked = None
+                        for feed_attempt in (1, 2):
+                            try:
+                                external_reels = extractor.extract_external_reels_from_feed(
+                                    session=session,
+                                    target_count=deficit,
+                                    existing_ids=existing_ids,
+                                    active_sources=all_sources,
+                                    max_evaluations=2000,
                                 )
-                                _write_sync_progress("cooling_down", {
-                                    "done": done_map, "candidates": candidates,
-                                    "shortlist": shortlist, "enriched": enriched,
-                                    "extraction_complete": True,
-                                    "total_sources": extraction_total,
-                                    "blocked_handle": "__feed__",
-                                    "resumes_in_min": FEED_RETRY_WAIT_MIN,
-                                })
-                                time.sleep(FEED_RETRY_WAIT_MIN * 60)
-                    if feed_blocked is not None:
-                        raise feed_blocked
-                    if external_reels:
-                        logger.info("Discovered %d external high-signal reels from feed.", len(external_reels))
-                        combined = ranked_reels + external_reels
-                        for idx, r in enumerate(combined, 1):
-                            r["rank"] = idx
-                            r["rank_display"] = f"#{idx:02d}"
-                        ranked_reels = combined
-                except extractor.CookieExpiredException as exc:
-                    if "/accounts/login" in str(exc) or "login_required" in str(exc):
-                        logger.warning("Cookie expired during external discovery: %s", exc)
-                        try:
-                            import notifier
-                            notifier.send_cookie_alert_email()
-                        except Exception as alert_err:
-                            logger.warning("Failed to send cookie alert email: %s", alert_err)
-                        try:
-                            local_server.raise_cookie_attention(
-                                pipeline="weekly-sync",
-                                reason="Instagram session expired during weekly discovery",
-                            )
-                        except Exception as popup_err:
-                            logger.warning("Failed raising cookie attention popup: %s", popup_err)
-                    else:
-                        logger.warning(
-                            "Feed discovery rate-limited twice; publishing channel reels only: %s", exc)
-                except Exception as exc:
-                    logger.warning("External reels discovery failed: %s", exc)
+                                feed_blocked = None
+                                break
+                            except extractor.CookieExpiredException as exc:
+                                feed_blocked = exc
+                                if "/accounts/login" in str(exc) or "login_required" in str(exc):
+                                    break
+                                if feed_attempt == 1:
+                                    logger.warning(
+                                        "Rate limit during feed discovery; sleeping %d min, then one retry...",
+                                        FEED_RETRY_WAIT_MIN,
+                                    )
+                                    _write_sync_progress("cooling_down", {
+                                        "done": done_map, "candidates": candidates,
+                                        "shortlist": shortlist, "enriched": enriched,
+                                        "extraction_complete": True,
+                                        "total_sources": extraction_total,
+                                        "blocked_handle": "__feed__",
+                                        "resumes_in_min": FEED_RETRY_WAIT_MIN,
+                                        "recommended_creators": recommended_creators,
+                                    })
+                                    time.sleep(FEED_RETRY_WAIT_MIN * 60)
+                        if feed_blocked is not None:
+                            raise feed_blocked
+                        if external_reels:
+                            logger.info("Discovered %d external high-signal reels from feed.", len(external_reels))
+                            combined = ranked_reels + external_reels
+                            for idx, r in enumerate(combined, 1):
+                                r["rank"] = idx
+                                r["rank_display"] = f"#{idx:02d}"
+                            ranked_reels = combined
+                    except extractor.CookieExpiredException as exc:
+                        if "/accounts/login" in str(exc) or "login_required" in str(exc):
+                            logger.warning("Cookie expired during external discovery: %s", exc)
+                            try:
+                                import notifier
+                                notifier.send_cookie_alert_email()
+                            except Exception as alert_err:
+                                logger.warning("Failed to send cookie alert email: %s", alert_err)
+                            try:
+                                local_server.raise_cookie_attention(
+                                    pipeline="weekly-sync",
+                                    reason="Instagram session expired during weekly discovery",
+                                )
+                            except Exception as popup_err:
+                                logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                        else:
+                            logger.warning(
+                                "Feed discovery rate-limited twice; publishing channel reels only: %s", exc)
+                    except Exception as exc:
+                        logger.warning("External reels discovery failed: %s", exc)
 
             if ranked_reels:
-                _write_sync_progress("ranked", {"ranked": ranked_reels})
+                _write_sync_progress("ranked", {
+                    "ranked": ranked_reels,
+                    "recommended_creators": recommended_creators,
+                })
             elif not dry_run:
                 # Hopeless run: drop staged progress so the next attempt starts fresh.
                 for hopeless in {sync_checkpoint, sync_read_path}:
@@ -830,7 +991,7 @@ def _run_full_sync(
         return 2
 
     # 5. Media Download, Budget Check, JIT Purge, and R2 Upload
-    uploaded_url_map: dict[str, str] = {}
+    uploaded_url_map: dict[str, str] = dict(banked_urls_map)
     if not dry_run:
         week_videos_dir = config.VIDEOS_DIR / week_id
         week_videos_dir.mkdir(parents=True, exist_ok=True)
@@ -872,9 +1033,15 @@ def _run_full_sync(
 
             return (reel_id, local_video_path)
 
-        downloaded_paths: dict[str, Path] = {}
+        downloaded_paths: dict[str, Path] = {
+            rid: p for rid, p in banked_paths_map.items() if p.exists()
+        }
+        to_download = [r for r in ranked_reels if r["id"] not in downloaded_paths]
+        if downloaded_paths:
+            logger.info("Reusing %d already downloaded reels from banked progress.", len(downloaded_paths))
+
         with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_id = {executor.submit(download_reel, r): r["id"] for r in ranked_reels}
+            future_to_id = {executor.submit(download_reel, r): r["id"] for r in to_download}
             download_done = 0
             for future in as_completed(future_to_id):
                 try:
@@ -895,6 +1062,7 @@ def _run_full_sync(
         max_feed_bytes = getattr(config, "MAX_FEED_BATCH_BYTES", int(5.8 * 1024 * 1024 * 1024))
         budgeted_reels: list[dict[str, Any]] = []
         total_batch_bytes = 0
+        budget_capped = False
         for r in ranked_reels:
             fpath = downloaded_paths.get(r["id"])
             fsize = fpath.stat().st_size if fpath and fpath.exists() else 0
@@ -903,6 +1071,7 @@ def _run_full_sync(
                     "Byte budget reached: capping digest at %d reels (%.1f MB / max %.1f MB) to protect 6 GB R2 headroom.",
                     len(budgeted_reels), total_batch_bytes / (1024 * 1024), max_feed_bytes / (1024 * 1024)
                 )
+                budget_capped = True
                 break
             total_batch_bytes += fsize
             budgeted_reels.append(r)
@@ -910,13 +1079,6 @@ def _run_full_sync(
         ranked_reels = budgeted_reels
 
         # 5C & 5D: Pre-Flight Quota Check, then Just-In-Time Purge as fallback
-        # PY-P0-1 ordering: the live digest still points at last week's R2
-        # keys until save_digest_batch lands below, so purging first turns any
-        # crash/quota abort between here and the save into a live-feed 404.
-        # Check against current usage first; purge only on quota failure (the
-        # new batch physically cannot fit otherwise), keep the persisted live
-        # week either way, and rely on the post-publish rolling purges below
-        # to reclaim the old week once the new digest is durable.
         live_week = _persisted_digest_week()
         keep_weeks = {live_week} if live_week and live_week != week_id else set()
         if config.R2_ACCOUNT_ID:
@@ -937,6 +1099,8 @@ def _run_full_sync(
 
         def upload_reel(reel: dict[str, Any]) -> tuple[str, str]:
             reel_id = reel["id"]
+            if reel_id in uploaded_url_map and uploaded_url_map[reel_id]:
+                return (reel_id, uploaded_url_map[reel_id])
             local_video_path = downloaded_paths.get(reel_id)
             if not local_video_path or not local_video_path.exists():
                 return (reel_id, "")
@@ -949,9 +1113,13 @@ def _run_full_sync(
             )
             return (reel_id, public_url)
 
+        to_upload = [r for r in ranked_reels if r["id"] not in uploaded_url_map or not uploaded_url_map[r["id"]]]
+        if uploaded_url_map:
+            logger.info("Reusing %d already uploaded reels from banked progress.", len([r for r in ranked_reels if r["id"] in uploaded_url_map]))
+
         with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_id = {executor.submit(upload_reel, r): r["id"] for r in ranked_reels}
-            published_done = 0
+            future_to_id = {executor.submit(upload_reel, r): r["id"] for r in to_upload}
+            published_done = len(ranked_reels) - len(to_upload)
             for future in as_completed(future_to_id):
                 try:
                     rid, url = future.result()
@@ -965,6 +1133,9 @@ def _run_full_sync(
                     "ranked": ranked_reels,
                     "published": published_done,
                     "published_total": len(ranked_reels),
+                    "recommended_creators": recommended_creators,
+                    "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                    "uploaded_url_map": uploaded_url_map,
                 })
 
         # Drop unplayable reels (C2)
@@ -973,23 +1144,27 @@ def _run_full_sync(
             logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
             ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
 
-        # Never shrink the live digest: refuse to save a batch that is empty
-        # or materially smaller than the healthy one it would replace. This
-        # gate previously ran only when deploy=True, so a non-deploy sync
-        # during an R2 outage could save an EMPTY digest over 300 live reels.
+        # Shortfall preservation gate: If final playable reels are under MIN_DEPLOY_ITEMS (150),
+        # never overwrite the healthy live digest. Preserve all banked work as shortfall_paused.
         prev_count = _digest_item_count()
         if not ranked_reels or (
-            prev_count >= MIN_DEPLOY_ITEMS and len(ranked_reels) < MIN_DEPLOY_ITEMS
+            (prev_count >= MIN_DEPLOY_ITEMS or deploy) and len(ranked_reels) < MIN_DEPLOY_ITEMS
         ):
             logger.error(
-                "Only %d playable reels (previous digest: %d, minimum %d); "
-                "refusing to overwrite the live digest.",
+                "Only %d playable reels (previous digest: %d, minimum %d required); "
+                "preserving work as shortfall_paused checkpoint.",
                 len(ranked_reels), prev_count, MIN_DEPLOY_ITEMS,
             )
+            _write_sync_progress("shortfall_paused", {
+                "ranked": ranked_reels,
+                "recommended_creators": recommended_creators,
+                "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                "uploaded_url_map": uploaded_url_map,
+                "deficit": config.TOP_DIGEST_COUNT - len(ranked_reels),
+            })
             _alert_sync_abort(
-                "digest save refused",
-                f"only {len(ranked_reels)} playable reels "
-                f"(previous digest {prev_count}, minimum {MIN_DEPLOY_ITEMS})",
+                "digest shortfall paused",
+                f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS} required) - checkpoint preserved for resume",
             )
             return 2
 
@@ -1000,9 +1175,8 @@ def _run_full_sync(
                 r["r2_url"] = r["video_url"] = uploaded_url_map[r["id"]]
 
         # 6. Save digest batch payload (only playable reels saved!).
-        # Saved BEFORE the deploy gate so a small-but-real first run persists
-        # locally even when Pages is (correctly) left untouched.
-        ranker.save_digest_batch(ranked_reels, run_date=week_id)
+        extra_manifest = {"budget_capped": True} if budget_capped else None
+        ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
 
         if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
             logger.error(
@@ -1537,6 +1711,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Simulate pipeline without downloading or uploading videos")
     parser.add_argument("--limit-per-creator", type=int, default=15, help="Max candidate reels per creator (default: 15; discovery visits at most 5/creator, 6 for food)")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
+    parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
     args = parser.parse_args()
 
     # Expand mode
@@ -1599,6 +1774,7 @@ def main() -> int:
         days_back=days_back,
         limit_per_creator=args.limit_per_creator,
         since_timestamp=since_ts,
+        resume=args.resume,
     )
 
 

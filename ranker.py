@@ -113,7 +113,7 @@ def rank_top_reels(
     candidates: list[dict[str, Any]],
     sources: list[dict[str, Any]],
     top_n: int = config.TOP_DIGEST_COUNT,
-    max_per_creator: int = config.MAX_PER_CREATOR,
+    max_per_creator: int | dict[str, int] = config.MAX_PER_CREATOR,
     seed: str | int | None = None,
     shuffle: bool = True,
 ) -> list[dict[str, Any]]:
@@ -217,7 +217,8 @@ def rank_top_reels(
         if category_counts.get(cat, 0) >= ceiling:
             continue
         h = item["creator_handle"].lower().replace("@", "")
-        if creator_counts[h] < max_per_creator and item["id"] not in used_ids:
+        creator_cap = max_per_creator.get(h, config.MAX_PER_CREATOR) if isinstance(max_per_creator, dict) else max_per_creator
+        if creator_counts[h] < creator_cap and item["id"] not in used_ids:
             selected.append(item)
             creator_counts[h] += 1
             category_counts[cat] = category_counts.get(cat, 0) + 1
@@ -243,8 +244,12 @@ def rank_top_reels(
     return selected
 
 
-def save_digest_batch(ranked_items: list[dict[str, Any]], run_date: str | None = None) -> Path:
-    """Save ranked Top 100 digest batch to disk."""
+def save_digest_batch(
+    ranked_items: list[dict[str, Any]],
+    run_date: str | None = None,
+    extra_manifest: dict[str, Any] | None = None,
+) -> Path:
+    """Save ranked Top 100/250 digest batch to disk."""
     if not run_date:
         run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -256,6 +261,8 @@ def save_digest_batch(ranked_items: list[dict[str, Any]], run_date: str | None =
         "count": len(ranked_items),
         "items": ranked_items,
     }
+    if extra_manifest:
+        payload.update(extra_manifest)
     # Archive first, then the live batch pointer (PY-P2-8): a crash between
     # the two writes must leave the archive ahead, never the live batch
     # ahead of the archive (that confuses the orphan-purge week resolution).

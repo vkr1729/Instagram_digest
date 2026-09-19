@@ -162,3 +162,39 @@ def test_score_ordered_fill_with_category_ceiling():
     # In first 10 reels, there should be at least 3 distinct categories
     assert len(set(first_10_cats)) >= 3, f"Categories are clumped: {first_10_cats}"
 
+
+def test_rank_top_reels_per_creator_cap_dict():
+    """Verify max_per_creator as a dict allows higher caps (e.g. 8) for recommended channels while keeping 4 for followed."""
+    from collections import Counter
+
+    sources = [
+        {"handle": "followed_user", "name": "Followed User", "category": "tech"},
+        {"handle": "recommended_star", "name": "Recommended Star", "category": "health"},
+    ]
+
+    candidates = []
+    for i in range(12):
+        candidates.append({
+            "id": f"fu_{i}",
+            "creator_handle": "followed_user",
+            "view_count": 50000 + (i * 1000),
+            "like_count": 5000,
+            "comment_count": 200,
+        })
+    for i in range(12):
+        candidates.append({
+            "id": f"rs_{i}",
+            "creator_handle": "recommended_star",
+            "view_count": 60000 + (i * 1000),
+            "like_count": 6000,
+            "comment_count": 300,
+        })
+
+    caps = {"followed_user": 4, "recommended_star": 8}
+    ranked = rank_top_reels(candidates, sources, top_n=20, max_per_creator=caps, shuffle=False)
+
+    counts = Counter(r["creator_handle"] for r in ranked)
+    assert counts["followed_user"] == 4
+    assert counts["recommended_star"] == 8
+    assert len(ranked) == 12
+

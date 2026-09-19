@@ -111,8 +111,8 @@ notify "Resuming interrupted Instagram Digest run in the background…"
 
 # Weekly sync first: it rebuilds the digest the expansion then appends to.
 if [ "${#SYNC_PROGS[@]}" -gt 0 ]; then
-    log "Resuming weekly sync: main.py --sync --deploy"
-    "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --sync --deploy >>"$LOG_FILE" 2>&1
+    log "Resuming weekly sync (or shortfall top-up): main.py --sync --resume --deploy"
+    "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --sync --resume --deploy >>"$LOG_FILE" 2>&1
     log "Sync resume exited with code $?."
 fi
 

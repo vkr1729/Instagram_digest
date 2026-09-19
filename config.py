@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_VERSION = "5.0.0"  # Single source of truth for the release version.
+APP_VERSION = "5.1.0"  # Single source of truth for the release version.
 
 # Base paths
 ROOT_DIR = Path(__file__).resolve().parent
@@ -109,7 +109,7 @@ NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("RECIPIENT_EMAIL"
 # Pipeline & Retention Limits (Default: 1 week rolling archive)
 RETENTION_WEEKS = _env_int("RETENTION_WEEKS", 1, 1, 52)
 RETENTION_DAYS = _env_int("RETENTION_DAYS", RETENTION_WEEKS * 7 + 1, 1, 365)
-TOP_DIGEST_COUNT = _env_int("TOP_DIGEST_COUNT", 300, 1, 1000)
+TOP_DIGEST_COUNT = _env_int("TOP_DIGEST_COUNT", 250, 1, 1000)
 MAX_PER_CREATOR = _env_int("MAX_PER_CREATOR", 4, 1, 50)
 # One-sided flood guard: no single category may exceed this share of the digest.
 # (Replaces the old fixed 40/15/15/10/10/10 percentage targets.)

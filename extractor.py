@@ -543,7 +543,7 @@ def _extract_shortcode(href: str) -> str:
     return m.group(1) if m else ""
 
 
-_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9._]{0,29}$")
+_HANDLE_RE = re.compile(r"^[a-z0-9._]{1,30}$")
 
 
 def clean_handle(raw: Any) -> str:
@@ -675,11 +675,25 @@ class InstagramSession:
         self._nav_count += 1
         return self._page
 
+    def new_isolated_page(self):
+        """Create a dedicated secondary tab inside the existing context for metadata inspections.
+
+        Does not bump the context navigation recycle counter and keeps the caller's primary
+        page untouched. The caller MUST close the returned page in a finally block.
+        """
+        self.start()
+        if not self._context:
+            self._open_context()
+        page = self._context.new_page()
+        page.set_default_navigation_timeout(20000)
+        return page
+
 
 def discover_creator_reel_urls(
     handle: str,
     max_reels: int = 10,
     session: InstagramSession | None = None,
+    include_pinned: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Use headless Playwright to load creator's reels tab and extract recent reel URLs + view counts.
@@ -689,7 +703,7 @@ def discover_creator_reel_urls(
     target_url = f"https://www.instagram.com/{clean_handle}/reels/"
     reels_found: list[dict[str, Any]] = []
 
-    logger.info("Discovering reels for @%s via Playwright...", clean_handle)
+    logger.info("Discovering reels for @%s via Playwright (include_pinned=%s)...", clean_handle, include_pinned)
     local_session = None
     try:
         if session:
@@ -741,7 +755,7 @@ def discover_creator_reel_urls(
                 except Exception:
                     pass
 
-                if is_pinned:
+                if is_pinned and not include_pinned:
                     logger.info("Skipping pinned reel %s for @%s", href, clean_handle)
                     continue
 
@@ -761,6 +775,7 @@ def discover_creator_reel_urls(
                         "creator_handle": clean_handle,
                         "view_count": view_count,
                         "thumbnail": thumb_url,
+                        "is_pinned": is_pinned,
                     })
 
             if len(reels_found) >= max_reels:
@@ -780,6 +795,7 @@ def discover_creator_reel_urls(
 def extract_single_reel_metadata(
     reel_info: dict[str, Any],
     session: InstagramSession | None = None,
+    page: Any = None,
 ) -> dict[str, Any] | None:
     """
     Extract full metadata and direct CDN progressive MP4 stream for an individual reel.
@@ -792,7 +808,9 @@ def extract_single_reel_metadata(
     # 1. Attempt high-speed Playwright extraction (bypasses broken yt-dlp & login walls)
     local_session = None
     try:
-        if session:
+        if page is not None:
+            pass  # Caller provided a dedicated isolated page
+        elif session:
             page = session.get_page()
         else:
             local_session = InstagramSession()
@@ -908,6 +926,7 @@ def extract_single_reel_metadata(
                 "thumbnail": thumb_url,
                 "video_cdn_url": video_cdn_url,
                 "metrics_estimated": metrics_estimated,
+                "is_pinned": bool(reel_info.get("is_pinned", False)),
             }
     except Exception as exc:
         logger.debug("Playwright extraction failed on %s: %s; trying yt-dlp fallback...", reel_url, exc)
@@ -950,6 +969,7 @@ def extract_single_reel_metadata(
                 "thumbnail": data.get("thumbnail") or reel_info.get("thumbnail", ""),
                 "video_cdn_url": data.get("url", ""),
                 "metrics_estimated": False,
+                "is_pinned": bool(reel_info.get("is_pinned", False)),
             }
     except Exception as exc:
         logger.warning("yt-dlp fallback failed for %s: %s", reel_url, exc)
@@ -968,6 +988,7 @@ def extract_single_reel_metadata(
         "thumbnail": reel_info.get("thumbnail", ""),
         "video_cdn_url": reel_info.get("video_cdn_url", ""),
         "metrics_estimated": True,
+        "is_pinned": bool(reel_info.get("is_pinned", False)),
     }
 
 
@@ -978,6 +999,7 @@ def extract_creator_reels(
     use_cookies: bool = True,
     fast_mode: bool = False,
     session: InstagramSession | None = None,
+    include_pinned: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Extract recent reels and metrics for a creator:
@@ -989,9 +1011,14 @@ def extract_creator_reels(
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     cutoff_timestamp = int(cutoff_dt.timestamp())
 
+    kwargs: dict[str, Any] = {}
     if session is not None:
-        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, session=session)
-    else:
+        kwargs["session"] = session
+    if include_pinned:
+        kwargs["include_pinned"] = include_pinned
+    try:
+        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, **kwargs)
+    except TypeError:
         reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels)
     if not reels_info:
         return []
@@ -1012,6 +1039,7 @@ def extract_creator_reels(
                 "thumbnail": info.get("thumbnail", ""),
                 "video_cdn_url": "",
                 "metrics_estimated": True,
+                "is_pinned": bool(info.get("is_pinned", False)),
             })
             continue
 
@@ -1022,8 +1050,11 @@ def extract_creator_reels(
         if not meta:
             continue
 
+        is_pinned = bool(info.get("is_pinned") or meta.get("is_pinned"))
         ts = meta.get("timestamp") or 0
-        if not ts or ts < cutoff_timestamp:
+        if is_pinned:
+            meta["is_pinned"] = True
+        elif not ts or ts < cutoff_timestamp:
             logger.info("Discarding reel %s: timestamp %s older than %d-day cutoff %s (or missing)",
                         meta.get("id"), ts, days_back, cutoff_timestamp)
             continue
@@ -1211,7 +1242,9 @@ def extract_external_reels_from_feed(
         return []
 
     if max_evaluations is None:
-        max_evaluations = max(120, target_count * 8)
+        max_evaluations = min(2000, max(120, target_count * 8))
+    else:
+        max_evaluations = min(2000, max_evaluations)
 
     existing = set(existing_ids or set())
     followed_handles = set(
@@ -1359,9 +1392,25 @@ def extract_external_reels_from_feed(
             video_cdn = data.get("videoSrc", "") or ""
             poster = data.get("posterSrc", "") or ""
 
-            # If handle or metrics not fully parsed from DOM, enrich via yt-dlp fallback
+            # If handle or metrics not fully parsed from DOM, enrich via isolated secondary tab
             if not h or (likes == 0 and comments == 0):
-                meta = extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, session=session)
+                isolated_tab = None
+                try:
+                    isolated_tab = session.new_isolated_page()
+                    meta = (
+                        extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, page=isolated_tab)
+                        if isolated_tab else
+                        extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, session=session)
+                    )
+                except Exception as meta_err:
+                    logger.debug("Isolated metadata extraction failed on %s: %s", rid, meta_err)
+                    meta = None
+                finally:
+                    if isolated_tab:
+                        try:
+                            isolated_tab.close()
+                        except Exception:
+                            pass
                 if meta:
                     h = clean_handle(meta.get("creator_handle")) or h
                     caption = caption or meta.get("caption", "")
@@ -1430,6 +1479,15 @@ def extract_external_reels_from_feed(
         except Exception:
             pass
         human_pause()
+
+        # Ensure feed crawler page did not navigate away from /reels/
+        feed_url = getattr(page, "url", "") or ""
+        if "/reels/" not in feed_url:
+            logger.warning("Feed page navigated away to %s; recovering to /reels/...", feed_url)
+            try:
+                page.goto("https://www.instagram.com/reels/", wait_until="domcontentloaded", timeout=25000)
+            except Exception as rec_err:
+                logger.warning("Failed reloading reels feed during recovery: %s", rec_err)
 
     logger.info("External Reels discovery finished: harvested %d high-signal external reels (evaluated %d).",
                 len(external_candidates), eval_count)

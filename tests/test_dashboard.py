@@ -535,3 +535,86 @@ def test_dashboard_shows_per_job_resume_and_discard():
                    "Status: RUNNING", "Resume this job", "Discard",
                    "/api/resume/discard", "To stop it, use Kill server below."):
         assert marker in html, marker
+
+
+def test_dashboard_shows_recommended_creators_and_shortfall_ui():
+    html = (config.TEMPLATES_DIR / "dashboard.html").read_text(encoding="utf-8")
+    for marker in ("Recommended This Week", "/api/recommended-creators",
+                   "/api/recommendations/refresh", "/api/channels/add",
+                   "/api/sync/resume", "recommendedSection", "Resume Sync / Top-Up",
+                   "Shortfall Paused"):
+        assert marker in html, marker
+
+
+def test_api_recommended_creators_endpoint(tmp_path, monkeypatch):
+    import recommendations
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    rec_file = tmp_path / "recommended_creators.json"
+    rec_file.write_text(json.dumps({
+        "creators": [
+            {"handle": "creator_tech", "name": "Tech Guy", "category": "tech", "followers": "100k", "reason": "Cool gadgets"}
+        ],
+        "updated_at": "2026-09-19T00:00:00Z"
+    }), encoding="utf-8")
+    monkeypatch.setattr(recommendations, "RECOMMENDED_FILE", rec_file)
+
+    srv = _LiveServer(tmp_path, monkeypatch)
+    try:
+        status, body = srv.get("/api/recommended-creators")
+    finally:
+        srv.close()
+    assert status == 200
+    data = json.loads(body)
+    assert data["success"] is True
+    assert "creators" in data
+    assert len(data["creators"]) == 1
+    assert data["creators"][0]["handle"] == "creator_tech"
+
+
+def test_api_channels_add_endpoint(tmp_path, monkeypatch):
+    sources_file = tmp_path / "sources.json"
+    blacklist_file = tmp_path / "blacklist.json"
+    sources_file.write_text("[]", encoding="utf-8")
+    blacklist_file.write_text(json.dumps({"creators": ["new_channel"]}), encoding="utf-8")
+
+    monkeypatch.setattr(config, "SOURCES_FILE", sources_file)
+    monkeypatch.setattr(config, "BLACKLIST_FILE", blacklist_file)
+
+    srv = _LiveServer(tmp_path, monkeypatch)
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{srv.port}/api/channels/add",
+            data=json.dumps({"handle": "new_channel", "name": "New Channel", "category": "tech"}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as res:
+            assert res.status == 200
+            resp_data = json.loads(res.read().decode("utf-8"))
+            assert resp_data["success"] is True
+            assert resp_data["handle"] == "new_channel"
+    finally:
+        srv.close()
+
+    updated_sources = json.loads(sources_file.read_text(encoding="utf-8"))
+    assert any(s["handle"] == "new_channel" for s in updated_sources)
+    updated_bl = json.loads(blacklist_file.read_text(encoding="utf-8"))
+    assert "new_channel" not in updated_bl["creators"]
+
+
+def test_api_sync_resume_endpoint(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        local_server, "trigger_sync_resume_task",
+        lambda deploy=True: calls.append(deploy) or {"success": True, "message": "Resuming sync"}
+    )
+    srv = _LiveServer(tmp_path, monkeypatch)
+    try:
+        status, body = srv.post("/api/sync/resume")
+    finally:
+        srv.close()
+    assert status == 200
+    data = json.loads(body)
+    assert data["success"] is True
+    assert calls == [True]
+

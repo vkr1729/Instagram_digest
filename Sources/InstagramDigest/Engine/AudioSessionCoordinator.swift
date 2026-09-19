@@ -21,7 +21,7 @@ public final class AudioSessionCoordinator: Sendable {
             try session.setCategory(
                 .playback,
                 mode: .moviePlayback,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay]
+                options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .mixWithOthers]
             )
         } catch {
             // Non-fatal, default system audio category remains
