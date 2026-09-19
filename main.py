@@ -169,11 +169,32 @@ def _purge_current_week_stray_r2_keys(week_id: str, ranked_ids: set[str]) -> lis
     except Exception as exc:
         logger.warning("Stray-key listing failed for %s: %s", prefix, exc)
         return []
-    strays = [
-        k for k in (existing or set())
-        if k.startswith(prefix) and k.endswith(".mp4")
-        and not any(k.endswith(f"_{rid}.mp4") for rid in ranked_ids)
-    ]
+    strays = []
+    try:
+        from urllib.parse import quote as _quote, unquote as _unquote
+    except Exception:
+        _quote = _unquote = None  # type: ignore[assignment]
+    for k in (existing or set()):
+        if not (k.startswith(prefix) and k.endswith(".mp4")):
+            continue
+        try:
+            decoded = _unquote(k) if _unquote else k
+        except Exception:
+            decoded = k
+        keep = False
+        for rid in ranked_ids:
+            if k.endswith(f"_{rid}.mp4") or decoded.endswith(f"_{rid}.mp4"):
+                keep = True
+                break
+            if _quote:
+                try:
+                    if k.endswith(f"_{_quote(str(rid), safe='')}.mp4"):
+                        keep = True
+                        break
+                except Exception:
+                    pass
+        if not keep:
+            strays.append(k)
     if not strays:
         return []
     s3 = storage_r2.get_s3_client()
@@ -208,6 +229,63 @@ RANKED_SYNC_STAGES = ("ranked", "publishing")
 
 # A banked ranked list older than this must never be republished as a new week.
 MAX_SYNC_RESUME_AGE_DAYS = 3
+
+
+# Cross-week dedup ledger: reel IDs published in the last 30 days are
+# filtered from future digests, so a reel that misses one week's cut cannot
+# resurface the next week and break the "finite briefing" promise.
+SEEN_IDS_FILE = config.DATA_DIR / "seen_reel_ids.json"
+SEEN_IDS_RETENTION_DAYS = 30
+
+
+def _load_seen_reel_ids() -> dict[str, float]:
+    """Reel id -> first-seen unix timestamp (pruned to retention on load)."""
+    try:
+        raw = json.loads(SEEN_IDS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    cutoff = time.time() - SEEN_IDS_RETENTION_DAYS * 86400
+    return {rid: ts for rid, ts in raw.items() if isinstance(ts, (int, float)) and ts >= cutoff}
+
+
+def _record_seen_reel_ids(reels: list[dict[str, Any]]) -> int:
+    """Add published reel IDs to the ledger (atomic write). Returns new count."""
+    seen = _load_seen_reel_ids()
+    now = time.time()
+    added = 0
+    for r in reels:
+        rid = str(r.get("id") or "")
+        if rid and rid not in seen:
+            seen[rid] = now
+            added += 1
+    try:
+        import atomic_io
+        atomic_io.durable_write_json(SEEN_IDS_FILE, seen)
+    except Exception:
+        pass
+    return added
+
+
+def _filter_seen_reel_ids(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop candidates published in a recent digest. Never drops everything:
+    if the filter would empty the pool, it returns the pool unfiltered and
+    logs loudly (a torn ledger must not abort a run)."""
+    if not candidates:
+        return candidates
+    seen = _load_seen_reel_ids()
+    if not seen:
+        return candidates
+    fresh = [c for c in candidates if str(c.get("id") or "") not in seen]
+    dropped = len(candidates) - len(fresh)
+    if dropped:
+        logger.info("Cross-week dedup: filtered %d recently-published reels.", dropped)
+    if not fresh:
+        logger.warning("Cross-week dedup would drop all %d candidates; keeping pool unfiltered.",
+                       len(candidates))
+        return candidates
+    return fresh
 
 
 class PipelineBusy(RuntimeError):
@@ -285,6 +363,58 @@ def _ensure_valid_session(session) -> bool:
         return False
 
 
+def _trust_warming_active() -> bool:
+    """True when pacing should be slowed for a young/low-trust account.
+
+    Explicit TRUST_WARMING=1/0 forces on/off. Otherwise auto: on while the
+    account is < 14 days past its first recorded follow burst
+    (data/follow_progress.json started_at).
+    """
+    flag = (config.TRUST_WARMING or "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    try:
+        prog = json.loads((config.DATA_DIR / "follow_progress.json").read_text(encoding="utf-8"))
+        started = prog.get("started_at") or ""
+        age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).days
+        return age_days < 14
+    except Exception:
+        return False
+
+
+def _check_follow_cooldown(force: bool = False) -> bool:
+    """Refuse scrape starts inside the post-mass-follow cooldown window.
+
+    A follow-then-scrape burst on a fresh account is the highest-risk
+    pattern for a checkpoint challenge. Returns True when the run may
+    proceed. Pass force=True (--force) to override explicitly.
+    """
+    window_h = config.FOLLOW_COOLDOWN_HOURS
+    if window_h <= 0 or force:
+        return True
+    try:
+        prog = json.loads((config.DATA_DIR / "follow_progress.json").read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    done = prog.get("done") or []
+    started = prog.get("started_at") or ""
+    try:
+        started_dt = datetime.fromisoformat(started)
+    except Exception:
+        return True
+    age_h = (datetime.now(timezone.utc) - started_dt).total_seconds() / 3600.0
+    if len(done) >= config.FOLLOW_BURST_THRESHOLD and age_h < window_h:
+        logger.error(
+            "Follow cooldown: %d follows %.1fh ago (< %.0fh window). "
+            "Refusing scrape to protect the new account; re-run with --force to override.",
+            len(done), age_h, window_h,
+        )
+        return False
+    return True
+
+
 def run_full_sync(
     dry_run: bool = False,
     deploy: bool = False,
@@ -318,6 +448,18 @@ def _run_full_sync(
     else:
         logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s)...",
                     week_id, days_back, dry_run)
+
+    # 0. Session pre-check FIRST (before the multi-hour agy + scrape work):
+    # a dead login must abort in seconds, not after burning a full run.
+    # Skipped on dry runs (no network phase to protect) and on --resume
+    # (banked work must always be allowed to complete; the resume path
+    # revalidates before its own network phase).
+    if not dry_run and not resume:
+        session_ok = _ensure_valid_session(extractor.InstagramSession())
+        if not session_ok:
+            _alert_sync_abort("Instagram session invalid",
+                              "pre-run validation failed after one cookie refresh")
+            return 2
 
     # 1. R2 connectivity check (read-only). Owner-mandated order defers EVERY
     # R2 mutation until the full digest is prepared locally (Phase 5C+); the
@@ -509,8 +651,19 @@ def _run_full_sync(
             # If resuming from shortfall_paused / deficit, skip candidate extraction and ranking completely!
             if is_shortfall_resume:
                 deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
-                if deficit > 0 and not dry_run:
-                    logger.info("Tier 3 Top-up: discovering up to %d external reels from feed (max 2,000 evaluations)...", deficit)
+                already_external = sum(1 for r in ranked_reels if r.get("is_external"))
+                max_external = int(config.TOP_DIGEST_COUNT * config.MAX_EXTERNAL_SHARE)
+                tier3_room = max(0, max_external - already_external)
+                tier3_target = min(deficit, tier3_room)
+                if tier3_target < deficit:
+                    logger.info(
+                        "Tier 3 share cap on resume: topping up %d of %d deficit "
+                        "(%d/%d external slots used).",
+                        tier3_target, deficit, already_external, max_external,
+                    )
+                if deficit > 0 and not dry_run and tier3_target > 0:
+                    logger.info("Tier 3 Top-up: discovering up to %d external reels from feed (max %d evaluations)...",
+                                tier3_target, config.MAX_FEED_EVALUATIONS)
                     try:
                         existing_ids = {r["id"] for r in ranked_reels}
                         external_reels = []
@@ -518,10 +671,10 @@ def _run_full_sync(
                             try:
                                 external_reels = extractor.extract_external_reels_from_feed(
                                     session=session,
-                                    target_count=deficit,
+                                    target_count=tier3_target,
                                     existing_ids=existing_ids,
                                     active_sources=all_sources,
-                                    max_evaluations=2000,
+                                    max_evaluations=config.MAX_FEED_EVALUATIONS,
                                 )
                                 break
                             except extractor.CookieExpiredException as exc:
@@ -817,7 +970,13 @@ def _run_full_sync(
                         h = rec.get("handle", "")
                         if not h or h in done_map:
                             continue
-                        if len(candidates) >= config.TOP_DIGEST_COUNT * 2 and visited_this_run >= 18:
+                        # Tier 2 must pull its weight: the pool-size stop only
+                        # applies once Tier 1+2 candidates can plausibly clear
+                        # the 150 deploy floor after date-filtering +
+                        # enrichment attrition (~50% => 2x floor cover banked).
+                        floor_cover = MIN_DEPLOY_ITEMS * 2
+                        if len(candidates) >= max(config.TOP_DIGEST_COUNT * 2, floor_cover) \
+                                and visited_this_run >= 18:
                             logger.info("Candidate pool reached %d; stopping Tier 2 recommended discovery.", len(candidates))
                             break
                         try:
@@ -878,7 +1037,11 @@ def _run_full_sync(
                         shuffle=False,
                     )
 
-                # Enrich shortlist with real metadata and filter by cutoff date.
+                # Enrichment, media-API-first: one cheap media/{id}/info/ GET
+                # per shortlist reel returns timestamp + metrics + video URL
+                # AND applies the date cutoff up front, so stale reels never
+                # burn a ~7s Playwright visit. Only API misses fall through to
+                # the per-reel browser path below.
                 cutoff_ts = since_timestamp if since_timestamp is not None else int((datetime.now(timezone.utc) - timedelta(days=days_back)).timestamp())
                 shortlist_ids = [r.get("id") for r in shortlist]
                 todo = [r for r in shortlist if r.get("id") not in banked_enriched]
@@ -892,10 +1055,26 @@ def _run_full_sync(
                         len(enriched_by_id), len(todo),
                     )
                 else:
-                    logger.info("Enriching shortlist of %d reels with real metadata (cutoff_ts=%s, max_workers=2)...", len(shortlist), cutoff_ts)
+                    logger.info("Enriching shortlist of %d reels via media-info API first (cutoff_ts=%s)...", len(shortlist), cutoff_ts)
+
+                api_prefiltered: list[dict[str, Any]] = todo
+                if todo and not dry_run:
+                    try:
+                        api_prefiltered = extractor.enrich_candidates_via_media_api(
+                            todo, cutoff_timestamp=cutoff_ts)
+                        logger.info("media-info pre-filter: %d/%d shortlist reels fresh with full metadata.",
+                                    len(api_prefiltered), len(todo))
+                    except Exception as api_err:
+                        logger.warning("media-info pre-filter failed, falling back to per-reel: %s", api_err)
+                        api_prefiltered = todo
+                for r in api_prefiltered:
+                    if r.get("id") and (r.get("timestamp") or enriched_by_id.get(r.get("id"), {}).get("timestamp")):
+                        enriched_by_id[r["id"]] = r
+                still_missing = [r for r in todo if not enriched_by_id.get(r.get("id"), {}).get("timestamp")]
 
                 newly_enriched = 0
-                if todo:
+                if still_missing:
+                    # Per-reel browser fallback, API misses only.
                     # Serial enrichment contract (max_workers=ENRICH_WORKERS == 1):
                     # Reuse the existing authenticated `session` directly on the main thread.
                     def _enrich_item(r: dict[str, Any]) -> dict[str, Any] | None:
@@ -914,7 +1093,7 @@ def _run_full_sync(
                             logger.debug("Enrichment error on reel %s: %s", r.get("id"), exc)
                             return None
 
-                    for r in todo:
+                    for r in still_missing:
                         try:
                             res = _enrich_item(r)
                             if res and res.get("id"):
@@ -941,7 +1120,10 @@ def _run_full_sync(
                     "recommended_creators": recommended_creators,
                 })
 
-                # Pass 2: Final ranking on enriched candidates only
+                # Pass 2: Final ranking on enriched candidates only.
+                # Cross-week dedup first: drop reels published in a recent
+                # digest so they cannot resurface week after week.
+                enriched = _filter_seen_reel_ids(enriched)
                 ranked_reels = ranker.rank_top_reels(
                     candidates=enriched,
                     sources=all_sources,
@@ -949,12 +1131,27 @@ def _run_full_sync(
                     max_per_creator=caps_map,
                 )
 
-                # Pass 3: External Reels Discovery to fill remaining quota up to TOP_DIGEST_COUNT (Tier 3)
+                # Pass 3: External Reels Discovery (Tier 3). Capped by share:
+                # externals are lower-signal by design (estimated views,
+                # timestamp=now), and long discovery-feed scrolls are the
+                # highest-risk surface on a fresh account. Tier 3 fills at
+                # most MAX_EXTERNAL_SHARE of the digest and stops after
+                # MAX_FEED_EVALUATIONS evals; the rest stays a deficit for
+                # shortfall_paused + resume instead of a grind.
                 deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
-                if deficit > 0 and not dry_run:
+                max_external = int(config.TOP_DIGEST_COUNT * config.MAX_EXTERNAL_SHARE)
+                tier3_target = min(deficit, max_external)
+                if tier3_target < deficit:
                     logger.info(
-                        "Channels produced %d reels (%d below target %d). Discovering external high-signal reels from feed...",
-                        len(ranked_reels), deficit, config.TOP_DIGEST_COUNT
+                        "Tier 3 share cap: filling %d of %d deficit (max %.0f%% externals); "
+                        "remainder stays a deficit for resume.",
+                        tier3_target, deficit, config.MAX_EXTERNAL_SHARE * 100,
+                    )
+                if deficit > 0 and not dry_run and tier3_target > 0:
+                    logger.info(
+                        "Channels produced %d reels (%d below target %d). Discovering up to %d external high-signal reels from feed (eval cap %d)...",
+                        len(ranked_reels), deficit, config.TOP_DIGEST_COUNT,
+                        tier3_target, config.MAX_FEED_EVALUATIONS,
                     )
                     try:
                         existing_ids = {r["id"] for r in ranked_reels}
@@ -964,10 +1161,10 @@ def _run_full_sync(
                             try:
                                 external_reels = extractor.extract_external_reels_from_feed(
                                     session=session,
-                                    target_count=deficit,
+                                    target_count=tier3_target,
                                     existing_ids=existing_ids,
                                     active_sources=all_sources,
-                                    max_evaluations=2000,
+                                    max_evaluations=config.MAX_FEED_EVALUATIONS,
                                 )
                                 feed_blocked = None
                                 break
@@ -1056,11 +1253,18 @@ def _run_full_sync(
             if not reel_id:
                 logger.warning("Skipping reel with unusable id %r", reel.get("id"))
                 return (str(reel.get("id")), None)
-            filename = f"{rank:02d}_{handle}_{reel_id}.mp4"
+            # Filenames are URL-encoded: reel IDs carry '-'/'_' and handles
+            # carry '.' that glob + R2 key matching mishandle raw.
+            from urllib.parse import quote as _quote
+            reel_id_enc = _quote(reel_id, safe="")
+            handle_enc = _quote(handle, safe="")
+            filename = f"{rank:02d}_{handle_enc}_{reel_id_enc}.mp4"
             local_video_path = week_videos_dir / filename
 
             # Check if this reel was already downloaded under a previous rank prefix
-            existing_matches = list(week_videos_dir.glob(f"*_{handle}_{reel_id}.mp4")) or list(week_videos_dir.glob(f"*_{reel_id}.mp4"))
+            existing_matches = list(week_videos_dir.glob(f"*_{handle_enc}_{reel_id_enc}.mp4")) or \
+                list(week_videos_dir.glob(f"*_{handle}_{reel_id}.mp4")) or \
+                list(week_videos_dir.glob(f"*_{reel_id}.mp4"))
             if existing_matches:
                 matched_file = existing_matches[0]
                 if matched_file.resolve() != local_video_path.resolve():
@@ -1236,6 +1440,12 @@ def _run_full_sync(
                 r["r2_url"] = r["video_url"] = uploaded_url_map[r["id"]]
 
         # 6. Save digest batch payload (only playable reels saved!).
+        # Cross-week dedup ledger: record these reel IDs as seen for 30 days
+        # so a reel that misses one week's cut cannot resurface next week.
+        try:
+            _record_seen_reel_ids(ranked_reels)
+        except Exception as dedup_err:
+            logger.warning("Failed recording seen-reel ledger: %s", dedup_err)
         extra_manifest = {"budget_capped": True} if budget_capped else None
         ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
 
@@ -1574,24 +1784,26 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
 
     uploaded_url_map: dict[str, str] = {}
+    from urllib.parse import quote as _urlquote
     for item in existing_items:
         rid = item.get("id")
         if rid:
             r2_url = item.get("r2_url") or item.get("video_url") or (
                 f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_"
-                f"{_safe_component(item.get('creator_handle'), 'creator')}_{_safe_component(rid, 'reel')}.mp4"
+                f"{_urlquote(_safe_component(item.get('creator_handle'), 'creator'), safe='')}_"
+                f"{_urlquote(_safe_component(rid, 'reel'), safe='')}.mp4"
             )
             uploaded_url_map[rid] = r2_url
 
     def _pending_path(reel: dict[str, Any]) -> Path:
         return week_videos_dir / (
-            f"_pending_{_safe_component(reel['creator_handle'], 'creator')}_"
-            f"{_safe_component(reel['id'], 'reel')}.mp4"
+            f"_pending_{_urlquote(_safe_component(reel['creator_handle'], 'creator'), safe='')}_"
+            f"{_urlquote(_safe_component(reel['id'], 'reel'), safe='')}.mp4"
         )
 
     def _final_name(reel: dict[str, Any], rank_num: int) -> str:
-        return (f"{rank_num:02d}_{_safe_component(reel['creator_handle'], 'creator')}_"
-                f"{_safe_component(reel['id'], 'reel')}.mp4")
+        return (f"{rank_num:02d}_{_urlquote(_safe_component(reel['creator_handle'], 'creator'), safe='')}_"
+                f"{_urlquote(_safe_component(reel['id'], 'reel'), safe='')}.mp4")
 
     def download_new_reel(reel: dict[str, Any]) -> dict[str, Any] | None:
         tmp_path = _pending_path(reel)
@@ -1739,6 +1951,43 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     return 0
 
 
+def _estimate_run(since_ts_override: int | None = None) -> int:
+    """Read-only pre-flight estimate: project R2 usage for the next digest.
+
+    Sizes the upcoming batch from storage_r2.estimate_weekly_batch_bytes
+    (most recent real week dir + 10% headroom) and compares against current
+    R2 usage and the 8 GB safety quota, accounting for the JIT purge of
+    previous weeks that runs before upload. Never downloads, uploads,
+    purges, or writes anything. Prints the projection and returns 0 when
+    the batch fits, 1 when it would exceed quota.
+    """
+    batch_bytes = storage_r2.estimate_weekly_batch_bytes()
+    current_bytes, count = storage_r2.get_bucket_storage_usage()
+    if current_bytes < 0:
+        logger.error("Cannot verify R2 usage (outage?); estimate unavailable.")
+        return 1
+    live_week = _persisted_digest_week()
+    live_keys = storage_r2.get_existing_r2_keys(f"videos/{live_week}/") if live_week else set()
+    try:
+        all_keys = storage_r2.get_existing_r2_keys("videos/")
+        purgeable_keys = [k for k in all_keys if k not in live_keys]
+        logger.info("JIT purge scope: %d previous-week keys would be deleted before upload.",
+                    len(purgeable_keys))
+    except Exception:
+        pass
+    quota = config.R2_STORAGE_QUOTA_BYTES
+    print(f"Estimated batch : {batch_bytes / 1073741824:.2f} GB ({config.TOP_DIGEST_COUNT} reels)")
+    print(f"R2 current     : {current_bytes / 1073741824:.2f} GB ({count} objects)")
+    print(f"Live week kept : {live_week or '(none)'} ({len(live_keys)} keys)")
+    print(f"Quota (safety) : {quota / 1073741824:.2f} GB")
+    projected = current_bytes + batch_bytes
+    fits_raw = projected < quota
+    print(f"Without purge  : {projected / 1073741824:.2f} GB -> {'FITS' if fits_raw else 'EXCEEDS quota'}")
+    print("With JIT purge : previous weeks are deleted before upload, so the "
+          "live-week + new-batch total applies (checked again pre-upload).")
+    return 0 if fits_raw else 1
+
+
 def _build_only(deploy: bool = False) -> int:
     """Compile the static site from the live digest batch (lock must be held)."""
     site_builder.build_site()
@@ -1770,6 +2019,8 @@ def main() -> int:
     parser.add_argument("--build-only", action="store_true", help="Compile static site using existing digest data")
     parser.add_argument("--deploy", action="store_true", help="Deploy compiled site to GitHub Pages")
     parser.add_argument("--dry-run", action="store_true", help="Simulate pipeline without downloading or uploading videos")
+    parser.add_argument("--estimate", action="store_true", help="Read-only R2 usage projection for the next digest (no downloads/uploads/purges)")
+    parser.add_argument("--force", action="store_true", help="Override the post-mass-follow cooldown guard (fresh-account protection)")
     parser.add_argument("--limit-per-creator", type=int, default=15, help="Max candidate reels per creator (default: 15; discovery visits at most 5/creator, 6 for food)")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
@@ -1780,6 +2031,11 @@ def main() -> int:
         if args.expand < 0:
             parser.error("--expand requires a positive reel count")
         return run_expand(target_count=args.expand, deploy=args.deploy)
+
+    # Pre-flight estimate (read-only): project R2 usage for the upcoming
+    # digest without downloading or mutating anything. Purely advisory.
+    if args.estimate:
+        return _estimate_run(since_ts_override=None)
 
     # Serve mode
     if args.serve:
@@ -1828,7 +2084,17 @@ def main() -> int:
         elif args.ad_hoc:
             logger.info("Ad-hoc run: no previous run timestamp stored; defaulting to %d days back", days_back)
 
-    # Default to running full sync (or when --sync or --ad-hoc is specified)
+    # Default to running full sync (or when --sync or --ad-hoc is specified).
+    # The follow-cooldown guard refuses fresh-account follow-then-scrape
+    # bursts unless --force overrides it. Resumes are exempt: banked work
+    # must always be allowed to complete.
+    if not args.resume and not _check_follow_cooldown(force=args.force):
+        return 2
+    if _trust_warming_active():
+        logger.info("Trust warming active: doubling creator/enrich pacing for the young account.")
+        global CREATOR_PAUSE, ENRICH_PAUSE
+        CREATOR_PAUSE = (CREATOR_PAUSE[0] * 2, CREATOR_PAUSE[1] * 2, CREATOR_PAUSE[2] * 2)
+        ENRICH_PAUSE = (ENRICH_PAUSE[0] * 2, ENRICH_PAUSE[1] * 2, ENRICH_PAUSE[2] * 2)
     return run_full_sync(
         dry_run=args.dry_run,
         deploy=args.deploy,

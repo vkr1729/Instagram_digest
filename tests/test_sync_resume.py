@@ -314,7 +314,8 @@ def test_deficit_ranked_checkpoint_resumes_via_feed_topup(tmp_path):
     discovered_ext = [_cand(f"ext_{i}", "creator_ext") for i in range(198)]
     feed_calls = []
 
-    def _fake_feed(session, target_count, existing_ids=None, active_sources=None, max_evaluations=None):
+    def _fake_feed(session, target_count, existing_ids=None, active_sources=None,
+                   max_evaluations=None, min_likes=None, min_comments=None):
         feed_calls.append({"target_count": target_count, "existing_count": len(existing_ids or set())})
         return list(discovered_ext)
 
@@ -332,10 +333,15 @@ def test_deficit_ranked_checkpoint_resumes_via_feed_topup(tmp_path):
             assert main.run_full_sync(deploy=False) == 0
 
     assert len(feed_calls) == 1
-    assert feed_calls[0]["target_count"] == config.TOP_DIGEST_COUNT - 52
+    # Tier 3 share cap: resume top-up fills at most MAX_EXTERNAL_SHARE of the
+    # digest (100 at 250), not the raw 198 deficit.
+    assert feed_calls[0]["target_count"] == min(
+        config.TOP_DIGEST_COUNT - 52,
+        int(config.TOP_DIGEST_COUNT * config.MAX_EXTERNAL_SHARE),
+    )
     assert feed_calls[0]["existing_count"] == 52
 
     digest = json.loads((tmp_path / "top100_digest.json").read_text(encoding="utf-8"))
-    assert len(digest["items"]) == 250
+    assert len(digest["items"]) == 52 + 198
     assert digest["items"][0]["id"] == "banked_0"
     assert digest["items"][52]["id"] == "ext_0"

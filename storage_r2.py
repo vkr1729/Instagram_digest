@@ -227,8 +227,21 @@ def purge_unreferenced_r2_videos() -> list[str]:
         return []
 
     def _is_referenced(key: str, week: str) -> bool:
+        from urllib.parse import quote as _quote, unquote as _unquote
         ids = active_ids_by_week.get(week) or set()
-        return any(key.endswith(f"_{rid}.mp4") for rid in ids)
+        try:
+            decoded = _unquote(key)
+        except Exception:
+            decoded = key
+        for rid in ids:
+            if key.endswith(f"_{rid}.mp4") or decoded.endswith(f"_{rid}.mp4"):
+                return True
+            try:
+                if key.endswith(f"_{_quote(str(rid), safe='')}.mp4"):
+                    return True
+            except Exception:
+                pass
+        return False
 
     # 2. Find orphan keys in known week prefixes
     orphan_keys: list[str] = []

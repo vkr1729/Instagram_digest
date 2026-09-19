@@ -286,20 +286,34 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
                 pass
         return cached
 
-    # 3. Discover category by category
+    # 3. Discover category by category (parallel: 2 workers halves the
+    # ~24min serial wall-clock; each agy call is network-bound on the LLM
+    # side, so threads don't contend locally).
     new_recommendations: list[dict[str, Any]] = []
     successful_categories = 0
     all_seen = set(existing_handles)
 
-    for cat in target_categories:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    _rec_lock = threading.Lock()
+
+    def _discover_one(cat: str) -> tuple[str, list[dict[str, Any]]]:
         samples = by_category.get(cat, [])
-        recs = discover_category_creators(cat, samples, all_seen, timeout_secs=timeout_per_category)
+        return cat, discover_category_creators(cat, samples, set(all_seen), timeout_secs=timeout_per_category)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(_discover_one, target_categories))
+
+    for cat, recs in results:
         if recs:
             successful_categories += 1
-            for r in recs:
-                new_recommendations.append(r)
-                all_seen.add(r["handle"])
-            logger.info("Discovered %d recommendations for category '%s'", len(recs), cat)
+            with _rec_lock:
+                fresh = [r for r in recs if r["handle"] not in all_seen]
+                for r in fresh:
+                    new_recommendations.append(r)
+                    all_seen.add(r["handle"])
+            logger.info("Discovered %d recommendations for category '%s'", len(fresh), cat)
         else:
             logger.warning("Category '%s' produced zero valid recommendations.", cat)
 

@@ -895,6 +895,165 @@ def discover_creator_reel_urls(
     return reels_found
 
 
+def _shortcode_to_media_id(shortcode: str) -> str:
+    """Convert a reel shortcode to its numeric media id (same math as yt-dlp)."""
+    table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    code = (shortcode or "")[:28]
+    value = 0
+    for ch in code:
+        value = value * 64 + table.index(ch)
+    return str(value)
+
+
+def fetch_media_info_batch(
+    shortcodes: list[str],
+    pause_secs: float = 2.0,
+    timeout: int = 15,
+) -> dict[str, dict[str, Any]]:
+    """Fetch full metadata for reel shortcodes via the media/{id}/info/ API.
+
+    One cheap GET per reel (~2.7s incl. pacing) returning timestamp,
+    like/comment counts, caption, duration, thumbnail, best video URL and
+    play_count — everything the per-reel Playwright visit provides, without
+    rendering a page. 429s are honored with Retry-After backoff; failures
+    return no entry so callers fall back to per-reel extraction.
+    """
+    try:
+        import requests as _rq
+    except ImportError:
+        return {}
+    try:
+        cdata = json.loads((config.DATA_DIR / "cookies.json").read_text(encoding="utf-8"))
+        cd = cdata.get("cookies_dict", {})
+        sessionid = cd.get("sessionid", "")
+    except Exception:
+        return {}
+    if not sessionid:
+        return {}
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "X-IG-App-ID": "936619743392459",
+        "Referer": "https://www.instagram.com/",
+        **_client_hint_headers(DEFAULT_USER_AGENT),
+    }
+    sess = _rq.Session()
+    sess.cookies.set("sessionid", sessionid, domain=".instagram.com")
+    out: dict[str, dict[str, Any]] = {}
+    for sc in shortcodes:
+        try:
+            mid = _shortcode_to_media_id(sc)
+        except (ValueError, TypeError):
+            continue
+        try:
+            resp = sess.get(
+                f"https://i.instagram.com/api/v1/media/{mid}/info/",
+                headers=headers, timeout=timeout,
+            )
+        except Exception as exc:
+            logger.debug("media-info request failed for %s: %s", sc, exc)
+            continue
+        if resp.status_code == 429:
+            wait = 60.0
+            try:
+                wait = max(wait, float(resp.headers.get("Retry-After") or 0))
+            except (TypeError, ValueError):
+                pass
+            logger.warning("media-info rate-limited (429); backing off %.0fs.", wait)
+            time.sleep(wait)
+            continue
+        if resp.status_code != 200:
+            logger.debug("media-info HTTP %d for %s.", resp.status_code, sc)
+            continue
+        try:
+            items = resp.json().get("items") or []
+            item = items[0] if items else {}
+        except Exception:
+            continue
+        if not isinstance(item, dict) or not item.get("taken_at"):
+            continue
+        user = item.get("user") or {}
+        caption = item.get("caption") or {}
+        versions = item.get("video_versions") or []
+        best_url = ""
+        best_area = 0
+        for v in versions:
+            try:
+                area = int(v.get("width") or 0) * int(v.get("height") or 0)
+            except (TypeError, ValueError):
+                area = 0
+            if v.get("url") and area >= best_area:
+                best_area = area
+                best_url = v["url"]
+        thumbs = ((item.get("image_versions2") or {}).get("candidates")) or []
+        thumb_url = ""
+        for t in thumbs:
+            if t.get("url"):
+                thumb_url = t["url"]
+                break
+        views = item.get("view_count")
+        if views is None:
+            views = item.get("play_count") or 0
+        out[sc] = {
+            "timestamp": int(item.get("taken_at") or 0),
+            "like_count": int(item.get("like_count") or 0),
+            "comment_count": int(item.get("comment_count") or 0),
+            "view_count": int(views or 0),
+            "caption": str(caption.get("text") or ""),
+            "duration": float(item.get("video_duration") or 0),
+            "thumbnail": thumb_url,
+            "video_cdn_url": best_url,
+            "creator_handle": str(user.get("username") or ""),
+            "creator_name": str(user.get("full_name") or user.get("username") or ""),
+            "metrics_estimated": False,
+        }
+        time.sleep(pause_secs + random.uniform(0, 1.0))
+    return out
+
+
+def enrich_candidates_via_media_api(
+    candidates: list[dict[str, Any]],
+    cutoff_timestamp: int = 0,
+) -> list[dict[str, Any]]:
+    """Batch-enrich discovery candidates via media/{id}/info/ (no browser).
+
+    Applies the date cutoff BEFORE ranking so stale reels never burn a
+    Playwright visit: reels older than cutoff_timestamp (or dateless) are
+    dropped here, where each check cost one cheap GET instead of a ~7s page
+    load. Entries the API misses keep their discovery fields for the
+    per-reel fallback path. Pinned reels bypass the cutoff.
+    """
+    if not candidates:
+        return []
+    shortcodes = [str(c.get("id") or "") for c in candidates if c.get("id")]
+    info_map = fetch_media_info_batch(shortcodes)
+    if not info_map:
+        logger.warning("media-info batch returned nothing; keeping candidates for per-reel fallback.")
+        return list(candidates)
+    enriched: list[dict[str, Any]] = []
+    dropped_stale = 0
+    for cand in candidates:
+        sc = str(cand.get("id") or "")
+        info = info_map.get(sc)
+        if not info:
+            enriched.append(cand)
+            continue
+        merged = dict(cand)
+        merged.update(info)
+        merged["view_count"] = merged.get("view_count") or cand.get("view_count", 0)
+        merged["thumbnail"] = merged.get("thumbnail") or cand.get("thumbnail", "")
+        merged["video_cdn_url"] = merged.get("video_cdn_url") or cand.get("video_cdn_url", "")
+        if not merged.get("creator_handle"):
+            merged["creator_handle"] = cand.get("creator_handle", "")
+        ts = merged.get("timestamp") or 0
+        if not cand.get("is_pinned") and cutoff_timestamp and (not ts or ts < cutoff_timestamp):
+            dropped_stale += 1
+            continue
+        enriched.append(merged)
+    if dropped_stale:
+        logger.info("media-info pre-filter: dropped %d stale reels before ranking.", dropped_stale)
+    return enriched
+
+
 def extract_single_reel_metadata(
     reel_info: dict[str, Any],
     session: InstagramSession | None = None,
@@ -1328,6 +1487,8 @@ def extract_external_reels_from_feed(
     existing_ids: set[str] | None = None,
     active_sources: list[dict[str, Any]] | None = None,
     max_evaluations: int | None = None,
+    min_likes: int | None = None,
+    min_comments: int | None = None,
     on_progress: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Crawl Instagram Reels discovery feed (instagram.com/reels/) with Playwright to discover
@@ -1335,7 +1496,8 @@ def extract_external_reels_from_feed(
 
     Filters:
       - Excludes followed channels, blacklist, and existing IDs.
-      - Requires visible likes >= 25,000 OR (if hidden) comments >= 150.
+      - Requires visible likes >= min_likes (default config.MIN_EXTERNAL_LIKES)
+        OR (if hidden) comments >= min_comments (default MIN_EXTERNAL_COMMENTS).
       - Classifies topic into the 6 digest categories (ai_tech, finance, health, entertainment, niche, food).
       - Maximum 2 reels per external creator.
       - Raises CookieExpiredException if redirected to login.
@@ -1345,10 +1507,15 @@ def extract_external_reels_from_feed(
     if target_count <= 0:
         return []
 
+    if min_likes is None:
+        min_likes = config.MIN_EXTERNAL_LIKES
+    if min_comments is None:
+        min_comments = config.MIN_EXTERNAL_COMMENTS
+    feed_eval_cap = config.MAX_FEED_EVALUATIONS
     if max_evaluations is None:
-        max_evaluations = min(2000, max(120, target_count * 8))
+        max_evaluations = min(feed_eval_cap, max(120, target_count * 8))
     else:
-        max_evaluations = min(2000, max_evaluations)
+        max_evaluations = min(feed_eval_cap, max_evaluations)
 
     existing = set(existing_ids or set())
     followed_handles = set(
@@ -1360,9 +1527,13 @@ def extract_external_reels_from_feed(
     # Randomized anti-detection cooldown schedule (low-profile: more often,
     # longer rests after the automation warning).
     next_cooldown_at = random.randint(*FEED_COOLDOWN_EVERY)
+    logger.info(
+        "Opening Instagram Reels feed to discover up to %d external reels "
+        "(bar: >=%d likes or >=%d comments when hidden; eval cap %d)...",
+        target_count, min_likes, min_comments, max_evaluations,
+    )
 
     page = session.get_page()
-    logger.info("Opening Instagram Reels feed to discover %d external high-signal reels...", target_count)
 
     try:
         page.goto("https://www.instagram.com/reels/", wait_until="domcontentloaded", timeout=30000)
@@ -1531,8 +1702,9 @@ def extract_external_reels_from_feed(
                 and h not in blacklist
                 and creator_counts.get(h, 0) < 2
             ):
-                # High-signal threshold: visible likes >= 25,000 OR (if hidden) comments >= 150
-                is_high_signal = (likes >= 25000) or (likes == 0 and comments >= 150)
+                # High-signal threshold: visible likes >= min_likes OR
+                # (if hidden) comments >= min_comments.
+                is_high_signal = (likes >= min_likes) or (likes == 0 and comments >= min_comments)
                 if is_high_signal:
                     cat = categorize_creator(h, caption)
                     if cat:

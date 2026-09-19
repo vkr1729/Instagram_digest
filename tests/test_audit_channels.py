@@ -94,3 +94,47 @@ def test_audit_handles_broken_files(tmp_path, monkeypatch):
     report = audit_channels.audit()
     assert report["missing_from_digest"] == []
     assert report["not_followed_on_ig"] == []
+
+
+def test_inactive_creators_flags_stale(tmp_path, monkeypatch):
+    src = tmp_path / "sources.json"
+    monkeypatch.setattr(config, "SOURCES_FILE", src)
+    monkeypatch.setattr(config, "BLACKLIST_FILE", tmp_path / "nope.json")
+    src.write_text(json.dumps([
+        {"handle": "active_one", "name": "Active", "category": "niche", "enabled": True},
+        {"handle": "stale_one", "name": "Stale", "category": "finance", "enabled": True},
+    ]))
+    digests = tmp_path / "digests"
+    digests.mkdir()
+    monkeypatch.setattr(config, "DIGESTS_DIR", digests)
+    (digests / "2026-09-19.json").write_text(json.dumps({
+        "run_date": "2026-09-19",
+        "items": [{"id": "x1", "creator_handle": "active_one"} for _ in range(100)],
+    }))
+    monkeypatch.setattr(
+        audit_channels.extractor, "sync_following_accounts",
+        lambda force=False: [],
+    )
+    stale = audit_channels.inactive_creators(weeks=3)
+    assert [e["handle"] for e in stale] == ["stale_one"]
+
+
+def test_inactive_skips_thin_probe_digests(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SOURCES_FILE", tmp_path / "nosrc2.json")
+    (tmp_path / "nosrc2.json").write_text(json.dumps([
+        {"handle": "someone", "name": "Someone", "category": "niche", "enabled": True},
+    ]))
+    digests = tmp_path / "digests"
+    digests.mkdir()
+    monkeypatch.setattr(config, "DIGESTS_DIR", digests)
+    (digests / "2026-09-19.json").write_text(json.dumps({
+        "run_date": "2026-09-19",
+        "items": [{"id": "x1", "creator_handle": "other"} for _ in range(9)],
+    }))
+    assert audit_channels.inactive_creators() == []
+
+
+def test_inactive_tolerates_missing_archives(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "nodigests")
+    monkeypatch.setattr(config, "SOURCES_FILE", tmp_path / "nosrc.json")
+    assert audit_channels.inactive_creators() == []

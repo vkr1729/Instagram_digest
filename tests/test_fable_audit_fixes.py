@@ -37,6 +37,12 @@ class _Session:
     def __exit__(self, *a):
         return False
 
+    def validate(self, url="https://www.instagram.com/"):
+        return True
+
+    def get_page(self):
+        raise AssertionError("pre-check must use validate(), not get_page()")
+
 
 def _iso(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
@@ -391,6 +397,7 @@ def test_stale_banked_ranking_is_never_republished(tmp_path, monkeypatch):
         def __enter__(self): opened.append(1); raise RuntimeError("stop before scraping")
         def __exit__(self, *a): return False
     monkeypatch.setattr(extractor, "InstagramSession", Sess)
+    monkeypatch.setattr(main, "_ensure_valid_session", lambda session: True)
     import pytest
     with pytest.raises(RuntimeError):
         main.run_full_sync(dry_run=False, deploy=False)

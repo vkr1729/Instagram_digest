@@ -892,9 +892,11 @@
             bits.push('IG: ' + data.following_count + ' · Digest: ' + data.digest_count);
             if (missing.length) bits.push('missing from digest: ' + missing.slice(0, 5).map(e => '@' + e.handle).join(', ') + (missing.length > 5 ? ' (+' + (missing.length - 5) + ' more)' : ''));
             if (unfollowed.length) bits.push('not followed on IG: ' + unfollowed.slice(0, 5).map(e => '@' + e.handle).join(', ') + (unfollowed.length > 5 ? ' (+' + (unfollowed.length - 5) + ' more)' : ''));
+            const inactive = data.inactive_creators || [];
+            if (inactive.length) bits.push('inactive: ' + inactive.slice(0, 5).map(e => '@' + e.handle).join(', ') + (inactive.length > 5 ? ' (+' + (inactive.length - 5) + ' more)' : ''));
             resultText.textContent = bits.join(' · ') + '. Run `python audit_channels.py --import-missing` to import, or add from the ＋ form above.';
           }
-          showToast(missing.length + unfollowed.length === 0 ? 'Account and digest in sync ✓' : 'Audit: ' + missing.length + ' missing, ' + unfollowed.length + ' unfollowed');
+          showToast((missing.length + unfollowed.length) === 0 ? 'Account and digest in sync ✓' : 'Audit: ' + missing.length + ' missing, ' + unfollowed.length + ' unfollowed');
         } else {
           if (resultText) resultText.textContent = 'Audit failed: ' + (data.error || 'unknown error');
         }

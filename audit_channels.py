@@ -60,6 +60,51 @@ def _load_following() -> list[dict[str, Any]]:
     return [a for a in accounts if isinstance(a, dict) and a.get("handle")]
 
 
+def _digest_weeks_back(weeks: int = 4) -> list[dict[str, Any]]:
+    """Load recent digest archives for inactivity analysis (tolerant of gaps)."""
+    archives: list[dict[str, Any]] = []
+    if not config.DIGESTS_DIR.exists():
+        return archives
+    for path in sorted(config.DIGESTS_DIR.glob("*.json"), reverse=True)[:weeks]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            archives.append(data)
+    return archives
+
+
+def inactive_creators(weeks: int = 3) -> list[dict[str, Any]]:
+    """Creators in sources.json with zero reels in the last `weeks` digests.
+
+    Read-only. A creator missing from recent archives is either inactive,
+    private/renamed, or outside the date window — all worth a prune review.
+    Skips archives thinner than 100 items: 9-item probe/ad-hoc digests would
+    otherwise flag the entire channel list as inactive.
+    """
+    sources = _load_sources()
+    archives = _digest_weeks_back(max(weeks, 1))
+    archives = [a for a in archives if len(a.get("items", [])) >= 100]
+    if not archives:
+        return []
+    seen: set[str] = set()
+    for archive in archives:
+        for item in archive.get("items", []):
+            if isinstance(item, dict) and item.get("creator_handle"):
+                seen.add(str(item["creator_handle"]).lower().replace("@", ""))
+    stale: list[dict[str, Any]] = []
+    for s in sources:
+        h = str(s.get("handle", "")).lower().replace("@", "")
+        if h and h not in seen:
+            stale.append({
+                "handle": h,
+                "name": str(s.get("name") or h),
+                "category": str(s.get("category") or "entertainment"),
+            })
+    return sorted(stale, key=lambda e: e["handle"])
+
+
 def audit() -> dict[str, Any]:
     """Build the reconciliation diff. Read-only; never mutates anything."""
     sources = _load_sources()
@@ -111,6 +156,7 @@ def audit() -> dict[str, Any]:
         "blacklisted_count": len(blacklist),
         "missing_from_digest": missing_from_digest,
         "not_followed_on_ig": not_followed_on_ig,
+        "inactive_creators": inactive_creators(),
     }
 
 
@@ -144,9 +190,15 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
     parser.add_argument("--import-missing", action="store_true",
                         help="Add IG-followed-but-missing creators to sources.json")
+    parser.add_argument("--inactive-weeks", type=int, default=3,
+                        help="Weeks of digest history for inactivity detection (default: 3)")
     args = parser.parse_args()
 
-    report = audit()
+    if args.inactive_weeks != 3:
+        report = audit()
+        report["inactive_creators"] = inactive_creators(weeks=max(1, args.inactive_weeks))
+    else:
+        report = audit()
     if args.import_missing:
         added = import_missing(report)
         report["imported_count"] = added
@@ -164,6 +216,9 @@ def main() -> int:
         print(f"\n-- In digest but NOT followed on IG ({len(report['not_followed_on_ig'])}) --")
         for e in report["not_followed_on_ig"]:
             print(f"  @{e['handle']} — {e['name']}")
+        print(f"\n-- Inactive: zero reels in recent digests ({len(report['inactive_creators'])}) --")
+        for e in report["inactive_creators"]:
+            print(f"  @{e['handle']}  ({e['category']}) — {e['name']}")
         if args.import_missing:
             print(f"\nImported {report.get('imported_count', 0)} creators into sources.json.")
     return 0

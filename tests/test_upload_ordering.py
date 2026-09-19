@@ -126,6 +126,7 @@ def test_shortfall_gate_fires_before_any_r2_mutation(tmp_path, monkeypatch):
             patch.object(extractor, "InstagramSession", return_value=MagicMock(
                 __enter__=MagicMock(return_value=session_mock),
                 __exit__=MagicMock(return_value=False))),
+            patch.object(main, "_ensure_valid_session", return_value=True),
             patch.object(extractor, "load_sources", return_value=[dict(s) for s in SOURCES]),
             patch.object(extractor, "human_pause", lambda *a, **k: None),
             patch.object(extractor, "extract_external_reels_from_feed", side_effect=_no_feed),
@@ -200,6 +201,7 @@ def test_purge_before_upload_and_stray_before_upload(tmp_path, monkeypatch):
 
         with (
             patch.object(extractor, "download_reel_video", side_effect=_fake_download_ok),
+            patch.object(main, "_ensure_valid_session", return_value=True),
             patch("recommendations.refresh_recommendations", return_value=[]),
             patch.object(main.storage_r2, "get_bucket_storage_usage", return_value=(100, 10)),
             patch.object(main.storage_r2, "purge_previous_weeks_videos", side_effect=_fake_purge_previous),
