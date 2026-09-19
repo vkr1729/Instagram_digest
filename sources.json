@@ -406,5 +406,17 @@
     "name": "tjpower",
     "category": "entertainment",
     "enabled": true
+  },
+  {
+    "handle": "ral.livezy",
+    "name": "ral.livezy",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "stories_by_srilok",
+    "name": "stories_by_srilok",
+    "category": "entertainment",
+    "enabled": true
   }
 ]

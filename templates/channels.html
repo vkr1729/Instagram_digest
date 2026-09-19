@@ -439,8 +439,39 @@
       </button>
     </div>
 
+    <!-- Account ↔ Digest Audit Card -->
+    <div class="adhoc-card" id="auditCard" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 14px 18px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+          <span>🔄 Account ↔ Digest Audit</span>
+          <span id="auditStatusBadge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,0.1); color: #a1a1aa;">Idle</span>
+        </div>
+        <div id="auditResultText" style="font-size: 12px; color: var(--text-muted);">
+          Compares your Instagram following against the digest channels.
+        </div>
+      </div>
+      <button id="auditBtn" onclick="runChannelAudit()" style="background: var(--pill-bg); border: 1px solid var(--border-subtle); color: #fff; font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+        <span>🔄 Run Audit</span>
+      </button>
+    </div>
+
     <!-- Controls Card (Sticky) -->
     <div class="controls-card">
+      <form id="addChannelForm" onsubmit="return addChannelFromForm(event)" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
+        <span style="font-size: 14px; font-weight: 700;">＋ Add channel</span>
+        <input type="text" id="addHandleInput" placeholder="@handle" autocomplete="off" autocapitalize="off" spellcheck="false"
+          style="flex: 1; min-width: 140px; background: #090a0d; border: 1px solid var(--border-subtle); border-radius: 10px; padding: 9px 12px; color: #fff; font-size: 13px; outline: none;">
+        <select id="addCategorySelect" style="background: #090a0d; border: 1px solid var(--border-subtle); border-radius: 10px; padding: 9px 10px; color: #fff; font-size: 13px; outline: none;">
+          <option value="entertainment">🎬 Entertainment</option>
+          <option value="finance">💰 Finance</option>
+          <option value="ai_tech">💻 AI &amp; Tech</option>
+          <option value="niche">🧠 Niche</option>
+          <option value="health">🏋️ Health</option>
+          <option value="food">🥗 Food</option>
+        </select>
+        <button type="submit" id="addChannelBtn" style="background: var(--ig-gradient); border: none; color: #fff; font-size: 13px; font-weight: 700; padding: 9px 18px; border-radius: 10px; cursor: pointer;">Add</button>
+        <span id="addChannelStatus" style="font-size: 12px; color: var(--text-muted); width: 100%;" aria-live="polite"></span>
+      </form>
       <div class="search-input-wrapper">
         <span class="search-icon">🔍</span>
         <input type="text" id="searchInput" class="search-input" placeholder="Search by handle or name (e.g. mkbhd, fitness)..." oninput="applyFilters()">
@@ -744,6 +775,133 @@
         showToast('Failed starting ad-hoc sync');
         if (btn) btn.disabled = false;
       }
+    }
+
+    function setAddStatus(msg) {
+      const el = document.getElementById('addChannelStatus');
+      if (el) el.textContent = msg;
+    }
+
+    function renderFollowResult(handle, result) {
+      const h = esc(handle);
+      if (result && result.ok) {
+        const state = String((result.state || 'followed'));
+        if (state === 'already') {
+          setAddStatus('✓ @' + h + ' already followed on IG');
+        } else if (state === 'requested') {
+          setAddStatus('✓ Follow request sent to @' + h + ' on IG');
+        } else {
+          setAddStatus('✓ Following on IG: @' + h);
+        }
+        showToast('✓ Following on IG: @' + handle);
+      } else {
+        const err = esc(result && result.error ? result.error : 'unknown');
+        setAddStatus('IG follow failed for @' + h + ': ' + err);
+        showToast('IG follow failed: ' + (result && result.error ? result.error : 'unknown'));
+      }
+    }
+
+    async function pollFollowStatus(handle, attempts) {
+      const maxAttempts = (attempts == null ? 30 : attempts);
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const res = await fetch('/api/channels/follow-status?handle=' + encodeURIComponent(handle));
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.status === 'done' && data.result) {
+            renderFollowResult(handle, data.result);
+            loadChannels();
+            return;
+          }
+          setAddStatus('Following @' + handle + ' on IG…');
+        } catch (e) {}
+      }
+    }
+
+    async function addChannelFromForm(event) {
+      if (event) event.preventDefault();
+      const input = document.getElementById('addHandleInput');
+      const catSel = document.getElementById('addCategorySelect');
+      const btn = document.getElementById('addChannelBtn');
+      const raw = (input && input.value ? input.value : '').trim().replace(/^@+/, '');
+      const handle = raw.toLowerCase();
+      const category = (catSel && catSel.value ? catSel.value : 'entertainment');
+      if (!handle) {
+        setAddStatus('Enter an Instagram handle first.');
+        return false;
+      }
+      if (btn) btn.disabled = true;
+      setAddStatus('Adding @' + handle + '…');
+      try {
+        const res = await fetch('/api/channels/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handle: handle, name: handle, category: category })
+        });
+        if (!res.ok) {
+          setAddStatus('Could not add @' + handle + ' (error ' + res.status + ').');
+          showToast('Add channel failed');
+          if (btn) btn.disabled = false;
+          return false;
+        }
+        const data = await res.json();
+        if (data.success) {
+          showToast('Added @' + handle + ' to channels');
+          if (input) input.value = '';
+          loadChannels();
+          if (data.ig_follow === 'pending') {
+            setAddStatus('Following @' + handle + ' on IG…');
+            pollFollowStatus(handle);
+          } else {
+            setAddStatus('Added @' + handle + '.');
+          }
+        } else {
+          setAddStatus('Could not add @' + handle + '.');
+        }
+      } catch (err) {
+        setAddStatus('Add channel failed.');
+        showToast('Operation failed');
+      }
+      if (btn) btn.disabled = false;
+      return false;
+    }
+
+    async function runChannelAudit() {
+      const btn = document.getElementById('auditBtn');
+      const badge = document.getElementById('auditStatusBadge');
+      const resultText = document.getElementById('auditResultText');
+      if (btn) btn.disabled = true;
+      if (badge) {
+        badge.textContent = 'Checking…';
+        badge.style.color = '#f09433';
+      }
+      try {
+        const res = await fetch('/api/channels/audit');
+        const data = await res.json();
+        if (data.success) {
+          const missing = data.missing_from_digest || [];
+          const unfollowed = data.not_followed_on_ig || [];
+          if (badge) {
+            const drift = missing.length + unfollowed.length;
+            badge.textContent = drift === 0 ? 'In sync ✓' : drift + ' drifted';
+            badge.style.color = drift === 0 ? '#30d158' : '#f09433';
+          }
+          if (resultText) {
+            const bits = [];
+            bits.push('IG: ' + data.following_count + ' · Digest: ' + data.digest_count);
+            if (missing.length) bits.push('missing from digest: ' + missing.slice(0, 5).map(e => '@' + e.handle).join(', ') + (missing.length > 5 ? ' (+' + (missing.length - 5) + ' more)' : ''));
+            if (unfollowed.length) bits.push('not followed on IG: ' + unfollowed.slice(0, 5).map(e => '@' + e.handle).join(', ') + (unfollowed.length > 5 ? ' (+' + (unfollowed.length - 5) + ' more)' : ''));
+            resultText.textContent = bits.join(' · ') + '. Run `python audit_channels.py --import-missing` to import, or add from the ＋ form above.';
+          }
+          showToast(missing.length + unfollowed.length === 0 ? 'Account and digest in sync ✓' : 'Audit: ' + missing.length + ' missing, ' + unfollowed.length + ' unfollowed');
+        } else {
+          if (resultText) resultText.textContent = 'Audit failed: ' + (data.error || 'unknown error');
+        }
+      } catch (e) {
+        if (resultText) resultText.textContent = 'Audit failed. Is the local server running?';
+      }
+      if (btn) btn.disabled = false;
     }
 
     // Initialize

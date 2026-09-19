@@ -50,6 +50,35 @@ VIEWPORT_POOL = ((1280, 800), (1366, 768), (1440, 900), (1536, 864), (1920, 1080
 LOCALE_POOL = ("en-US", "en-GB")
 TIMEZONE_POOL = ("America/New_York", "Europe/London", "Asia/Kolkata")
 
+# Safety cap for the Following-API pagination loop: a normal account never
+# needs more than a handful of 100-user pages; the cap only stops a runaway
+# loop (e.g. a cycling max_id served to a flagged session).
+MAX_FOLLOWING_PAGES = 40
+
+
+def _chrome_major_from_ua(ua: str) -> str:
+    """Extract the Chrome major version from a UA string (default: 120)."""
+    m = re.search(r"Chrome/(\d+)", ua or "")
+    return m.group(1) if m else "120"
+
+
+def _client_hint_headers(ua: str) -> dict[str, str]:
+    """Sec-CH-UA client hints matching the given Chrome UA major version.
+
+    Sending a Chrome/120+ UA without these hints is a mismatch signal:
+    real Chrome always emits them. The brand list mirrors what Chrome sends
+    (Chromium + Google Chrome + Not-A.Brand).
+    """
+    major = _chrome_major_from_ua(ua)
+    return {
+        "Sec-CH-UA": (
+            f'"Chromium";v="{major}", "Google Chrome";v="{major}", '
+            '"Not-A.Brand";v="99"'
+        ),
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+    }
+
 # Minimal webdriver-masking init script (hides the most trivial headless
 # signals; not a full stealth framework, but removes the zero-effort tells).
 # NOTE (known limit): the UA override below does not rewrite the
@@ -65,19 +94,75 @@ def _stealth_script_for_locale(locale: str) -> str:
     langs_js = "[" + ", ".join(f"'{l}'" for l in langs) + "]"
     return """() => {
   try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    if (!window.chrome) { window.chrome = { runtime: {} }; }
-    const _fakePlugins = {
-      length: 3,
-      item(i) { return this[i] || null; },
-      namedItem(n) { return this[n] || null; },
-      refresh() {},
-      0: { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-      1: { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-      2: { name: 'Native Client', filename: 'internal-nacl-plugin' },
-    };
-    Object.defineProperty(navigator, 'plugins', { get: () => _fakePlugins });
-    Object.defineProperty(navigator, 'languages', { get: () => LANGS });
+    try {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    } catch (e) {}
+    try {
+      if (!window.chrome) { window.chrome = { runtime: {} }; }
+      if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+      if (!window.chrome.loadTimes) {
+        window.chrome.loadTimes = function () {
+          const t = Date.now() / 1000;
+          return { requestTime: t, startLoadTime: t, commitLoadTime: t,
+            finishDocumentLoadTime: t, finishLoadTime: t, firstPaintTime: t,
+            layoutType: 'Blink', navigationType: 'Other',
+            wasAlternateProtocolAvailable: false, wasFetchedViaSpdy: true,
+            wasNpnNegotiated: true, npnNegotiatedProtocol: 'h2' };
+        };
+      }
+      if (!window.chrome.csi) {
+        window.chrome.csi = function () {
+          return { startE: Date.now(), onloadT: Date.now(), pageT: 120, tran: 15 };
+        };
+      }
+    } catch (e) {}
+    try {
+      const _fakePlugins = {
+        length: 3,
+        item(i) { return this[i] || null; },
+        namedItem(n) { return this[n] || null; },
+        refresh() {},
+        0: { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+        1: { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+        2: { name: 'Native Client', filename: 'internal-nacl-plugin' },
+      };
+      Object.defineProperty(navigator, 'plugins', { get: () => _fakePlugins });
+      if (navigator.plugins.length === 0) { throw new Error('plugins guard'); }
+    } catch (e) {}
+    try {
+      const _cores = 4 + Math.floor(Math.random() * 5);
+      Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => _cores });
+      Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    } catch (e) {}
+    try {
+      const _spoofGL = function (orig) {
+        return function (p) {
+          if (p === 37445) return 'Google Inc. (Intel)';
+          if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00005917) Direct3D11 vs_5_0 ps_5_0, D3D11)';
+          return orig.call(this, p);
+        };
+      };
+      if (window.WebGLRenderingContext) {
+        WebGLRenderingContext.prototype.getParameter = _spoofGL(WebGLRenderingContext.prototype.getParameter);
+      }
+      if (window.WebGL2RenderingContext) {
+        WebGL2RenderingContext.prototype.getParameter = _spoofGL(WebGL2RenderingContext.prototype.getParameter);
+      }
+    } catch (e) {}
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const _permQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = function (params) {
+          if (params && params.name === 'notifications') {
+            return Promise.resolve({ state: 'default', onchange: null });
+          }
+          return _permQuery(params);
+        };
+      }
+    } catch (e) {}
+    try {
+      Object.defineProperty(navigator, 'languages', { get: () => LANGS });
+    } catch (e) {}
   } catch (e) {}
 }""".replace("LANGS", langs_js)
 
@@ -307,12 +392,19 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
                 "X-CSRFToken": csrftoken,
                 "X-IG-App-ID": "936619743392459",
                 "Referer": "https://www.instagram.com/",
+                **_client_hint_headers(DEFAULT_USER_AGENT),
             }
 
             max_id = None
             page_count = 0
             api_failures = 0
             while True:
+                if page_count >= MAX_FOLLOWING_PAGES:
+                    logger.warning(
+                        "Following pagination hit safety cap (%d pages); stopping.",
+                        MAX_FOLLOWING_PAGES,
+                    )
+                    break
                 url = f"https://www.instagram.com/api/v1/friendships/{user_id}/following/?count=100"
                 if max_id:
                     url += f"&max_id={max_id}"
@@ -356,6 +448,9 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
                         })
                 max_id = data.get("next_max_id")
                 if not max_id:
+                    break
+                if data.get("has_more") is False:
+                    # API explicitly signals end of list; ignore any stale cursor.
                     break
                 # Humanized inter-page pacing (was: no delay at all).
                 time.sleep(max(0.8, random.gauss(1.4, 0.5)))
@@ -467,6 +562,14 @@ _BLOCK_MARKERS = (
     "checkpoint_required",
     "rate_limit",
     "limited_action",
+    # Out-of-band risky-contactpoint challenge served to low-trust accounts
+    # ("email may not be secure"). Any redirect here must abort loudly via
+    # InstagramBlocked, never spin as a silent scrape loop.
+    "/update_risky_contactpoint",
+    "risky_contactpoint",
+    "verify_contactpoint",
+    "/accounts/confirm",
+    "checkpoint",
 )
 
 # Soft-block tells served with HTTP 200 (no redirect to catch).
@@ -1116,6 +1219,7 @@ def download_reel_video(
         "User-Agent": DEFAULT_USER_AGENT,
         "Referer": "https://www.instagram.com/",
         "Accept": "*/*",
+        **_client_hint_headers(DEFAULT_USER_AGENT),
     }
 
     # 1. Resolve CDN URL if not provided (never reopen Playwright here:
@@ -1473,9 +1577,47 @@ def extract_external_reels_from_feed(
             time.sleep(cooldown)
             next_cooldown_at = eval_count + random.randint(*FEED_COOLDOWN_EVERY)
 
-        # Scroll to next reel with Gaussian humanized jitter + varied keys
+        # Scroll to next reel with humanized, non-repeating motion:
+        # randomized trackpad-style wheel deltas (2-4 flicks of varying
+        # distance) with an occasional full PageDown, plus small random
+        # mouse moves before evaluation so the pointer trail is not static.
+        # Fixed-choice PageDown presses were a trivial key-event signature.
         try:
-            page.keyboard.press(random.choice(["PageDown", "PageDown", "PageDown", "ArrowDown"]))
+            vw, vh = 1280, 800
+            try:
+                _vs = page.viewport_size or {}
+                vw = int(_vs.get("width", 1280))
+                vh = int(_vs.get("height", 800))
+            except Exception:
+                vw, vh = 1280, 800
+            if not (200 <= vw <= 4000):
+                vw = 1280
+            if not (200 <= vh <= 4000):
+                vh = 800
+            for _ in range(random.randint(2, 4)):
+                page.mouse.wheel(
+                    random.randint(-40, 40),
+                    random.randint(int(vh * 0.5), int(vh * 1.1)),
+                )
+                try:
+                    page.wait_for_timeout(random.randint(120, 450))
+                except Exception:
+                    # Mock/minimal pages in unit tests may not implement timeouts.
+                    pass
+            if random.random() < 0.25:
+                try:
+                    page.keyboard.press("PageDown")
+                except Exception:
+                    pass
+            for _ in range(random.randint(1, 3)):
+                try:
+                    page.mouse.move(
+                        random.randint(0, max(vw - 1, 1)),
+                        random.randint(0, max(vh - 1, 1)),
+                        steps=random.randint(2, 6),
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
         human_pause()
@@ -1492,3 +1634,170 @@ def extract_external_reels_from_feed(
     logger.info("External Reels discovery finished: harvested %d high-signal external reels (evaluated %d).",
                 len(external_candidates), eval_count)
     return external_candidates
+
+
+_FOLLOW_BUTTON_TEXTS_JS = (
+    "() => Array.from(document.querySelectorAll('button'))"
+    ".map(b => (b.innerText || '').trim())"
+)
+
+_FOLLOW_CLICK_JS = (
+    "() => {"
+    " const btns = Array.from(document.querySelectorAll('button'));"
+    " for (const b of btns) {"
+    "  const t = (b.innerText || '').trim().toLowerCase();"
+    "  if (t === 'follow' || t === 'follow back') { b.click(); return true; }"
+    " }"
+    " return false; }"
+)
+
+
+def _follow_button_texts(page) -> list[str]:
+    """All button innerTexts on the profile (raw-DOM probe).
+
+    Probe 2026-09-19: page.get_by_role misses the Following state in
+    headless Chromium, so state detection must read every <button>'s
+    innerText via evaluate instead of role queries.
+    """
+    try:
+        texts = page.evaluate(_FOLLOW_BUTTON_TEXTS_JS)
+    except Exception:
+        return []
+    if not isinstance(texts, list):
+        return []
+    return [str(t or "").strip() for t in texts]
+
+
+def _follow_state_from_texts(texts: list[str]) -> str | None:
+    """Map button texts to a follow state: following/requested/follow/follow_back."""
+    for raw in texts:
+        t = (raw or "").strip().lower()
+        if not t:
+            continue
+        if "following" in t:
+            return "following"
+        if "requested" in t:
+            return "requested"
+    for raw in texts:
+        t = (raw or "").strip().lower()
+        if t == "follow back":
+            return "follow_back"
+        if t == "follow":
+            return "follow"
+    return None
+
+
+def follow_creator(handle: str, timeout: int = 25) -> dict[str, Any]:
+    """Follow one creator on the logged-in Instagram account (browser only).
+
+    Uses the existing InstagramSession (cookie injection + stealth
+    context). No API calls — they 429 under automation load. Steps:
+    validate session, goto profile, detect already-following/requested
+    via ALL-button innerText, click Follow/Follow Back via get_by_role
+    with a raw-DOM evaluate fallback, wait, then re-check innerText.
+
+    Returns {"ok": True, "state": "followed|requested|already"} or
+    {"ok": False, "error": "not_found|blocked|..."}.
+    """
+    clean = clean_handle(handle)
+    if not clean:
+        return {"ok": False, "error": "invalid_handle"}
+    try:
+        timeout_ms = max(5, int(timeout)) * 1000
+    except (TypeError, ValueError):
+        timeout_ms = 25000
+
+    session = InstagramSession()
+    try:
+        try:
+            valid = session.validate()
+        except Exception:
+            valid = False
+        if not valid:
+            return {"ok": False, "error": "session_invalid"}
+
+        try:
+            page = session.get_page()
+        except Exception as exc:
+            logger.warning("Follow @%s: could not open page: %s", clean, exc)
+            return {"ok": False, "error": "session_invalid"}
+
+        try:
+            page.goto(f"https://www.instagram.com/{clean}/",
+                      wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception as exc:
+            logger.warning("Follow @%s: profile navigation failed: %s", clean, exc)
+            return {"ok": False, "error": "navigation_failed"}
+        try:
+            _assert_not_blocked(page, f"follow-@{clean}")
+        except InstagramBlocked:
+            return {"ok": False, "error": "blocked"}
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+        if _page_html_indicates_block(html or ""):
+            return {"ok": False, "error": "blocked"}
+        if "sorry, this page isn't available" in (html or "").lower():
+            return {"ok": False, "error": "not_found"}
+
+        texts = _follow_button_texts(page)
+        state = _follow_state_from_texts(texts)
+        if state in ("following", "requested"):
+            human_pause()
+            return {"ok": True, "state": "already"}
+        if state is None:
+            # No follow-state button at all: missing profile vs. logged-out
+            # wall. Block markers were already checked, so treat the most
+            # likely case (nonexistent/renamed handle) as not_found.
+            lowered = " ".join(t.lower() for t in texts)
+            if "log in" in lowered or "sign up" in lowered:
+                return {"ok": False, "error": "blocked"}
+            return {"ok": False, "error": "not_found"}
+
+        clicked = False
+        try:
+            locator = page.get_by_role("button", name=re.compile(r"^Follow( Back)?$", re.I))
+            locator.first.click(timeout=5000)
+            clicked = True
+        except Exception:
+            clicked = False
+        if not clicked:
+            try:
+                clicked = bool(page.evaluate(_FOLLOW_CLICK_JS))
+            except Exception as exc:
+                logger.warning("Follow @%s: fallback click failed: %s", clean, exc)
+                clicked = False
+        if not clicked:
+            return {"ok": False, "error": "click_failed"}
+
+        try:
+            page.wait_for_timeout(2500)
+        except Exception:
+            time.sleep(2.5)
+        try:
+            _assert_not_blocked(page, f"follow-@{clean}-after-click")
+        except InstagramBlocked:
+            return {"ok": False, "error": "blocked"}
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+        if _page_html_indicates_block(html or ""):
+            return {"ok": False, "error": "blocked"}
+
+        texts = _follow_button_texts(page)
+        state = _follow_state_from_texts(texts)
+        human_pause()
+        if state == "following":
+            return {"ok": True, "state": "followed"}
+        if state == "requested":
+            return {"ok": True, "state": "requested"}
+        if state in ("follow", "follow_back"):
+            return {"ok": False, "error": "click_failed"}
+        return {"ok": False, "error": "unknown_state"}
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass

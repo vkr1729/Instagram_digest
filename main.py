@@ -152,6 +152,53 @@ def _persisted_digest_week() -> str:
         return ""
 
 
+def _purge_current_week_stray_r2_keys(week_id: str, ranked_ids: set[str]) -> list[str]:
+    """Delete current-week R2 keys not referenced by the final ranked list.
+
+    Scoped strictly to ``videos/<week_id>/``: a key is kept when its reel-id
+    suffix (``_<reel_id>.mp4``) matches the final ranked set — the same
+    suffix-match style as ``storage_r2.purge_unreferenced_r2_videos``. This
+    reclaims partial/interrupted-run uploads (strays) BEFORE the upload phase
+    so they never linger as orphans. Must run BEFORE ``save_digest_batch``
+    (no digest references the new week yet, so the generic orphan purger
+    cannot see these keys). Returns the purged key list.
+    """
+    prefix = f"videos/{week_id}/"
+    try:
+        existing = storage_r2.get_existing_r2_keys(prefix)
+    except Exception as exc:
+        logger.warning("Stray-key listing failed for %s: %s", prefix, exc)
+        return []
+    strays = [
+        k for k in (existing or set())
+        if k.startswith(prefix) and k.endswith(".mp4")
+        and not any(k.endswith(f"_{rid}.mp4") for rid in ranked_ids)
+    ]
+    if not strays:
+        return []
+    s3 = storage_r2.get_s3_client()
+    if s3 is None:
+        logger.info("R2 credentials not active; skipping current-week stray purge.")
+        return []
+    purged: list[str] = []
+    try:
+        for i in range(0, len(strays), 1000):
+            chunk = strays[i:i + 1000]
+            logger.info("Deleting %d stray current-week R2 object(s) under %s...", len(chunk), prefix)
+            resp = s3.delete_objects(
+                Bucket=config.R2_BUCKET_NAME,
+                Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": False},
+            )
+            for err in resp.get("Errors") or []:
+                logger.error("Failed deleting stray %s: %s", err.get("Key"), err.get("Message"))
+            purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []])
+    except Exception as exc:
+        logger.warning("Error during current-week stray purge: %s", exc)
+    if purged:
+        logger.info("Purged %d stray current-week object(s) from Cloudflare R2.", len(purged))
+    return purged
+
+
 # Sync progress stages that may be resumed. The load gate and the reuse gate
 # below must agree: "publishing" still carries the ranked list, so a
 # mid-publish crash resumes at downloads instead of re-extracting.
@@ -272,10 +319,11 @@ def _run_full_sync(
         logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s)...",
                     week_id, days_back, dry_run)
 
-    # 1. Pre-flight cleanup & connectivity check on Cloudflare R2
+    # 1. R2 connectivity check (read-only). Owner-mandated order defers EVERY
+    # R2 mutation until the full digest is prepared locally (Phase 5C+); the
+    # rolling purges run post-publish instead of here, so a shortfall abort
+    # returns without touching R2 at all.
     if not dry_run and config.R2_ACCOUNT_ID:
-        storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
-        storage_r2.purge_unreferenced_r2_videos()
         usage_bytes, _ = storage_r2.get_bucket_storage_usage()
         if usage_bytes < 0:
             logger.error("CRITICAL: cannot verify R2 usage (outage?); refusing to start sync.")
@@ -990,7 +1038,9 @@ def _run_full_sync(
         _alert_sync_abort("no qualifying reels", "Top Digest selection came back empty")
         return 2
 
-    # 5. Media Download, Budget Check, JIT Purge, and R2 Upload
+    # 5. Media Download (local-only), Byte-Budget + Shortfall Gates, Scoped JIT
+    # Purge, then R2 Upload. Owner-mandated order: no R2 mutation before the
+    # shortfall gate — the full digest must be playable on local disk first.
     uploaded_url_map: dict[str, str] = dict(banked_urls_map)
     if not dry_run:
         week_videos_dir = config.VIDEOS_DIR / week_id
@@ -1078,20 +1128,53 @@ def _run_full_sync(
 
         ranked_reels = budgeted_reels
 
-        # 5C & 5D: Pre-Flight Quota Check, then Just-In-Time Purge as fallback
+        # 5C: Shortfall-preservation gate — BEFORE any R2 mutation. If final
+        # playable (locally downloaded) reels are under MIN_DEPLOY_ITEMS,
+        # never touch R2 and never overwrite the healthy live digest.
+        # Downloads are local-only so this abort is side-effect free on the
+        # remote; all banked work is checkpointed as shortfall_paused for
+        # resume / feed top-up.
+        prev_count = _digest_item_count()
+        if not ranked_reels or (
+            (prev_count >= MIN_DEPLOY_ITEMS or deploy) and len(ranked_reels) < MIN_DEPLOY_ITEMS
+        ):
+            logger.error(
+                "Only %d playable reels (previous digest: %d, minimum %d required); "
+                "preserving work as shortfall_paused checkpoint.",
+                len(ranked_reels), prev_count, MIN_DEPLOY_ITEMS,
+            )
+            _write_sync_progress("shortfall_paused", {
+                "ranked": ranked_reels,
+                "recommended_creators": recommended_creators,
+                "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                "uploaded_url_map": uploaded_url_map,
+                "deficit": config.TOP_DIGEST_COUNT - len(ranked_reels),
+            })
+            _alert_sync_abort(
+                "digest shortfall paused",
+                f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS} required) - checkpoint preserved for resume",
+            )
+            return 2
+
+        # 5D: JIT purge previous weeks FIRST (scoped: everything under videos/
+        # EXCEPT videos/<current_week_id>/ and the live-digest week), then the
+        # pre-flight quota check against the real batch size. Purging first
+        # makes the quota math current_R2_usage(excluding purged weeks) +
+        # batch_bytes < quota. Current-week strays from partial/interrupted
+        # uploads are deleted before upload too (keyed by reel-id suffix, same
+        # style as purge_unreferenced_r2_videos but scoped to the new week,
+        # which no saved digest references yet).
         live_week = _persisted_digest_week()
         keep_weeks = {live_week} if live_week and live_week != week_id else set()
         if config.R2_ACCOUNT_ID:
-            # Pre-flight quota check against actual known batch size
+            storage_r2.purge_previous_weeks_videos(
+                current_week_id=week_id, keep_week_ids=keep_weeks)
+            _purge_current_week_stray_r2_keys(
+                week_id, {str(r["id"]) for r in ranked_reels if r.get("id")})
             if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
-                logger.warning(
-                    "Pre-flight quota check failed; JIT-purging previous weeks before aborting.")
-                storage_r2.purge_previous_weeks_videos(
-                    current_week_id=week_id, keep_week_ids=keep_weeks)
-                if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
-                    logger.error("Pre-flight quota check failed before upload. Aborting to protect Cloudflare free limits.")
-                    _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
-                    return 1
+                logger.error("Pre-flight quota check failed after JIT purge. Aborting to protect Cloudflare free limits.")
+                _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
+                return 1
 
         # 5E: Parallel R2 Upload Phase
         existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
@@ -1138,35 +1221,13 @@ def _run_full_sync(
                     "uploaded_url_map": uploaded_url_map,
                 })
 
-        # Drop unplayable reels (C2)
+        # Drop unplayable reels (C2). Downloads were already filtered before
+        # the shortfall gate, so this post-upload filter should be ~empty —
+        # it only catches reels whose upload itself failed.
         dropped = [r["id"] for r in ranked_reels if r["id"] not in uploaded_url_map]
         if dropped:
             logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
             ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
-
-        # Shortfall preservation gate: If final playable reels are under MIN_DEPLOY_ITEMS (150),
-        # never overwrite the healthy live digest. Preserve all banked work as shortfall_paused.
-        prev_count = _digest_item_count()
-        if not ranked_reels or (
-            (prev_count >= MIN_DEPLOY_ITEMS or deploy) and len(ranked_reels) < MIN_DEPLOY_ITEMS
-        ):
-            logger.error(
-                "Only %d playable reels (previous digest: %d, minimum %d required); "
-                "preserving work as shortfall_paused checkpoint.",
-                len(ranked_reels), prev_count, MIN_DEPLOY_ITEMS,
-            )
-            _write_sync_progress("shortfall_paused", {
-                "ranked": ranked_reels,
-                "recommended_creators": recommended_creators,
-                "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
-                "uploaded_url_map": uploaded_url_map,
-                "deficit": config.TOP_DIGEST_COUNT - len(ranked_reels),
-            })
-            _alert_sync_abort(
-                "digest shortfall paused",
-                f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS} required) - checkpoint preserved for resume",
-            )
-            return 2
 
         # Persist the real object URL so later expansions never derive keys
         # from the calendar day they run on (week-drift fix).

@@ -1,0 +1,173 @@
+"""
+audit_channels.py — Monthly account <-> digest reconciliation for Instagram Digest.
+
+Compares the Instagram account's following list (cached; never forces a
+live scrape from the dashboard endpoint) against sources.json, and reports:
+  1. followed-on-IG but missing from the digest  ("missing_from_digest")
+  2. in the digest but NOT followed on IG        ("not_followed_on_ig")
+
+Usage:
+  python audit_channels.py --audit            # report only (default)
+  python audit_channels.py --audit --json     # machine-readable report
+  python audit_channels.py --import-missing   # also add group 1 to sources.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from typing import Any
+
+import atomic_io
+import config
+import extractor
+
+logger = logging.getLogger("InstagramDigest.AuditChannels")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _load_sources() -> list[dict[str, Any]]:
+    try:
+        data = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not read sources.json: %s", exc)
+        return []
+    if not isinstance(data, list):
+        return []
+    return [s for s in data if isinstance(s, dict) and s.get("handle")]
+
+
+def _load_blacklist() -> set[str]:
+    try:
+        data = json.loads(config.BLACKLIST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    return {str(c).lower().replace("@", "") for c in data.get("creators", [])}
+
+
+def _load_following() -> list[dict[str, Any]]:
+    """Cached following only — a forced scrape belongs in the weekly pipeline,
+    not in an on-demand audit."""
+    try:
+        accounts = extractor.sync_following_accounts(force=False)
+    except Exception as exc:
+        logger.warning("Could not load cached following: %s", exc)
+        return []
+    return [a for a in accounts if isinstance(a, dict) and a.get("handle")]
+
+
+def audit() -> dict[str, Any]:
+    """Build the reconciliation diff. Read-only; never mutates anything."""
+    sources = _load_sources()
+    blacklist = _load_blacklist()
+    following = _load_following()
+
+    digest_handles = {str(s["handle"]).lower().replace("@", "") for s in sources}
+    enabled_handles = {
+        str(s["handle"]).lower().replace("@", "")
+        for s in sources if s.get("enabled", True)
+    }
+    following_handles = {str(a["handle"]).lower().replace("@", "") for a in following}
+    following_names = {
+        str(a["handle"]).lower().replace("@", ""): str(a.get("name") or a["handle"])
+        for a in following
+    }
+
+    missing_from_digest = sorted(
+        (
+            {
+                "handle": h,
+                "name": following_names.get(h, h),
+                "category": extractor.categorize_creator(h, following_names.get(h, h)),
+            }
+            for h in (following_handles - digest_handles - blacklist)
+        ),
+        key=lambda e: e["handle"],
+    )
+
+    not_followed_on_ig = sorted(
+        (
+            {
+                "handle": h,
+                "name": next(
+                    (str(s.get("name") or h) for s in sources
+                     if str(s.get("handle", "")).lower().replace("@", "") == h),
+                    h,
+                ),
+            }
+            for h in (enabled_handles - following_handles)
+        ),
+        key=lambda e: e["handle"],
+    )
+
+    return {
+        "following_count": len(following_handles),
+        "digest_count": len(digest_handles),
+        "enabled_count": len(enabled_handles),
+        "blacklisted_count": len(blacklist),
+        "missing_from_digest": missing_from_digest,
+        "not_followed_on_ig": not_followed_on_ig,
+    }
+
+
+def import_missing(report: dict[str, Any]) -> int:
+    """Add missing_from_digest entries to sources.json (atomic). Returns count added."""
+    missing = report.get("missing_from_digest", [])
+    if not missing:
+        return 0
+    sources = _load_sources()
+    have = {str(s.get("handle", "")).lower().replace("@", "") for s in sources}
+    added = 0
+    for entry in missing:
+        h = str(entry.get("handle", "")).lower().replace("@", "")
+        if h and h not in have:
+            sources.append({
+                "handle": h,
+                "name": entry.get("name") or h,
+                "category": entry.get("category") or "entertainment",
+                "enabled": True,
+            })
+            have.add(h)
+            added += 1
+    if added:
+        atomic_io.durable_write_json(config.SOURCES_FILE, sources)
+    return added
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Monthly account<->digest audit")
+    parser.add_argument("--audit", action="store_true", help="Report only (default)")
+    parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+    parser.add_argument("--import-missing", action="store_true",
+                        help="Add IG-followed-but-missing creators to sources.json")
+    args = parser.parse_args()
+
+    report = audit()
+    if args.import_missing:
+        added = import_missing(report)
+        report["imported_count"] = added
+        logger.info("Imported %d missing creators into sources.json.", added)
+
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(f"Following on IG : {report['following_count']}")
+        print(f"In digest       : {report['digest_count']} "
+              f"({report['enabled_count']} enabled, {report['blacklisted_count']} blacklisted)")
+        print(f"\n-- Followed on IG but missing from digest ({len(report['missing_from_digest'])}) --")
+        for e in report["missing_from_digest"]:
+            print(f"  @{e['handle']}  ({e['category']}) — {e['name']}")
+        print(f"\n-- In digest but NOT followed on IG ({len(report['not_followed_on_ig'])}) --")
+        for e in report["not_followed_on_ig"]:
+            print(f"  @{e['handle']} — {e['name']}")
+        if args.import_missing:
+            print(f"\nImported {report.get('imported_count', 0)} creators into sources.json.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
