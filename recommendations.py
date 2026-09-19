@@ -113,6 +113,25 @@ def sanitize_and_validate_recommendations(
             logger.warning("No JSON array found in category %s: %s", category, exc)
             return []
 
+    # Unwrap agy CLI json envelope if present: {"conversation_id": ..., "response": "..."}
+    if isinstance(data, dict) and "response" in data:
+        resp_text = str(data["response"]).strip()
+        if resp_text.startswith("```"):
+            resp_text = re.sub(r"^```[a-zA-Z]*\n", "", resp_text)
+            resp_text = re.sub(r"\n```$", "", resp_text)
+            resp_text = resp_text.strip()
+        try:
+            data = json.loads(resp_text)
+        except Exception:
+            m = re.search(r"\[\s*\{.*\}\s*\]", resp_text, re.DOTALL)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except Exception:
+                    pass
+    elif isinstance(data, dict) and "creators" in data and isinstance(data["creators"], list):
+        data = data["creators"]
+
     if not isinstance(data, list):
         logger.warning("Expected JSON array for category %s, got %s", category, type(data).__name__)
         return []
@@ -159,14 +178,13 @@ def discover_category_creators(
     if not agy_bin:
         return []
 
-    schema_str = json.dumps(SCHEMA_DEF)
     sample_str = ", ".join(f"@{c}" for c in sample_creators[:8])
     prompt = (
         f"You are a talent scout for high-signal Instagram content. "
         f"In the category '{category}', the user follows creators: {sample_str}. "
         f"Do a deep web search and identify 10 similar HIGH QUALITY, active Instagram creators in '{category}' "
         f"whose content style and depth matches or exceeds these creators. "
-        f"Return an array of 10 creators with handle, name, category, reason (why they are recommended based on the user's tastes), "
+        f"Return ONLY a valid JSON array of 10 creators with keys: handle, name, category, reason (why they are recommended based on the user's tastes), "
         f"and follower_scale (e.g. '250K followers')."
     )
 
@@ -174,7 +192,6 @@ def discover_category_creators(
         agy_bin,
         "-p", prompt,
         "--output-format", "json",
-        "--json-schema", schema_str,
         "--print-timeout", f"{timeout_secs}s",
     ]
 
