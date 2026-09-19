@@ -121,3 +121,57 @@ def test_url_encoded_filenames_match_orphan_matcher():
     rid2 = "abc/def ghi"
     fname2 = f"01_{quote(handle, safe='')}_{quote(rid2, safe='')}.mp4"
     assert "%" in fname2 and fname2.endswith(f"_{quote(rid2, safe='')}.mp4")
+
+
+def _fake_page(url):
+    page = MagicMock()
+    page.url = url
+    return page
+
+
+def test_assert_not_blocked_raises_challenged_on_challenge_url():
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor._assert_not_blocked(
+            _fake_page("https://www.instagram.com/accounts/scraping_warning/?challenge_context=x"),
+            "probe")
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor._assert_not_blocked(
+            _fake_page("https://www.instagram.com/challenge/?next=/x"), "probe")
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor._assert_not_blocked(
+            _fake_page("https://www.instagram.com/accounts/update_risky_contactpoint/"), "probe")
+
+
+def test_assert_not_blocked_plain_login_stays_blocked():
+    with pytest.raises(extractor.InstagramBlocked) as exc_info:
+        extractor._assert_not_blocked(
+            _fake_page("https://www.instagram.com/accounts/login/"), "probe")
+    assert not isinstance(exc_info.value, extractor.InstagramChallenged)
+
+
+def test_challenged_is_subclass_of_blocked():
+    assert issubclass(extractor.InstagramChallenged, extractor.InstagramBlocked)
+
+
+def test_response_indicates_challenge():
+    assert extractor._response_indicates_challenge(
+        400, '{"message":"checkpoint_required","status":"fail"}')
+    assert extractor._response_indicates_challenge(401, "challenge_required for this ip")
+    assert not extractor._response_indicates_challenge(200, '{"items": []}')
+    assert not extractor._response_indicates_challenge(429, "rate limit, slow down")
+    assert not extractor._response_indicates_challenge(400, '{"message":"Media not found","status":"fail"}')
+
+
+def test_fetch_media_batch_raises_challenged(monkeypatch, tmp_path):
+    (tmp_path / "cookies.json").write_text(json.dumps({"cookies_dict": {"sessionid": "x"}}))
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    (resp := MagicMock()).status_code = 400
+    resp.text = '{"message":"checkpoint_required","status":"fail"}'
+    resp.headers = {}
+    sess = MagicMock()
+    sess.get.return_value = resp
+    import requests as _rq
+    monkeypatch.setattr(_rq, "Session", lambda: sess)
+    with patch.object(extractor, "_client_hint_headers", return_value={}):
+        with pytest.raises(extractor.InstagramChallenged):
+            extractor.fetch_media_info_batch(["AAA"], pause_secs=0)

@@ -231,7 +231,10 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
     logger.info("Starting AI creator recommendations refresh (force=%s)...", force)
 
     rec_file = get_recommended_file()
-    # Check cache if not force: if cache exists and was updated within last 6 days, reuse it
+    # Check cache if not force: if cache exists and was updated within last 6 days, reuse it.
+    # NOTE: rec_file lives under config.DATA_DIR, which the test-suite repoints
+    # at tmp_path per-test — so tests with no cache file proceed to discovery
+    # (and must stub check_agy_auth/discover_category_creators).
     if not force and rec_file.exists():
         try:
             cached_data = json.loads(rec_file.read_text(encoding="utf-8"))

@@ -374,9 +374,11 @@ def test_cookie_failure_sites_raise_attention():
     import pathlib
     main_src = pathlib.Path(config.ROOT_DIR, "main.py").read_text(encoding="utf-8")
     # Cookie-alert email sites (weekly feed, expand feed, creator-path login
-    # redirect) must all raise the dashboard popup, plus the validation gate.
-    assert main_src.count("notifier.send_cookie_alert_email()") == 3
-    assert main_src.count("local_server.raise_cookie_attention(") == 4
+    # redirect, Tier-1/Tier-2 challenges, media-API enrichment, per-reel
+    # enrichment, Tier-3, shortfall top-up) must all raise the dashboard
+    # popup, plus the validation gate.
+    assert main_src.count("notifier.send_cookie_alert_email()") == 9
+    assert main_src.count("local_server.raise_cookie_attention(") == 10
     assert '"/accounts/login" in str(exc)' in main_src
 
 

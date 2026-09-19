@@ -357,6 +357,187 @@ def send_cookie_alert_email(retrigger_url: str = "http://localhost:8080/retrigge
         return False
 
 
+def _safe_outbox_pending(report: dict[str, Any]) -> int | None:
+    """Coerce outbox_pending ("?" on collection failure) without raising."""
+    try:
+        return int(report.get("outbox_pending") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_health_report_message(report: dict[str, Any]) -> MIMEMultipart:
+    """Weekly self-audit email: digest count vs target, R2 vs quota, Pages,
+    session health, pending outbox/resume state. One summary so drift gets
+    noticed without opening dashboards."""
+    week = str(report.get("week_id") or "unknown").replace("\r", " ").replace("\n", " ").strip()
+    ok = bool(report.get("healthy", False))
+    subject = f"{'✅' if ok else '⚠️'} Instagram Digest Health — {week} " \
+              f"({report.get('digest_count', '?')}/{report.get('digest_target', '?')} reels)"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"Instagram Digest <{config.SMTP_USER}>"
+    msg["To"] = config.NOTIFICATION_EMAIL
+
+    def _row(label: str, value: str, good: bool) -> str:
+        dot = "#30d158" if good else "#ff9f0a"
+        return (f'<tr><td style="padding:8px 12px;color:#a1a1aa;font-size:13px;">{html.escape(label)}</td>'
+                f'<td style="padding:8px 12px;color:#f4f4f5;font-size:13px;font-weight:700;text-align:right;">'
+                f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot};'
+                f'margin-right:8px;"></span>{html.escape(value)}</td></tr>')
+
+    rows = "".join([
+        _row("Digest reels", f"{report.get('digest_count', '?')} / {report.get('digest_target', '?')}",
+             bool(report.get("digest_ok", False))),
+        _row("R2 usage", f"{report.get('r2_gb', '?')} / {report.get('quota_gb', '?')} GB",
+             bool(report.get("r2_ok", False))),
+        _row("Pages", str(report.get("pages_status", "?")), bool(report.get("pages_ok", False))),
+        _row("Session", str(report.get("session_status", "?")), bool(report.get("session_ok", False))),
+        _row("Outbox pending", str(report.get("outbox_pending", "?")),
+             _safe_outbox_pending(report) == 0),
+        _row("Resume pending", str(report.get("resume_pending", "none")),
+             str(report.get("resume_pending", "none")) == "none"),
+    ])
+    notes = "<br>".join(html.escape(n) for n in report.get("notes", [])) or "All checks green."
+    html_content = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:24px;background:#09090b;font-family:sans-serif;color:#f4f4f5;">
+<div style="max-width:560px;margin:0 auto;background:#121217;border-radius:16px;padding:24px;">
+<h2 style="margin:0 0 4px 0;">Weekly Health Report — {html.escape(week)}</h2>
+<p style="color:#a1a1aa;font-size:13px;">Exit code {html.escape(str(report.get('exit_code', '?')))} · {html.escape(str(report.get('run_summary', '')))}</p>
+<table style="width:100%;border-collapse:collapse;">{rows}</table>
+<p style="color:#a1a1aa;font-size:13px;margin-top:16px;">{notes}</p>
+</div></body></html>"""
+    text_lines = [f"Weekly Health Report — {week} (exit {report.get('exit_code', '?')})", ""]
+    for key in ("digest", "r2", "pages", "session", "outbox", "resume"):
+        text_lines.append(f"- {key}: {report.get(key + '_status', report.get(key, '?'))}")
+    text_lines += [""] + [str(n) for n in report.get("notes", [])]
+    msg.attach(MIMEText("\n".join(text_lines), "plain", "utf-8"))
+    msg.attach(MIMEText(html_content, "html", "utf-8"))
+    return msg
+
+
+def collect_health_report(week_id: str = "", exit_code: int = 0,
+                          run_summary: str = "") -> dict[str, Any]:
+    """Gather read-only health signals. Never raises; unknown reads as '?'/False."""
+    import glob as _glob
+    import json as _json
+    import urllib.request as _url
+    from pathlib import Path as _Path
+
+    report: dict[str, Any] = {"exit_code": exit_code, "run_summary": run_summary,
+                              "notes": []}
+    try:
+        target = int(os.getenv("TOP_DIGEST_COUNT", "250") or 250)
+    except ValueError:
+        target = 250
+    try:
+        import config as _cfg
+        target = int(getattr(_cfg, "TOP_DIGEST_COUNT", target))
+    except Exception:
+        pass
+    report["digest_target"] = target
+    try:
+        import config as _cfg2
+        digest = _json.loads(_cfg2.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+        items = digest.get("items", [])
+        report["week_id"] = week_id or digest.get("run_date", "")
+        report["digest_count"] = len(items)
+        report["digest_ok"] = len(items) >= int(target * 0.6)
+        report["digest_status"] = f"{len(items)}/{target}"
+        if len(items) < target:
+            report["notes"].append(f"Digest holds {len(items)} reels vs {target} target.")
+    except Exception as exc:
+        report["week_id"] = week_id
+        report["digest_count"] = "?"
+        report["digest_ok"] = False
+        report["digest_status"] = "unreadable"
+        report["notes"].append(f"Digest unreadable: {exc}")
+    try:
+        import config as _cfg3
+        import storage_r2 as _r2
+        cur, _n = _r2.get_bucket_storage_usage()
+        quota = int(getattr(_cfg3, "R2_STORAGE_QUOTA_BYTES", 8 * 1024**3))
+        report["r2_gb"] = f"{cur / 1024**3:.2f}" if cur >= 0 else "?"
+        report["quota_gb"] = f"{quota / 1024**3:.0f}"
+        report["r2_ok"] = 0 <= cur < quota
+        report["r2_status"] = f"{report['r2_gb']}/{report['quota_gb']} GB"
+    except Exception as exc:
+        report["r2_ok"] = False
+        report["r2_status"] = "unreachable"
+        report["notes"].append(f"R2 unreachable: {exc}")
+    try:
+        import config as _cfg4
+        base = str(getattr(_cfg4, "PAGES_BASE_URL", "")).rstrip("/")
+        with _url.urlopen(base + "/", timeout=20) as r:
+            code = r.getcode()
+        report["pages_ok"] = code == 200
+        report["pages_status"] = f"HTTP {code}"
+    except Exception as exc:
+        report["pages_ok"] = False
+        report["pages_status"] = "unreachable"
+        report["notes"].append(f"Pages unreachable: {exc}")
+    try:
+        import config as _cfg5
+        cdata = _json.loads((_cfg5.DATA_DIR / "cookies.json").read_text(encoding="utf-8"))
+        has_session = bool((cdata.get("cookies_dict") or {}).get("sessionid"))
+        report["session_ok"] = has_session
+        report["session_status"] = "sessionid present" if has_session else "no sessionid"
+        if not has_session:
+            report["notes"].append("cookies.json has no sessionid; refresh login in Chrome.")
+    except Exception as exc:
+        report["session_ok"] = False
+        report["session_status"] = "unreadable"
+        report["notes"].append(f"cookies.json unreadable: {exc}")
+    try:
+        import config as _cfg6
+        boxes = sorted(_Path(_cfg6.DATA_DIR).glob("upload_outbox_*.json"))
+        pending = 0
+        for b in boxes:
+            try:
+                pending += len((_json.loads(b.read_text(encoding="utf-8")) or {}).get("reels", []))
+            except Exception:
+                pass
+        report["outbox_pending"] = pending
+        if pending:
+            report["notes"].append(f"{pending} reels parked in upload outbox; run --reconcile.")
+    except Exception:
+        report["outbox_pending"] = "?"
+    try:
+        import config as _cfg7
+        syncs = sorted(_Path(_cfg7.DATA_DIR).glob("sync_progress_*.json"))
+        exps = sorted(_Path(_cfg7.DATA_DIR).glob("expand_checkpoint_*.json"))
+        leftovers = [p.name for p in syncs + exps]
+        report["resume_pending"] = ", ".join(leftovers) if leftovers else "none"
+        if leftovers:
+            report["notes"].append(f"Resume state left behind: {report['resume_pending']}.")
+    except Exception:
+        report["resume_pending"] = "?"
+    report["healthy"] = bool(report.get("digest_ok") and report.get("r2_ok")
+                              and report.get("pages_ok") and report.get("session_ok")
+                              and report.get("outbox_pending") == 0)
+    return report
+
+
+def send_health_report_email(report: dict[str, Any]) -> bool:
+    """Send the weekly self-audit health email. Returns False when unconfigured."""
+    if not is_email_configured():
+        logger.info("SMTP email notifications are not configured. Skipping health report.")
+        return False
+    logger.info("Sending weekly health report email to %s...", config.NOTIFICATION_EMAIL)
+    try:
+        msg = build_health_report_message(report)
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=25) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(config.SMTP_USER, config.SMTP_PASS)
+            server.send_message(msg)
+        logger.info("Successfully sent health report email!")
+        return True
+    except Exception as exc:
+        logger.error("Failed to deliver health report email: %s", exc)
+        return False
+
+
 def build_failure_alert_message(context: str, exit_code: int = 1) -> MIMEMultipart:
     """Build a pipeline-failure alert email (sync aborts, non-zero exits)."""
     subject = f"❌ Instagram Digest Failed — {context} (exit {exit_code})"
@@ -448,6 +629,7 @@ def main() -> int:
     parser.add_argument("--test", action="store_true", help="Send a test notification email")
     parser.add_argument("--cookie-alert", action="store_true", help="Send a test cookie alert email")
     parser.add_argument("--failure-alert", action="store_true", help="Send a pipeline failure alert email")
+    parser.add_argument("--health-report", action="store_true", help="Collect and send the weekly self-audit health email")
     parser.add_argument("--context", type=str, default="Manual test", help="Failure context for --failure-alert")
     parser.add_argument("--exit-code", type=int, default=1, help="Exit code for --failure-alert")
     parser.add_argument("--week-id", type=str, default="2026-09-11", help="Week ID for test")
@@ -456,6 +638,11 @@ def main() -> int:
 
     if args.cookie_alert:
         success = send_cookie_alert_email()
+        return 0 if success else 1
+
+    if args.health_report:
+        report = collect_health_report(week_id=args.week_id, exit_code=args.exit_code)
+        success = send_health_report_email(report)
         return 0 if success else 1
 
     if args.failure_alert:

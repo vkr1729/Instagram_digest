@@ -71,6 +71,8 @@ def _sync_env(tmp_path):
         patch.object(main.ranker, "rank_top_reels",
                      side_effect=lambda **kw: list(kw.get("candidates", []))[:12]),
         patch.object(extractor, "extract_external_reels_from_feed", return_value=[]),
+        patch("recommendations.refresh_recommendations", return_value=[]),
+        patch("recommendations.load_recommended_creators", return_value=[]),
         patch.object(main.storage_r2, "purge_expired_r2_objects", return_value=None),
         patch.object(main.storage_r2, "purge_unreferenced_r2_videos", return_value=None),
         patch.object(main.storage_r2, "purge_expired_local_videos", return_value=None),

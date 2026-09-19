@@ -288,6 +288,161 @@ def _filter_seen_reel_ids(candidates: list[dict[str, Any]]) -> list[dict[str, An
     return fresh
 
 
+# Upload outbox: reels downloaded locally but never uploaded (network gap,
+# R2 outage). Written at publish time, consumed by --reconcile. Survives
+# the run, unlike in-memory retries — tonight's 21 would have been a
+# 5-minute reconcile instead of surgery.
+def _outbox_path(week_id: str) -> Path:
+    return config.DATA_DIR / f"upload_outbox_{week_id}.json"
+
+
+def _write_upload_outbox(week_id: str, reels: list[dict[str, Any]],
+                         local_paths: dict[str, str]) -> None:
+    """Persist upload-failed reels + their local file paths (atomic)."""
+    import atomic_io
+    payload = {
+        "version": 1,
+        "week_id": week_id,
+        "written_at": datetime.now(timezone.utc).isoformat(),
+        "reels": reels,
+        "local_paths": {rid: p for rid, p in local_paths.items()
+                        if any(r.get("id") == rid for r in reels)},
+    }
+    atomic_io.durable_write_json(_outbox_path(week_id), payload)
+    logger.info("Upload outbox: parked %d reels for --reconcile.", len(reels))
+
+
+def _read_upload_outbox(week_id: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_outbox_path(week_id).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("reels"), list):
+        return None
+    return data
+
+
+def run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
+    """Finish a previous week's parked uploads without touching Instagram.
+
+    Uploads outbox reels to R2, merges them into the live digest, rebuilds
+    the site, and optionally deploys. Zero Meta access: safe on any network.
+    Returns 0 on success, 1 when nothing was pending, 2 on partial failure.
+    """
+    try:
+        with _pipeline_file_lock():
+            return _run_reconcile(week_id, deploy)
+    except PipelineBusy as exc:
+        logger.error("%s; refusing to start.", exc)
+        return 3
+
+
+def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
+    if week_id is None:
+        try:
+            digest = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+            week_id = digest.get("run_date") or ""
+        except Exception:
+            week_id = ""
+    if not week_id:
+        logger.error("No week given and no live digest to infer it from.")
+        return 1
+    box = _read_upload_outbox(week_id)
+    if not box or not box.get("reels"):
+        logger.info("Upload outbox for %s is empty; nothing to reconcile.", week_id)
+        return 1
+    reels = [r for r in box["reels"] if isinstance(r, dict) and r.get("id")]
+    paths = {rid: Path(p) for rid, p in (box.get("local_paths") or {}).items()}
+    logger.info("Reconciling %d parked uploads for week %s...", len(reels), week_id)
+
+    existing_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+    uploaded: dict[str, str] = {}
+
+    def _up(reel: dict[str, Any]) -> tuple[str, str]:
+        rid = str(reel["id"])
+        local = paths.get(rid)
+        if not local or not local.exists():
+            week_dir = config.VIDEOS_DIR / week_id
+            cands = list(week_dir.glob(f"*_{rid}.mp4"))
+            local = cands[0] if cands else None
+        if not local or not local.exists():
+            logger.warning("Outbox reel %s has no local file; skipping.", rid)
+            return rid, ""
+        url = storage_r2.upload_reel_to_r2(local, week_id=week_id,
+                                           key_name=local.name,
+                                           existing_keys=existing_keys)
+        return rid, url
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futs = {executor.submit(_up, r): str(r["id"]) for r in reels}
+        for f in as_completed(futs):
+            try:
+                rid, url = f.result()
+                if url:
+                    uploaded[rid] = url
+            except Exception as exc:
+                logger.warning("Reconcile upload error for %s: %s", futs[f], exc)
+
+    failed = [r for r in reels if str(r["id"]) not in uploaded]
+    if failed:
+        logger.error("Reconcile: %d/%d uploads still failing; outbox kept for retry.",
+                     len(failed), len(reels))
+        try:
+            _write_upload_outbox(week_id, failed,
+                                 {rid: str(paths[rid]) for rid in [str(r["id"]) for r in failed]
+                                  if rid in paths})
+        except Exception:
+            pass
+        return 2
+
+    try:
+        _outbox_path(week_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    try:
+        digest = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.error("Reconcile uploaded %d reels but cannot read live digest: %s",
+                     len(uploaded), exc)
+        return 2
+    if digest.get("run_date") != week_id:
+        logger.error("Live digest is week %s, outbox is %s; refusing to merge across weeks.",
+                     digest.get("run_date"), week_id)
+        return 2
+    items = digest.get("items", [])
+    live_ids = {it.get("id") for it in items}
+    base = max([int(i.get("rank") or 0) for i in items] + [len(items)])
+    merged = 0
+    for reel in reels:
+        rid = str(reel["id"])
+        if rid in live_ids:
+            continue
+        reel["r2_url"] = reel["video_url"] = uploaded[rid]
+        reel["rank"] = base + 1 + merged
+        reel["rank_display"] = f"#{base + 1 + merged:02d}"
+        items.append(reel)
+        merged += 1
+    try:
+        _record_seen_reel_ids([r for r in reels if str(r["id"]) in uploaded])
+    except Exception:
+        pass
+    ranker.save_digest_batch(items, run_date=week_id)
+    logger.info("Reconcile: merged %d reels; digest now %d items.", merged, len(items))
+    url_map = {it["id"]: (it.get("r2_url") or it.get("video_url"))
+               for it in items if it.get("id")}
+    site_builder.build_site(digest_data={"run_date": week_id, "items": items},
+                            r2_uploaded_urls=url_map)
+    if deploy:
+        if len(items) < MIN_DEPLOY_ITEMS:
+            logger.error("Reconciled digest has %d items (< %d); refusing to deploy.",
+                         len(items), MIN_DEPLOY_ITEMS)
+            return 2
+        site_builder.deploy_to_gh_pages()
+    save_last_run_info(week_id)
+    return 0
+
+
 class PipelineBusy(RuntimeError):
     """Another sync/expand holds data/.pipeline.lock."""
 
@@ -677,6 +832,24 @@ def _run_full_sync(
                                     max_evaluations=config.MAX_FEED_EVALUATIONS,
                                 )
                                 break
+                            except extractor.InstagramChallenged as challenge_err:
+                                logger.error("Instagram challenge during shortfall top-up: %s. "
+                                             "Keeping banked reels and aborting.", challenge_err)
+                                _alert_sync_abort("instagram challenge-gated", str(challenge_err))
+                                try:
+                                    import notifier
+                                    notifier.send_cookie_alert_email()
+                                except Exception as alert_err:
+                                    logger.warning("Failed to send cookie alert email: %s", alert_err)
+                                try:
+                                    local_server.raise_cookie_attention(
+                                        pipeline="weekly-sync",
+                                        reason="Instagram challenge gate during shortfall top-up",
+                                    )
+                                except Exception as popup_err:
+                                    logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                                session.close()
+                                return 2
                             except extractor.CookieExpiredException as exc:
                                 if "/accounts/login" in str(exc) or "login_required" in str(exc):
                                     break
@@ -826,6 +999,10 @@ def _run_full_sync(
                                         fast_mode=True,  # Fast discovery from reels tab
                                         session=session,
                                     )
+                                except extractor.InstagramChallenged:
+                                    # Never backoff-sleep a challenge: re-raise
+                                    # at once for the instant-abort handler.
+                                    raise
                                 except extractor.InstagramBlocked as exc:
                                     msg = str(exc)
                                     if "/accounts/login" in msg or "login_required" in msg:
@@ -881,6 +1058,32 @@ def _run_full_sync(
                                     "total_sources": extraction_total,
                                 })
                     except extractor.InstagramBlocked as exc:
+                        # Challenge-gated accounts abort instantly (no backoff
+                        # sleeps: they never heal by waiting and grinding risks
+                        # the account). Plain login/rate-limit paths keep the
+                        # existing backoff behavior below.
+                        if isinstance(exc, extractor.InstagramChallenged):
+                            logger.error("Instagram challenge on @%s (%s). "
+                                         "Aborting run with banked progress.", handle, exc)
+                            _write_sync_progress("extracting", {
+                                "done": done_map, "candidates": candidates,
+                                "extraction_complete": False,
+                                "total_sources": extraction_total,
+                            })
+                            _alert_sync_abort("instagram challenge-gated", str(exc))
+                            try:
+                                import notifier
+                                notifier.send_cookie_alert_email()
+                            except Exception as alert_err:
+                                logger.warning("Failed to send cookie alert email: %s", alert_err)
+                            try:
+                                local_server.raise_cookie_attention(
+                                    pipeline="weekly-sync",
+                                    reason="Instagram challenge gate during creator extraction",
+                                )
+                            except Exception as popup_err:
+                                logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                            return 2
                         logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
                         _write_sync_progress("extracting", {
                             "done": done_map, "candidates": candidates,
@@ -996,6 +1199,30 @@ def _run_full_sync(
                             candidates.extend(rec_reels)
                             mu, sigma, floor = CREATOR_PAUSE
                             extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
+                        except extractor.InstagramChallenged as challenge_err:
+                            # Same instant-abort as Tier 1: a gated account
+                            # must stop now, not grind 50 more creators.
+                            logger.error("Instagram challenge on recommended @%s (%s). "
+                                         "Aborting run with banked progress.", h, challenge_err)
+                            _write_sync_progress("extracting", {
+                                "done": done_map, "candidates": candidates,
+                                "extraction_complete": False,
+                                "total_sources": extraction_total,
+                            })
+                            _alert_sync_abort("instagram challenge-gated", str(challenge_err))
+                            try:
+                                import notifier
+                                notifier.send_cookie_alert_email()
+                            except Exception as alert_err:
+                                logger.warning("Failed to send cookie alert email: %s", alert_err)
+                            try:
+                                local_server.raise_cookie_attention(
+                                    pipeline="weekly-sync",
+                                    reason="Instagram challenge gate during Tier 2 extraction",
+                                )
+                            except Exception as popup_err:
+                                logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                            return 2
                         except Exception as rec_err:
                             logger.warning("Tier 2 extraction error on @%s: %s", h, rec_err)
 
@@ -1064,6 +1291,35 @@ def _run_full_sync(
                             todo, cutoff_timestamp=cutoff_ts)
                         logger.info("media-info pre-filter: %d/%d shortlist reels fresh with full metadata.",
                                     len(api_prefiltered), len(todo))
+                    except extractor.InstagramChallenged as challenge_err:
+                        # Account is gated mid-run: bank everything and abort
+                        # NOW. No per-reel fallback (it would grind a locked
+                        # account for hours), no retry.
+                        logger.error("Instagram challenge during enrichment: %s. "
+                                     "Banking work and aborting.", challenge_err)
+                        _write_sync_progress("enriched", {
+                            "candidates": candidates,
+                            "shortlist": shortlist,
+                            "enriched": list(enriched_by_id.values()),
+                            "extraction_complete": True,
+                            "recommended_creators": recommended_creators,
+                        })
+                        _alert_sync_abort("instagram challenge-gated",
+                                          f"{challenge_err}")
+                        try:
+                            import notifier
+                            notifier.send_cookie_alert_email()
+                        except Exception as alert_err:
+                            logger.warning("Failed to send cookie alert email: %s", alert_err)
+                        try:
+                            local_server.raise_cookie_attention(
+                                pipeline="weekly-sync",
+                                reason="Instagram challenge gate during enrichment; clear it in Chrome",
+                            )
+                        except Exception as popup_err:
+                            logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                        session.close()
+                        return 2
                     except Exception as api_err:
                         logger.warning("media-info pre-filter failed, falling back to per-reel: %s", api_err)
                         api_prefiltered = todo
@@ -1089,10 +1345,13 @@ def _run_full_sync(
                             if not m.get("is_pinned") and (m.get("timestamp") or 0) < cutoff_ts:
                                 return None
                             return m
+                        except extractor.InstagramChallenged:
+                            raise
                         except Exception as exc:
                             logger.debug("Enrichment error on reel %s: %s", r.get("id"), exc)
                             return None
 
+                    challenged_reel = None
                     for r in still_missing:
                         try:
                             res = _enrich_item(r)
@@ -1107,8 +1366,36 @@ def _run_full_sync(
                                         "extraction_complete": True,
                                         "recommended_creators": recommended_creators,
                                     })
+                        except extractor.InstagramChallenged as challenge_err:
+                            challenged_reel = challenge_err
+                            break
                         except Exception as exc:
                             logger.debug("Enrichment iteration error: %s", exc)
+                    if challenged_reel is not None:
+                        logger.error("Instagram challenge during per-reel enrichment: %s. "
+                                     "Banking work and aborting.", challenged_reel)
+                        _write_sync_progress("enriched", {
+                            "candidates": candidates,
+                            "shortlist": shortlist,
+                            "enriched": list(enriched_by_id.values()),
+                            "extraction_complete": True,
+                            "recommended_creators": recommended_creators,
+                        })
+                        _alert_sync_abort("instagram challenge-gated", str(challenged_reel))
+                        try:
+                            import notifier
+                            notifier.send_cookie_alert_email()
+                        except Exception as alert_err:
+                            logger.warning("Failed to send cookie alert email: %s", alert_err)
+                        try:
+                            local_server.raise_cookie_attention(
+                                pipeline="weekly-sync",
+                                reason="Instagram challenge gate during per-reel enrichment",
+                            )
+                        except Exception as popup_err:
+                            logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                        session.close()
+                        return 2
 
                 enriched = [enriched_by_id[rid] for rid in shortlist_ids if rid in enriched_by_id]
                 logger.info("Enriched %d valid reels within date window out of %d candidates.", len(enriched), len(shortlist))
@@ -1168,6 +1455,32 @@ def _run_full_sync(
                                 )
                                 feed_blocked = None
                                 break
+                            except extractor.InstagramChallenged as challenge_err:
+                                # Gated account: abort at once, no retry sleep.
+                                logger.error("Instagram challenge during Tier 3 discovery: %s. "
+                                             "Banking channel reels and aborting.", challenge_err)
+                                _write_sync_progress("enriched", {
+                                    "candidates": candidates,
+                                    "shortlist": shortlist, "enriched": enriched,
+                                    "extraction_complete": True,
+                                    "total_sources": extraction_total,
+                                    "recommended_creators": recommended_creators,
+                                })
+                                _alert_sync_abort("instagram challenge-gated", str(challenge_err))
+                                try:
+                                    import notifier
+                                    notifier.send_cookie_alert_email()
+                                except Exception as alert_err:
+                                    logger.warning("Failed to send cookie alert email: %s", alert_err)
+                                try:
+                                    local_server.raise_cookie_attention(
+                                        pipeline="weekly-sync",
+                                        reason="Instagram challenge gate during Tier 3 discovery",
+                                    )
+                                except Exception as popup_err:
+                                    logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                                session.close()
+                                return 2
                             except extractor.CookieExpiredException as exc:
                                 feed_blocked = exc
                                 if "/accounts/login" in str(exc) or "login_required" in str(exc):
@@ -1427,10 +1740,22 @@ def _run_full_sync(
 
         # Drop unplayable reels (C2). Downloads were already filtered before
         # the shortfall gate, so this post-upload filter should be ~empty —
-        # it only catches reels whose upload itself failed.
+        # it only catches reels whose upload itself failed. Those are NOT
+        # discarded: they go to the persistent upload outbox
+        # (data/upload_outbox_<week>.json) so --reconcile can finish them
+        # later without re-scraping anything.
         dropped = [r["id"] for r in ranked_reels if r["id"] not in uploaded_url_map]
         if dropped:
-            logger.warning("Dropping %d unplayable reels: %s", len(dropped), ", ".join(dropped))
+            logger.warning("Parking %d upload-failed reels in the outbox (not dropping): %s",
+                           len(dropped), ", ".join(dropped))
+            try:
+                _write_upload_outbox(
+                    week_id,
+                    [r for r in ranked_reels if r["id"] not in uploaded_url_map],
+                    {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                )
+            except Exception as ob_err:
+                logger.warning("Failed writing upload outbox: %s", ob_err)
             ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
 
         # Persist the real object URL so later expansions never derive keys
@@ -1442,6 +1767,27 @@ def _run_full_sync(
         # 6. Save digest batch payload (only playable reels saved!).
         # Cross-week dedup ledger: record these reel IDs as seen for 30 days
         # so a reel that misses one week's cut cannot resurface next week.
+        # Empty-save guard: if NOTHING is playable (total upload outage),
+        # preserve the healthy live digest instead of clobbering it with
+        # zero items — the outbox above already parked everything.
+        if not ranked_reels:
+            logger.error(
+                "Zero playable reels after upload phase (previous digest: %d items); "
+                "preserving live digest, outbox holds %d for --reconcile.",
+                _digest_item_count(), len(dropped),
+            )
+            _write_sync_progress("shortfall_paused", {
+                "ranked": [],
+                "recommended_creators": recommended_creators,
+                "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                "uploaded_url_map": uploaded_url_map,
+                "deficit": config.TOP_DIGEST_COUNT,
+            })
+            _alert_sync_abort(
+                "zero playable reels",
+                f"all {len(dropped)} uploads failed - outbox preserved for reconcile",
+            )
+            return 2
         try:
             _record_seen_reel_ids(ranked_reels)
         except Exception as dedup_err:
@@ -2022,9 +2368,16 @@ def main() -> int:
     parser.add_argument("--estimate", action="store_true", help="Read-only R2 usage projection for the next digest (no downloads/uploads/purges)")
     parser.add_argument("--force", action="store_true", help="Override the post-mass-follow cooldown guard (fresh-account protection)")
     parser.add_argument("--limit-per-creator", type=int, default=15, help="Max candidate reels per creator (default: 15; discovery visits at most 5/creator, 6 for food)")
+    parser.add_argument("--reconcile", nargs="?", const="", default=None, metavar="WEEK",
+                        help="Finish parked uploads for WEEK (default: live digest week) without touching Instagram")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
     args = parser.parse_args()
+
+    # Reconcile mode: finish parked uploads, zero Meta access (safe on any
+    # network). Runs before everything else and never scrapes.
+    if args.reconcile is not None:
+        return run_reconcile(args.reconcile or None, deploy=args.deploy)
 
     # Expand mode
     if args.expand != 0:

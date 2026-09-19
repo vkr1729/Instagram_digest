@@ -542,6 +542,16 @@ class InstagramBlocked(RuntimeError):
     """Instagram served a login/challenge wall instead of content."""
 
 
+class InstagramChallenged(InstagramBlocked):
+    """Instagram locked the session behind a checkpoint/challenge.
+
+    Distinct from a plain login redirect: the account itself is gated
+    (challenge_required / checkpoint_required / scraping_warning), so
+    grinding further burns hours AND risks the account. Callers must abort
+    fast, not retry.
+    """
+
+
 class CookieExpiredException(RuntimeError):
     """Instagram session cookies are missing or expired (redirected to login).
 
@@ -560,6 +570,10 @@ _BLOCK_MARKERS = (
     "/accounts/suspended",
     "/checkpoint/",
     "checkpoint_required",
+    "checkpoint_url",
+    "challenge_required",
+    "challenge_context",
+    "scraping_warning",
     "rate_limit",
     "limited_action",
     # Out-of-band risky-contactpoint challenge served to low-trust accounts
@@ -604,10 +618,41 @@ def _page_html_indicates_block(html: str) -> bool:
     return any(s in text.lower() for s in _SOFT_BLOCK_SNIPPETS)
 
 
+# Markers that mean the ACCOUNT is gated behind a challenge/checkpoint
+# (not merely logged out). Any hit must abort the run immediately — no
+# sleep-and-retry: grinding a gated account burns hours AND risks the
+# account. Subset of _BLOCK_MARKERS checked first by _assert_not_blocked.
+_CHALLENGE_MARKERS = (
+    "/challenge/",
+    "/checkpoint/",
+    "checkpoint_required",
+    "checkpoint_url",
+    "challenge_required",
+    "challenge_context",
+    "scraping_warning",
+    "/update_risky_contactpoint",
+    "risky_contactpoint",
+    "/accounts/suspended",
+)
+
+
 def _assert_not_blocked(page, context: str) -> None:
     url = getattr(page, "url", "") or ""
+    if any(m in url for m in _CHALLENGE_MARKERS):
+        raise InstagramChallenged(f"{context}: challenge-gated, redirected to {url}")
     if any(m in url for m in _BLOCK_MARKERS):
         raise InstagramBlocked(f"{context}: redirected to {url}")
+
+
+def _response_indicates_challenge(status: int, body_text: str) -> bool:
+    """True when an API JSON/body says checkpoint/challenge required."""
+    text = (body_text or "").lower()
+    return status in (400, 401, 403) and any(
+        m in text for m in (
+            "checkpoint_required", "challenge_required", "checkpoint_url",
+            "scraping_warning", "risky_contactpoint", "sentry_block",
+        )
+    )
 
 
 _DATE_FORMATS = ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%d %B %Y", "%m/%d/%Y")
@@ -961,6 +1006,13 @@ def fetch_media_info_batch(
             logger.warning("media-info rate-limited (429); backing off %.0fs.", wait)
             time.sleep(wait)
             continue
+        if _response_indicates_challenge(resp.status_code, resp.text[:500]):
+            # Account is gated: stop the whole batch NOW. Callers convert
+            # this to a fast abort; further requests only risk the account.
+            logger.error("media-info challenge-gated (%d) on %s; aborting batch.",
+                         resp.status_code, sc)
+            raise InstagramChallenged(
+                f"media-info batch challenge-gated on {sc}: {resp.text[:120]}")
         if resp.status_code != 200:
             logger.debug("media-info HTTP %d for %s.", resp.status_code, sc)
             continue
@@ -1021,6 +1073,7 @@ def enrich_candidates_via_media_api(
     dropped here, where each check cost one cheap GET instead of a ~7s page
     load. Entries the API misses keep their discovery fields for the
     per-reel fallback path. Pinned reels bypass the cutoff.
+    Raises InstagramChallenged when the account is gated (callers abort).
     """
     if not candidates:
         return []
@@ -1500,7 +1553,8 @@ def extract_external_reels_from_feed(
         OR (if hidden) comments >= min_comments (default MIN_EXTERNAL_COMMENTS).
       - Classifies topic into the 6 digest categories (ai_tech, finance, health, entertainment, niche, food).
       - Maximum 2 reels per external creator.
-      - Raises CookieExpiredException if redirected to login.
+      - Raises InstagramChallenged immediately when the account is gated;
+        raises CookieExpiredException if redirected to plain login.
       - on_progress (optional) receives a cumulative snapshot every 10 finds so
         callers can stream-checkpoint; a failing callback never breaks discovery.
     """
@@ -1541,8 +1595,11 @@ def extract_external_reels_from_feed(
         logger.warning("Failed navigating to reels feed: %s", exc)
         return []
 
-    # Check for authentication redirect
+    # Check for authentication redirect — challenge gates first (abort at
+    # once), plain login second (cookie death).
     current_url = getattr(page, "url", "") or ""
+    if any(m in current_url for m in _CHALLENGE_MARKERS):
+        raise InstagramChallenged(f"Instagram feed challenge-gated: redirected to {current_url}")
     if any(m in current_url for m in _BLOCK_MARKERS):
         raise CookieExpiredException(f"Instagram session expired: redirected to {current_url}")
 
@@ -1552,6 +1609,9 @@ def extract_external_reels_from_feed(
     while len(external_candidates) < target_count and eval_count < max_evaluations:
         eval_count += 1
         current_url = getattr(page, "url", "") or ""
+        if any(m in current_url for m in _CHALLENGE_MARKERS):
+            raise InstagramChallenged(
+                f"Instagram feed challenge-gated during scroll: {current_url}")
         if any(m in current_url for m in _BLOCK_MARKERS):
             raise CookieExpiredException(
                 f"Instagram session expired during feed scroll: {current_url}",

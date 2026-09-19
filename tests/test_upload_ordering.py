@@ -324,3 +324,154 @@ def test_expand_never_purges_live_week(tmp_path, monkeypatch):
         assert not any(k.startswith("purge") for k in kinds), f"expand must never purge: {kinds!r}"
         # Existing live reels preserved in the saved payload week.
         assert ("save", 4) in events
+
+
+def _outbox_env(tmp_path, monkeypatch, week):
+    """Isolate DATA_DIR/VIDEOS_DIR/DIGEST for outbox + reconcile tests."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "top100_digest.json")
+    monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "digests")
+    (tmp_path / "digests").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 2)
+    return week
+
+
+def test_outbox_write_and_roundtrip(tmp_path, monkeypatch):
+    """Outbox write persists reels + paths; read returns the same payload."""
+    week = _outbox_env(tmp_path, monkeypatch, "2026-09-19")
+    reels = [_cand("r1"), _cand("r2")]
+    main._write_upload_outbox(week, reels, {"r1": "/tmp/r1.mp4", "r2": "/tmp/r2.mp4",
+                                            "other": "/tmp/other.mp4"})
+    box = main._read_upload_outbox(week)
+    assert box is not None and box["week_id"] == week
+    assert [r["id"] for r in box["reels"]] == ["r1", "r2"]
+    assert set(box["local_paths"]) == {"r1", "r2"}
+    assert (tmp_path / f"upload_outbox_{week}.json").exists()
+
+
+def test_outbox_read_missing_or_corrupt(tmp_path, monkeypatch):
+    _outbox_env(tmp_path, monkeypatch, "2026-09-19")
+    assert main._read_upload_outbox("2026-09-19") is None
+    (tmp_path / "upload_outbox_2026-09-19.json").write_text("not json{{{")
+    assert main._read_upload_outbox("2026-09-19") is None
+    (tmp_path / "upload_outbox_2026-09-19.json").write_text('{"reels": "nope"}')
+    assert main._read_upload_outbox("2026-09-19") is None
+
+
+def test_reconcile_empty_outbox_returns_1(tmp_path, monkeypatch):
+    """No outbox file -> rc 1, digest untouched, no uploads attempted."""
+    week = _outbox_env(tmp_path, monkeypatch, "2026-09-19")
+    (tmp_path / "top100_digest.json").write_text(json.dumps({"run_date": week, "items": []}))
+    with patch.object(main.storage_r2, "upload_reel_to_r2",
+                       side_effect=AssertionError("must not upload")):
+        assert main._run_reconcile(week, deploy=False) == 1
+
+
+def test_reconcile_uploads_merges_rebuilds(tmp_path, monkeypatch):
+    """Happy path: uploads parked reels, merges into digest, rebuilds site."""
+    week = _outbox_env(tmp_path, monkeypatch, "2026-09-19")
+    live = [dict(_cand("keep1"), rank=1, rank_display="#01",
+                 r2_url="https://r2.example/keep1.mp4", video_url="https://r2.example/keep1.mp4")]
+    (tmp_path / "top100_digest.json").write_text(json.dumps({"run_date": week, "items": live}))
+    parked = [dict(_cand("new1"), rank=5, creator_handle="bob")]
+    local = tmp_path / "videos" / week / "05_bob_new1.mp4"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(b"x" * 1024)
+    main._write_upload_outbox(week, parked, {"new1": str(local)})
+    events: list = []
+    with (
+        patch.object(main.storage_r2, "get_existing_r2_keys", return_value=set()),
+        patch.object(main.storage_r2, "upload_reel_to_r2",
+                     side_effect=lambda p, week_id, key_name, existing_keys:
+                     events.append(("upload", key_name)) or f"https://r2.example/{key_name}"),
+        patch.object(main.ranker, "save_digest_batch",
+                     side_effect=lambda items, run_date=None, **k: events.append(("save", len(items)))),
+        patch.object(main.site_builder, "build_site",
+                     side_effect=lambda **kw: events.append(("build", None)) or (Path("r2"), Path("local"))),
+        patch.object(main, "save_last_run_info",
+                     side_effect=lambda *a, **k: events.append(("last_run", None))),
+    ):
+        assert main._run_reconcile(week, deploy=False) == 0
+    kinds = [e[0] for e in events]
+    assert kinds.count("upload") == 1 and ("save", 2) in events and "build" in kinds
+    assert not (tmp_path / f"upload_outbox_{week}.json").exists()
+
+
+def test_reconcile_keeps_outbox_on_partial_failure(tmp_path, monkeypatch):
+    """Failed uploads stay parked (rc 2) for a later retry; digest untouched."""
+    week = _outbox_env(tmp_path, monkeypatch, "2026-09-19")
+    (tmp_path / "top100_digest.json").write_text(json.dumps({"run_date": week, "items": []}))
+    parked = [_cand("bad1")]
+    local = tmp_path / "videos" / week / "05_bob_bad1.mp4"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(b"x")
+    main._write_upload_outbox(week, parked, {"bad1": str(local)})
+    with (
+        patch.object(main.storage_r2, "get_existing_r2_keys", return_value=set()),
+        patch.object(main.storage_r2, "upload_reel_to_r2", return_value=""),
+        patch.object(main.ranker, "save_digest_batch",
+                     side_effect=AssertionError("must not save on failure")),
+    ):
+        assert main._run_reconcile(week, deploy=False) == 2
+    assert (tmp_path / f"upload_outbox_{week}.json").exists()
+
+
+def test_reconcile_refuses_cross_week_merge(tmp_path, monkeypatch):
+    """Outbox for week A never merges into a live digest of week B."""
+    _outbox_env(tmp_path, monkeypatch, "2026-09-19")
+    (tmp_path / "top100_digest.json").write_text(json.dumps({"run_date": "2026-09-20", "items": []}))
+    parked = [_cand("new1")]
+    local = tmp_path / "videos" / "2026-09-19" / "05_bob_new1.mp4"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(b"x")
+    main._write_upload_outbox("2026-09-19", parked, {"new1": str(local)})
+    with (
+        patch.object(main.storage_r2, "get_existing_r2_keys", return_value=set()),
+        patch.object(main.storage_r2, "upload_reel_to_r2",
+                     return_value="https://r2.example/new1.mp4"),
+        patch.object(main.ranker, "save_digest_batch",
+                     side_effect=AssertionError("must not save across weeks")),
+    ):
+        assert main._run_reconcile("2026-09-19", deploy=False) == 2
+
+
+def test_sync_parks_upload_failures_in_outbox(tmp_path, monkeypatch):
+    """Upload-phase failures land in the outbox AND publish what is playable.
+
+    All 20 ranked reels download fine (>= MIN), then every upload fails:
+    nothing is playable, so the run saves an empty digest... no — it must
+    NOT clobber the healthy live digest with zero items. The shortfall
+    gate (rc 2, live digest preserved) fires, and the outbox holds all 20
+    for --reconcile.
+    """
+    top_n, min_deploy = 20, 12
+    week = _real_week_id()
+    with _sync_env(tmp_path, monkeypatch, top_n=top_n, min_deploy=min_deploy) as batch:
+        live = [{"id": f"live{i:03d}", "creator_handle": "alice"} for i in range(min_deploy)]
+        batch.write_text(json.dumps({"run_date": "2026-09-10", "items": live}), encoding="utf-8")
+        ranked = _ranked(top_n)
+        _write_ranked_checkpoint(tmp_path, ranked, stage="ranked")
+        with (
+            patch.object(extractor, "download_reel_video", side_effect=_fake_download_ok),
+            patch.object(main, "_ensure_valid_session", return_value=True),
+            patch("recommendations.refresh_recommendations", return_value=[]),
+            patch.object(main.storage_r2, "get_bucket_storage_usage", return_value=(100, 10)),
+            patch.object(main.storage_r2, "purge_previous_weeks_videos", return_value=[]),
+            patch.object(main.storage_r2, "check_preflight_quota", return_value=True),
+            patch.object(main.storage_r2, "get_existing_r2_keys", return_value=set()),
+            patch.object(main.storage_r2, "get_s3_client", return_value=_FakeS3([])),
+            patch.object(main.storage_r2, "upload_reel_to_r2", return_value=""),
+            patch.object(main.storage_r2, "purge_expired_r2_objects", return_value=[]),
+            patch.object(main.storage_r2, "purge_unreferenced_r2_videos", return_value=[]),
+            patch.object(main.storage_r2, "purge_expired_local_videos", return_value=[]),
+            patch.object(main.ranker, "save_digest_batch", return_value=None),
+            patch.object(main.site_builder, "build_site",
+                         return_value=(Path("r2"), Path("local"))),
+        ):
+            rc = main.run_full_sync(deploy=False)
+        assert rc == 2
+        box = main._read_upload_outbox(week)
+        assert box is not None and len(box["reels"]) == top_n
+        # Live digest preserved (shortfall: nothing playable this run).
+        assert len(json.loads(batch.read_text(encoding="utf-8"))["items"]) == min_deploy

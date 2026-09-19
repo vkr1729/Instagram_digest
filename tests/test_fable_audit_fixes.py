@@ -55,6 +55,8 @@ def _iso(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "R2_ACCOUNT_ID", "")
     (tmp_path / "data" / "digests").mkdir(parents=True)
     monkeypatch.setattr(extractor, "InstagramSession", _Session)
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(storage_r2, "get_existing_r2_keys", lambda prefix="videos/": set())
     monkeypatch.setattr(storage_r2, "purge_expired_r2_objects", lambda **k: [])
     monkeypatch.setattr(storage_r2, "purge_unreferenced_r2_videos", lambda: [])
