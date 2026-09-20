@@ -2527,13 +2527,22 @@
         grid.appendChild(empty);
         return;
       }
+      // Repo-root-aware base (Pages serves under /Instagram_digest/; the
+      // archive pages live one level deeper). Same pattern as share/preload.
+      const _origin = window.location.origin;
+      const _inArchive = window.location.pathname.includes('/archive/');
+      const _basePath = _inArchive
+        ? _origin + window.location.pathname.replace(/\/archive\/.*$/, '')
+        : _origin + window.location.pathname.replace(/\/[^\/]*$/, '');
       overlayList.forEach((r, i) => {
         const btn = document.createElement('button');
         btn.className = 'bookmark-card';
         btn.setAttribute('aria-label', `Open bookmark ${r.creator_handle || r.id}`);
         const img = document.createElement('img');
         img.loading = 'lazy';
-        img.src = r.thumbnail_url || r.video_url || '';
+        // R2 permanent portrait first (survives weekly pruning); Pages
+        // portrait covers current-week saves whose R2 copy failed to fetch.
+        img.src = r.thumbnail_url || `${_basePath}/thumbnails/${r.id}_portrait.jpg`;
         img.alt = '';
         img.onerror = () => { img.style.visibility = 'hidden'; };
         const handle = document.createElement('div');

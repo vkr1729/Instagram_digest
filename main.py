@@ -412,17 +412,25 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
         return 2
     items = digest.get("items", [])
     live_ids = {it.get("id") for it in items}
-    base = max([int(i.get("rank") or 0) for i in items] + [len(items)])
     merged = 0
     for reel in reels:
         rid = str(reel["id"])
         if rid in live_ids:
             continue
-        reel["r2_url"] = reel["video_url"] = uploaded[rid]
-        reel["rank"] = base + 1 + merged
-        reel["rank_display"] = f"#{base + 1 + merged:02d}"
+        uploaded_url = uploaded[rid]
+        try:
+            true_rank = int(uploaded_url.rsplit("/", 1)[-1].split("_", 1)[0])
+        except (ValueError, IndexError):
+            true_rank = int(reel.get("rank") or 0) or None
+        if not true_rank:
+            logger.warning("Reconcile: no original rank for %s; keeping upload order.", rid)
+            true_rank = max([int(i.get("rank") or 0) for i in items] + [len(items)]) + 1
+        reel["r2_url"] = reel["video_url"] = uploaded_url
+        reel["rank"] = true_rank
+        reel["rank_display"] = f"#{true_rank:02d}"
         items.append(reel)
         merged += 1
+    items.sort(key=lambda it: int(it.get("rank") or 0))
     try:
         _record_seen_reel_ids([r for r in reels if str(r["id"]) in uploaded])
     except Exception:
