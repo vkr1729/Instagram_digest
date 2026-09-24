@@ -119,6 +119,19 @@ public final class AVPlayerPool: ObservableObject {
         if let o = thermalObserver { NotificationCenter.default.removeObserver(o) }
     }
 
+    /// End-of-item threshold: a currentTime within this many seconds of
+    /// duration counts as "at end" and must restart from zero.
+    /// AVPlayer ignores play()/rate at end; only a seek to .zero restarts it.
+    /// Without this, swiping back to a fully-watched reel strands it on the
+    /// last frame (field bug: auto-advanced reel stays completed on return).
+    public static let endRestartThreshold: Double = 0.3
+
+    /// Pure helper: true when playback sits at/over the end and needs a restart.
+    public static func isAtEnd(currentTime: Double, duration: Double, threshold: Double = endRestartThreshold) -> Bool {
+        guard currentTime.isFinite, duration.isFinite, duration > 0, threshold.isFinite else { return false }
+        return currentTime >= duration - threshold
+    }
+
     public var effectiveRate: Float {
         isLatched2x ? 2.0 : baseRate
     }
@@ -145,6 +158,37 @@ public final class AVPlayerPool: ObservableObject {
         if isPlaying {
             slotCurrent.player.rate = effectiveRate
         }
+    }
+
+    /// Starts slotCurrent, seeking to zero first when its item sits at end.
+    /// AVPlayer ignores play()/rate at end-of-item, so returning to a
+    /// fully-watched reel must seek before setting rate, otherwise the reel
+    /// stays frozen on its last frame with isPlaying incorrectly true.
+    /// Partially-watched reels resume from their preserved position untouched.
+    private func playCurrentSlotRestartingIfNeeded() {
+        let slot = slotCurrent
+        let player = slot.player
+        if let item = player.currentItem {
+            let duration = item.duration.seconds
+            let current = player.currentTime().seconds
+            if Self.isAtEnd(currentTime: current, duration: duration) {
+                self.currentProgress = 0.0
+                self.currentTime = 0.0
+                self.isPlaying = true
+                AudioSessionCoordinator.shared.activateSession()
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak slot, weak item] _ in
+                    guard let self = self, let s = slot, let expected = item else { return }
+                    guard self.slotCurrent === s, s.player.currentItem === expected else { return }
+                    if self.isPlaying {
+                        s.player.rate = self.effectiveRate
+                    }
+                }
+                return
+            }
+        }
+        isPlaying = true
+        AudioSessionCoordinator.shared.activateSession()
+        player.rate = effectiveRate
     }
 
     // MARK: - Navigation & Loading
@@ -273,9 +317,7 @@ public final class AVPlayerPool: ObservableObject {
             let isLocal = LibraryPathResolver.shared.isLocalFileAvailable(for: currentWeekID, reelID: currItem.id)
             observePlayerItemStatus(for: slotCurrent, item: promotedItem, reel: currItem, isLocal: isLocal, generation: thisGeneration)
             attachTimeObserver(to: slotCurrent, reel: currItem)
-            self.isPlaying = true
-            slotCurrent.player.rate = effectiveRate
-            AudioSessionCoordinator.shared.activateSession()
+            playCurrentSlotRestartingIfNeeded()
 
             // 3. Recycle oldPrev into slotNext to preload nextItem
             if !isThermalThrottled, let next = nextItem {
@@ -326,9 +368,7 @@ public final class AVPlayerPool: ObservableObject {
             let isLocal = LibraryPathResolver.shared.isLocalFileAvailable(for: currentWeekID, reelID: currItem.id)
             observePlayerItemStatus(for: slotCurrent, item: promotedItem, reel: currItem, isLocal: isLocal, generation: thisGeneration)
             attachTimeObserver(to: slotCurrent, reel: currItem)
-            self.isPlaying = true
-            slotCurrent.player.rate = effectiveRate
-            AudioSessionCoordinator.shared.activateSession()
+            playCurrentSlotRestartingIfNeeded()
 
             // 3. Recycle oldNext into slotPrev to preload prevItem
             if !isThermalThrottled, let prev = prevItem {
@@ -371,9 +411,7 @@ public final class AVPlayerPool: ObservableObject {
             // Reconnect the layer: it may have been detached by cell reuse or backgrounding.
             slot.playerLayer?.player = slot.player
             slot.playerLayer?.videoGravity = .resizeAspect
-            applyPlaybackRate()
-            self.isPlaying = true
-            AudioSessionCoordinator.shared.activateSession()
+            playCurrentSlotRestartingIfNeeded()
             return
         }
 
@@ -553,10 +591,14 @@ public final class AVPlayerPool: ObservableObject {
         let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
         slot.timeObserverToken = slot.player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak slot] time in
             guard let self = self, let s = slot, self.slotCurrent === s else { return }
+            // Always publish the clock so the hairline progress never looks
+            // frozen while duration metadata is still resolving.
+            let cur = time.seconds
+            if cur.isFinite {
+                self.currentTime = cur
+            }
             guard let duration = s.player.currentItem?.duration.seconds, duration.isFinite, duration > 0 else { return }
 
-            let cur = time.seconds
-            self.currentTime = cur
             self.currentDuration = duration
             let progress = max(0.0, min(1.0, cur / duration))
             self.currentProgress = progress
@@ -580,9 +622,7 @@ public final class AVPlayerPool: ObservableObject {
     }
 
     public func play() {
-        isPlaying = true
-        AudioSessionCoordinator.shared.activateSession()
-        slotCurrent.player.rate = effectiveRate
+        playCurrentSlotRestartingIfNeeded()
     }
 
     public func pause() {

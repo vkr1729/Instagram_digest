@@ -1365,6 +1365,15 @@
         }
       });
 
+      // Replay-from-end: a fully-watched reel sits at ended/currentTime ==
+      // duration. Swiping back must restart it from 0 (bookmark/share
+      // return path), never strand it on the last frame. Some WebKit builds
+      // do not auto-rewind play() after ended, so reset explicitly.
+      if (video.ended) {
+        delete card.dataset.endedHandled;
+        try { if (video.readyState > 0) video.currentTime = 0; } catch (e) {}
+      }
+
       // Redundant same-card calls (observer + scroll settle) must not drop a latch.
       video.playbackRate = (latchedBoostCard === card) ? 2.0 : currentSpeed;
       video.preservesPitch = true;
