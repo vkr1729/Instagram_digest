@@ -1246,6 +1246,110 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API storage gauge -> /api/storage (local videos dir + R2 bucket).
+        # Fail-open: any probe error yields nulls, never a 500, so the
+        # dashboard widget degrades to "unavailable" instead of breaking.
+        if clean_path in ("/api/storage", "/api/storage/"):
+            local_bytes: int | None = None
+            local_files: int | None = None
+            try:
+                total, count = 0, 0
+                vdir = config.VIDEOS_DIR
+                if vdir.exists():
+                    for root, _, files in os.walk(vdir):
+                        for fn in files:
+                            try:
+                                total += (Path(root) / fn).stat().st_size
+                                count += 1
+                            except OSError:
+                                continue
+                local_bytes, local_files = total, count
+            except Exception as exc:
+                logger.debug("Local storage probe failed: %s", exc)
+            r2_bytes: int | None = None
+            r2_objects: int | None = None
+            try:
+                import storage_r2
+                b, n = storage_r2.get_bucket_storage_usage()
+                # (0, 0) without configured credentials is "unknown", not empty.
+                if b or n or storage_r2.get_s3_client() is not None:
+                    r2_bytes, r2_objects = b, n
+            except Exception as exc:
+                logger.debug("R2 storage probe failed: %s", exc)
+            resp = {
+                "success": True,
+                "local": {"bytes": local_bytes, "files": local_files},
+                "r2": {"bytes": r2_bytes, "objects": r2_objects},
+            }
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # API category watch-progress -> /api/category-progress?week_id=YYYY-MM-DD
+        # Per-category totals from the digest plus watched overlay from
+        # watched.json. Tolerant: unknown weeks/items yield zeroed buckets.
+        if clean_path in ("/api/category-progress", "/api/category-progress/"):
+            query = parse_qs(parsed.query)
+            week_id = (query.get("week_id", [""])[0] or "").strip()
+            digest_path = None
+            try:
+                if week_id:
+                    cand = config.DIGESTS_DIR / f"{week_id}.json"
+                    digest_path = cand if cand.exists() else None
+                else:
+                    cands = sorted(config.DIGESTS_DIR.glob("*.json"),
+                                   key=lambda p: p.stat().st_mtime, reverse=True)
+                    digest_path = cands[0] if cands else None
+                    if digest_path is not None:
+                        week_id = digest_path.stem
+                totals: dict[str, int] = {}
+                ids_by_cat: dict[str, set[str]] = {}
+                if digest_path is not None:
+                    items = _load_json_tolerant(digest_path, {})
+                    items = items.get("items", []) if isinstance(items, dict) else []
+                    for it in items if isinstance(items, list) else []:
+                        if not isinstance(it, dict):
+                            continue
+                        cat = str(it.get("category") or "other").strip() or "other"
+                        rid = str(it.get("id") or "")
+                        totals[cat] = totals.get(cat, 0) + 1
+                        if rid:
+                            ids_by_cat.setdefault(cat, set()).add(rid)
+                watched_ids: set[str] = set()
+                try:
+                    wdata = _load_json_tolerant(config.WATCHED_FILE, {})
+                    if isinstance(wdata, dict):
+                        watched_ids = {str(x) for x in (wdata.get(week_id, []) or [])}
+                except Exception:
+                    watched_ids = set()
+                categories = [
+                    {"category": cat, "total": totals[cat],
+                     "watched": len(ids_by_cat.get(cat, set()) & watched_ids)}
+                    for cat in sorted(totals)
+                ]
+                resp = {
+                    "success": True,
+                    "week_id": week_id,
+                    "categories": categories,
+                    "total": sum(totals.values()),
+                    "total_watched": sum(c["watched"] for c in categories),
+                }
+            except Exception as exc:
+                logger.debug("Category progress failed: %s", exc)
+                resp = {"success": True, "week_id": week_id, "categories": [],
+                        "total": 0, "total_watched": 0}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # API live-progress route -> /api/live-progress (dashboard bars)
         if clean_path in ("/api/live-progress", "/api/live-progress/"):
             resp = {"success": True, **live_progress_state()}

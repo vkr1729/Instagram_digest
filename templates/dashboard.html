@@ -158,6 +158,14 @@
       <div class="meta">Kill this server process, then relaunch from the desktop icon for a clean start.</div>
       <div class="actions"><button class="danger" id="serverKillBtn">Kill server process</button></div>
     </div>
+    <div class="card">
+      <div class="row1"><h2>Storage</h2><span class="pill idle" id="storagePill">…</span></div>
+      <div class="meta" id="storageMeta">Probing local videos and R2 usage…</div>
+    </div>
+    <div class="card">
+      <div class="row1"><h2>Watch progress</h2><span class="pill idle" id="watchProgPill">…</span></div>
+      <div class="meta" id="watchProgMeta">Loading per-category progress…</div>
+    </div>
   </div>
 
   <div class="card wide" id="recommendedSection" style="margin-top: 16px;">
@@ -642,8 +650,65 @@
   $("serverKillBtn").addEventListener("click", killServer);
   refresh();
   loadRecommendations();
+  loadStorageGauge();
+  loadWatchProgress();
   setInterval(refresh, 5000);
   setInterval(loadRecommendations, 30000);
+  setInterval(loadStorageGauge, 60000);
+  setInterval(loadWatchProgress, 60000);
+
+  async function loadWatchProgress() {
+    const pill = $("watchProgPill"), meta = $("watchProgMeta");
+    try {
+      const data = await getJSONsoft("/api/category-progress");
+      if (!data || !data.success || !data.total) throw new Error("no data");
+      pill.textContent = data.total_watched + "/" + data.total;
+      pill.className = "pill " + (data.total_watched >= data.total ? "ok" : "idle");
+      meta.innerHTML = data.categories.map((c) =>
+        '<div style="margin: 3px 0;">' + progressBar(c.watched, c.total) +
+        ' <b>' + c.watched + ' / ' + c.total + '</b> ' + esc(c.category) + '</div>'
+      ).join("");
+    } catch (e) {
+      if (meta) meta.textContent = "No digest progress yet.";
+    }
+  }
+
+  function fmtBytes(n) {
+    if (n === null || n === undefined) return "?";
+    if (n < 1000) return n + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n, u = -1;
+    while (v >= 1000 && u < units.length - 1) { v /= 1000; u++; }
+    return v.toFixed(1) + " " + units[u];
+  }
+
+  async function loadStorageGauge() {
+    const pill = $("storagePill"), meta = $("storageMeta");
+    try {
+      const data = await getJSONsoft("/api/storage");
+      if (!data || !data.success) throw new Error("bad response");
+      const bits = [];
+      if (data.local && data.local.bytes !== null) {
+        bits.push("Local " + fmtBytes(data.local.bytes) + " (" + (data.local.files || 0) + " files)");
+      }
+      if (data.r2 && data.r2.bytes !== null) {
+        const pct = data.r2.bytes / 10000000000 * 100;
+        bits.push("R2 " + fmtBytes(data.r2.bytes) + " / 10 GB (" + pct.toFixed(0) + "%)");
+        pill.textContent = pct > 80 ? "FULL" : "OK";
+        pill.className = "pill " + (pct > 80 ? "warn" : "idle");
+      } else {
+        bits.push("R2 unavailable");
+        pill.textContent = "…";
+      }
+      if (!bits.length) throw new Error("no data");
+      meta.textContent = bits.join(" · ");
+      if (data.r2 && data.r2.bytes === null && data.local && data.local.bytes !== null) {
+        pill.textContent = "LOCAL";
+      }
+    } catch (e) {
+      if (meta) meta.textContent = "Storage probe unavailable.";
+    }
+  }
 </script>
 </body>
 </html>

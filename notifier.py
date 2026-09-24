@@ -33,6 +33,7 @@ def build_email_message(
     external_count: int | None = None,
     top_reels: list[dict[str, Any]] | None = None,
     site_url: str | None = None,
+    recommended: list[dict[str, Any]] | None = None,
 ) -> MIMEMultipart:
     """Build a rich, responsive multipart HTML and plain-text email message using UI Pro Max OLED Dark theme."""
     url = site_url or config.PAGES_BASE_URL
@@ -66,6 +67,14 @@ def build_email_message(
             cat = r.get("category", "").replace("_", " ").title()
             caption = (r.get("caption") or "").replace("\n", " ")[:90]
             text_lines.append(f"  • {rank} @{handle} [{cat}]: {caption}...")
+        text_lines.append("")
+    if recommended:
+        text_lines.append("New Creators To Try (dashboard → Recommended):")
+        for r in recommended[:6]:
+            handle = str(r.get("handle", "creator")).lstrip("@")
+            name = str(r.get("name") or handle)
+            reason = str(r.get("reason") or "").replace("\n", " ")[:90]
+            text_lines.append(f"  • @{handle} ({name}): {reason}...")
         text_lines.append("")
 
     text_lines.append(f"Open the PWA on mobile or desktop: {url}")
@@ -123,6 +132,35 @@ def build_email_message(
             </div>
         """
 
+    # Recommended-creators section (AI scout picks not yet followed)
+    recs_html = ""
+    if recommended:
+        rec_rows = []
+        for r in recommended[:6]:
+            handle = html.escape(str(r.get("handle", "creator")).lstrip("@"))
+            name = html.escape(str(r.get("name") or handle))
+            reason_raw = str(r.get("reason") or "").strip().replace("\n", " ")
+            reason = html.escape(reason_raw[:110] + ("..." if len(reason_raw) > 110 else ""))
+            rec_rows.append(
+                '<tr style="border-bottom: 1px solid rgba(255, 255, 255, 0.06);">'
+                '<td style="padding: 10px 14px; vertical-align: top;">'
+                f'<div style="font-weight: 700; color: #f4f4f5; font-size: 14px;">@{handle}</div>'
+                f'<div style="color: #a1a1aa; font-size: 12px; margin-top: 2px;">{name}</div>'
+                f'<div style="color: #71717a; font-size: 12px; margin-top: 4px; line-height: 1.45;">{reason}</div>'
+                "</td></tr>"
+            )
+        recs_html = (
+            '<div style="margin-top: 28px;">'
+            '<h3 style="color: #f4f4f5; font-size: 13px; margin: 0 0 12px 0; '
+            'text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700;">'
+            "&#10024; New Creators To Try</h3>"
+            '<table style="width: 100%; border-collapse: collapse; background: #141419; '
+            "border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; overflow: hidden;\">"
+            "<tbody>" + "".join(rec_rows) + "</tbody></table>"
+            '<p style="color: #71717a; font-size: 12px; margin: 8px 0 0 0;">'
+            "Add them permanently from the dashboard &#8594; Recommended.</p></div>"
+        )
+
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -179,6 +217,8 @@ def build_email_message(
                             </div>
 
                             {reels_html}
+
+                            {recs_html}
                             
                             <!-- PWA & Desktop Info Box -->
                             <div style="margin-top: 28px; padding: 16px 18px; background-color: #141419; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); border-left: 4px solid #fd1d1d; font-size: 12px; color: #a1a1aa; line-height: 1.5;">

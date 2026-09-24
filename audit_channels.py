@@ -160,6 +160,72 @@ def audit() -> dict[str, Any]:
     }
 
 
+def hygiene_report() -> dict[str, Any]:
+    """Detect sources.json hygiene issues without mutating anything.
+
+    Finds non-normalized handles (uppercase, leading @, stray whitespace),
+    post-normalization duplicates, and handles failing extractor.clean_handle.
+    """
+    sources = _load_sources()
+    non_normalized: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+    duplicates: list[dict[str, Any]] = []
+    for s in sources:
+        raw = str(s.get("handle", ""))
+        norm = raw.strip().lstrip("@").lower()
+        if raw != norm:
+            non_normalized.append({"handle": raw, "normalized": norm})
+        if not norm:
+            continue
+        try:
+            valid = bool(extractor.clean_handle(norm))
+        except Exception:
+            valid = False
+        if not valid:
+            invalid.append({"handle": raw})
+            continue
+        if norm in seen:
+            duplicates.append({"handle": raw, "normalized": norm,
+                               "first_seen_as": seen[norm]})
+        else:
+            seen[norm] = raw
+    return {
+        "total": len(sources),
+        "non_normalized": sorted(non_normalized, key=lambda e: e["handle"]),
+        "duplicates": sorted(duplicates, key=lambda e: e["handle"]),
+        "invalid": sorted(invalid, key=lambda e: e["handle"]),
+    }
+
+
+def fix_hygiene(report: dict[str, Any]) -> int:
+    """Normalize handles in place and drop post-normalization dupes (keep
+    first). Invalid handles are NEVER auto-deleted — reported only. Returns
+    number of entries changed/removed."""
+    sources = _load_sources()
+    invalid_raw = {e["handle"] for e in report.get("invalid", [])}
+    fixed: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    changed = 0
+    for s in sources:
+        raw = str(s.get("handle", ""))
+        if raw in invalid_raw:
+            fixed.append(s)
+            continue
+        norm = raw.strip().lstrip("@").lower()
+        if not norm or norm in seen:
+            changed += 1
+            continue
+        seen.add(norm)
+        if raw != norm:
+            s["handle"] = norm
+            changed += 1
+        fixed.append(s)
+    if changed:
+        atomic_io.durable_write_json(config.SOURCES_FILE, fixed)
+    return changed
+
+
 def import_missing(report: dict[str, Any]) -> int:
     """Add missing_from_digest entries to sources.json (atomic). Returns count added."""
     missing = report.get("missing_from_digest", [])
@@ -192,7 +258,31 @@ def main() -> int:
                         help="Add IG-followed-but-missing creators to sources.json")
     parser.add_argument("--inactive-weeks", type=int, default=3,
                         help="Weeks of digest history for inactivity detection (default: 3)")
+    parser.add_argument("--hygiene", action="store_true",
+                        help="Report sources.json handle hygiene (case/@ dupes, invalid)")
+    parser.add_argument("--fix", action="store_true",
+                        help="With --hygiene: normalize handles and drop dupes (never deletes invalid)")
     args = parser.parse_args()
+
+    if args.hygiene:
+        report = hygiene_report()
+        if args.json:
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+        else:
+            print(f"Channels              : {report['total']}")
+            print(f"\n-- Non-normalized handles ({len(report['non_normalized'])}) --")
+            for e in report["non_normalized"]:
+                print(f"  {e['handle']!r} -> {e['normalized']!r}")
+            print(f"\n-- Duplicates after normalization ({len(report['duplicates'])}) --")
+            for e in report["duplicates"]:
+                print(f"  {e['handle']!r} duplicates {e['first_seen_as']!r}")
+            print(f"\n-- Invalid handles, report-only ({len(report['invalid'])}) --")
+            for e in report["invalid"]:
+                print(f"  {e['handle']!r}")
+        if args.fix:
+            changed = fix_hygiene(report)
+            print(f"\nNormalized/deduped {changed} entries.")
+        return 0
 
     if args.inactive_weeks != 3:
         report = audit()
