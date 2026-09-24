@@ -34,6 +34,7 @@ def build_email_message(
     top_reels: list[dict[str, Any]] | None = None,
     site_url: str | None = None,
     recommended: list[dict[str, Any]] | None = None,
+    target: int | None = None,
 ) -> MIMEMultipart:
     """Build a rich, responsive multipart HTML and plain-text email message using UI Pro Max OLED Dark theme."""
     url = site_url or config.PAGES_BASE_URL
@@ -75,6 +76,10 @@ def build_email_message(
             name = str(r.get("name") or handle)
             reason = str(r.get("reason") or "").replace("\n", " ")[:90]
             text_lines.append(f"  • @{handle} ({name}): {reason}...")
+        text_lines.append("")
+    shortfall = (target - count) if isinstance(target, int) and target > 0 else 0
+    if shortfall > 0:
+        text_lines.append(f"Shortfall: {count}/{target} reels — expand +{shortfall} from the dashboard if you want the full batch.")
         text_lines.append("")
 
     text_lines.append(f"Open the PWA on mobile or desktop: {url}")
@@ -161,6 +166,16 @@ def build_email_message(
             "Add them permanently from the dashboard &#8594; Recommended.</p></div>"
         )
 
+    shortfall_html = ""
+    if shortfall > 0:
+        shortfall_html = (
+            '<div style="margin-top: 20px; padding: 12px 16px; background-color: #141419; '
+            "border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); "
+            'border-left: 4px solid #f59e0b; font-size: 13px; color: #a1a1aa;">'
+            f"&#9888;&#65039; <strong>Shortfall:</strong> {count}/{target} reels — "
+            f"expand +{shortfall} from the dashboard if you want the full batch.</div>"
+        )
+
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -219,6 +234,8 @@ def build_email_message(
                             {reels_html}
 
                             {recs_html}
+
+                            {shortfall_html}
                             
                             <!-- PWA & Desktop Info Box -->
                             <div style="margin-top: 28px; padding: 16px 18px; background-color: #141419; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); border-left: 4px solid #fd1d1d; font-size: 12px; color: #a1a1aa; line-height: 1.5;">

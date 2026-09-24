@@ -157,6 +157,7 @@
     <div class="card">
       <div class="row1"><h2>Server</h2><span class="pill idle">LOCAL</span></div>
       <div class="meta">Kill this server process, then relaunch from the desktop icon for a clean start.</div>
+      <div class="meta" id="lockMeta" style="margin-top: 4px;"></div>
       <div class="actions"><button class="danger" id="serverKillBtn">Kill server process</button></div>
     </div>
     <div class="card">
@@ -514,10 +515,13 @@
       allRecs = data.creators || [];
       channelHandles = new Set(data.channel_handles || []);
       const dnrN = Number(data.do_not_recommend_count || 0);
+      const ages = (data.creators || []).map((r) => Date.parse(r.recommended_at || "")).filter((n) => !isNaN(n));
+      const staleRecs = ages.length > 0 && (Date.now() - Math.max.apply(null, ages) > 7 * 86400 * 1000);
       const recMeta = document.querySelector("#recommendedSection .meta");
       if (recMeta) {
         recMeta.textContent = "AI talent scout suggestions based on channels you follow. Add to channel list to follow them permanently." +
-          (dnrN > 0 ? " " + dnrN + " muted." : "") + " Repeated ignores retire after 5 suggestions.";
+          (dnrN > 0 ? " " + dnrN + " muted." : "") + " Repeated ignores retire after 5 suggestions." +
+          (staleRecs ? " Set is over a week old — refresh." : "");
       }
       const refreshSt = data.refresh_state || {};
       if (refreshSt.is_running) {
@@ -662,10 +666,29 @@
   loadStorageGauge();
   loadWatchProgress();
   loadDigestStatus();
+  loadLockStatus();
   setInterval(refresh, 5000);
   setInterval(loadRecommendations, 30000);
   setInterval(loadStorageGauge, 60000);
   setInterval(loadWatchProgress, 60000);
+  setInterval(loadDigestStatus, 60000);
+  setInterval(loadLockStatus, 15000);
+
+  async function loadLockStatus() {
+    const meta = $("lockMeta");
+    try {
+      const data = await getJSONsoft("/api/lock-status");
+      if (!data || !data.success) throw new Error("no data");
+      if (data.locked && data.holder) {
+        meta.textContent = "Pipeline BUSY — pid " + data.holder.pid +
+          " since " + data.holder.started_at + " (" + data.holder.cmd + ").";
+      } else {
+        meta.textContent = "";
+      }
+    } catch (e) {
+      if (meta) meta.textContent = "";
+    }
+  }
   setInterval(loadDigestStatus, 60000);
 
   async function loadDigestStatus() {
@@ -673,6 +696,7 @@
     try {
       const data = await getJSONsoft("/api/digest-status");
       if (!data || !data.success || !data.target) throw new Error("no data");
+      const tops = (data.top_channels || []).slice(0, 5).map((t) => "@" + t.handle + " (" + t.count + ")").join(", ");
       if (data.shortfall > 0 && data.count > 0) {
         meta.innerHTML = "Digest " + esc(String(data.count)) + "/" + esc(String(data.target)) +
           " — shortfall " + esc(String(data.shortfall)) + ". " +
@@ -685,7 +709,8 @@
           startExpand($("expandCount").value, $("expandBtn"));
         });
       } else if (data.count > 0) {
-        meta.textContent = "Digest complete (" + data.count + "/" + data.target + ").";
+        meta.textContent = "Digest complete (" + data.count + "/" + data.target + ")." +
+          (tops ? " Top: " + tops + "." : "");
       } else {
         throw new Error("no digest");
       }

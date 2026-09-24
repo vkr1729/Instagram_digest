@@ -1369,6 +1369,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             except (TypeError, ValueError):
                 target = 250
             week_id, count = "", 0
+            top_channels: list[dict[str, Any]] = []
             try:
                 cands = sorted(config.DIGESTS_DIR.glob("*.json"),
                                key=lambda p: p.stat().st_mtime, reverse=True)
@@ -1376,12 +1377,49 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     week_id = cands[0].stem
                     items = _load_json_tolerant(cands[0], {})
                     items = items.get("items", []) if isinstance(items, dict) else []
-                    count = len(items) if isinstance(items, list) else 0
+                    if not isinstance(items, list):
+                        items = []
+                    count = len(items)
+                    per_creator: dict[str, int] = {}
+                    for it in items:
+                        if isinstance(it, dict) and it.get("creator_handle"):
+                            h = str(it["creator_handle"]).lower().replace("@", "")
+                            per_creator[h] = per_creator.get(h, 0) + 1
+                    top_channels = [{"handle": h, "count": c} for h, c in sorted(
+                        per_creator.items(), key=lambda kv: (-kv[1], kv[0]))[:8]]
             except Exception as exc:
                 logger.debug("Digest status probe failed: %s", exc)
             shortfall = max(0, target - count)
             resp = {"success": True, "week_id": week_id, "count": count,
-                    "target": target, "shortfall": shortfall}
+                    "target": target, "shortfall": shortfall,
+                    "top_channels": top_channels}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # API lock status -> /api/lock-status (who holds the pipeline lock).
+        # Reads main.py's holder sidecar directly (no main import: local_server
+        # must stay import-light). Stale sidecars read as free.
+        if clean_path in ("/api/lock-status", "/api/lock-status/"):
+            holder = None
+            try:
+                info_path = config.DATA_DIR / ".pipeline.lock.info"
+                raw = json.loads(info_path.read_text(encoding="utf-8"))
+                pid = int((raw or {}).get("pid") or 0)
+                try:
+                    os.kill(pid, 0)
+                    holder = {"pid": pid,
+                              "started_at": str(raw.get("started_at") or "?"),
+                              "cmd": str(raw.get("cmd") or "?")}
+                except Exception:
+                    holder = None
+            except Exception as exc:
+                logger.debug("Lock status probe failed: %s", exc)
+            resp = {"success": True, "locked": holder is not None, "holder": holder}
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

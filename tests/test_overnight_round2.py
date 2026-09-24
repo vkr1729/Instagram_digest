@@ -93,8 +93,8 @@ def test_f8_digest_status_shortfall_and_complete(tmp_path, monkeypatch):
     finally:
         srv.close()
     assert status == 200 and data["success"] is True
-    assert data == {"success": True, "week_id": "2026-09-20", "count": 212,
-                    "target": 250, "shortfall": 38}
+    assert (data["week_id"], data["count"], data["target"], data["shortfall"]) == \
+        ("2026-09-20", 212, 250, 38)
 
 
 def test_f8_digest_status_empty(tmp_path, monkeypatch):

@@ -62,12 +62,46 @@ discipline (no speculative frameworks). iOS changes avoided (no device farm here
 20. **Recommendation counts in health report** — `send_health_report_email` exists;
     add rec stats (fresh/stale, counts, DNR size). FIT: medium, tiny. → IMPLEMENT (F11)
 
-## Round 2 — implementation log
+## Round 2 — implementation log (done, all tests green)
 
 - F7: exposure/DNR transparency in Recommended section (+ tests).
 - F8: shortfall expand suggestion banner (+ tests).
-- F9: dead-pipeline-lock breaker (+ tests).
+- F9: lock-holder sidecar + busy detail + --lock-status (+ tests). Note: flock
+  self-heals on death, so this names holders instead of breaking locks.
 - F10: media integrity spot-check script (+ tests).
 - F11: health-report recommendation stats (+ tests).
 
-(Total after Round 2: 11. Round 3 brainstorms 10 more, implements to reach 15.)
+## Round 3 — brainstorm (4 needed to reach 15; backups noted)
+
+21. **Lock-holder dashboard widget** — `/api/lock-status` reads the F9 sidecar
+    (no main import; os.kill liveness inline) + Server-card line. FIT: high,
+    tiny, coherent with F9. → IMPLEMENT (F12)
+22. **Digest-email shortfall line** — notifier shows count/target + expand hint
+    when short. FIT: medium-high, tiny, coherent with F8. → IMPLEMENT (F13)
+23. **Recommendation stale badge** — dashboard flags rec sets older than 7d via
+    recommended_at/refresh_state. FIT: medium, tiny. → IMPLEMENT (F14)
+24. **Top-channels-by-yield table** — extend `/api/digest-status` with top 8
+    contributors from the latest digest. FIT: medium-high (pairs with F1 quiet
+    list), tiny. → IMPLEMENT (F15)
+25. Digest archive index page — PROBED: archives ship per-week pages; an index
+    adds navigation but duplicates gh-pages week switcher. → BACKUP (skip)
+26. Wire media checks into deploy gate — unsupervised deploy blocking risks
+    false-alarm failures at 3am. → REJECT (warn-only scripts stay standalone)
+
+## Round 3 — implementation log (done, all tests green — 15/15 features)
+
+- F12: lock-status endpoint + Server-card line (+ tests).
+- F13: email shortfall line (+ tests).
+- F14: rec stale badge (+ tests).
+- F15: digest-status top channels (+ tests).
+
+## Final tally
+
+15 features, all additive, all tested: F1 quiet bulk-unselect · F2 storage
+gauge · F3 email recommendations · F4 URL sample check · F5 category progress
+· F6 hygiene audit · F7 exposure transparency · F8 shortfall suggestion ·
+F9 lock holder · F10 media spot-check · F11 health rec stats · F12 lock-status
+API · F13 email shortfall · F14 stale badge · F15 top channels.
+Rejected with reasons: iOS background refresh, cross-device sync, PWA grid
+toggle (core risk), archive index (duplicates Pages switcher), quiet hours
+(against paging intent), deploy-gate wiring (3am false-alarm risk).
