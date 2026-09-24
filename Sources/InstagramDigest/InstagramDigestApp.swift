@@ -125,6 +125,12 @@ struct FeedMainView: View {
     @State private var watchedReelIDs: Set<String> = []
     @Query private var savedBookmarks: [BookmarkItem]
 
+    /// Wall-clock watch timer. Stored (not built in `body`): the pool
+    /// publishes progress ticks every 0.5s, so a Timer.publish built in
+    /// `body` would be recreated and resubscribed on every tick, restarting
+    /// its 1s countdown forever and never firing (field bug: stuck 0.0 hrs).
+    private let watchTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
     private var bookmarkedReelIDs: Set<String> {
         Set(savedBookmarks.map { $0.reelID })
     }
@@ -359,7 +365,10 @@ struct FeedMainView: View {
                 isChromeVisible = !isPlaying
             }
         }
-        .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
+        .onReceive(watchTimer) { _ in
+            // Wall-clock accumulation: counts real seconds while the feed is
+            // actually playing. 2x counts as 1s/s (not reel duration), pause /
+            // sheets / background count nothing, rewatches count again.
             guard pool.isPlaying, let weekID = manifest?.weekId else { return }
             watchSeconds += 1.0
             if Int(watchSeconds) % 5 == 0 {
@@ -432,6 +441,7 @@ struct FeedMainView: View {
                         UserDefaults.standard.removeObject(forKey: "lastActiveReelID_global")
                         UserDefaults.standard.removeObject(forKey: "lastActiveIndex_global")
                         UserDefaults.standard.removeObject(forKey: "watchSeconds_\(oldWeek)")
+                        UserDefaults.standard.removeObject(forKey: "watchContentFingerprint_\(oldWeek)")
                         Task {
                             await MediaCacheManager.shared.purgeOldWeekDirectory(oldWeekID: oldWeek)
                         }
@@ -483,7 +493,18 @@ struct FeedMainView: View {
                 }
 
                 self.activeIndex = resumeIndex
-                self.watchSeconds = UserDefaults.standard.double(forKey: "watchSeconds_\(fetched.weekId)")
+                // Per-week watch timer: restore accumulated wall-clock time for
+                // identical content, restart from zero on any content refresh.
+                let freshFingerprint = WatchedRules.watchContentFingerprint(items: fetched.items)
+                let fingerprintKey = "watchContentFingerprint_\(fetched.weekId)"
+                let storedFingerprint = UserDefaults.standard.string(forKey: fingerprintKey)
+                if WatchedRules.shouldResetWatchTime(storedFingerprint: storedFingerprint, freshFingerprint: freshFingerprint) {
+                    self.watchSeconds = 0
+                    UserDefaults.standard.set(0.0, forKey: "watchSeconds_\(fetched.weekId)")
+                    UserDefaults.standard.set(freshFingerprint, forKey: fingerprintKey)
+                } else {
+                    self.watchSeconds = UserDefaults.standard.double(forKey: "watchSeconds_\(fetched.weekId)")
+                }
                 if !fetched.items.isEmpty {
                     self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: resumeIndex)
                     if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {

@@ -179,6 +179,22 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(creatorHandle.exists)
     }
 
+    // MARK: - 9. Watch Timer Pill Format
+
+    func testWatchTimerPillFormat() throws {
+        let logo = app.staticTexts["InstagramLogoText"]
+        XCTAssertTrue(logo.waitForExistence(timeout: 8.0))
+
+        // The per-week wall-clock pill must render as "X.X hrs" (never empty,
+        // never a raw second count). Value may be restored from a prior test
+        // in this simulator, so match the format, not an exact value.
+        let pill = app.descendants(matching: .any)["WatchTimerPill"]
+        XCTAssertTrue(pill.waitForExistence(timeout: 5.0), "WatchTimerPill must exist in header")
+        let format = NSPredicate(format: "label MATCHES %@", "\\d+\\.\\d+ hrs")
+        let pillText = pill.descendants(matching: .staticText).matching(format).firstMatch
+        XCTAssertTrue(pillText.waitForExistence(timeout: 3.0), "WatchTimerPill must read like \"0.0 hrs\"")
+    }
+
     // MARK: - 8. Caption Expansion Toggle
 
     func testCaptionExpansionToggle() throws {

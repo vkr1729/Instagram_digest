@@ -600,7 +600,9 @@ public final class AVPlayerPool: ObservableObject {
             guard let duration = s.player.currentItem?.duration.seconds, duration.isFinite, duration > 0 else { return }
 
             self.currentDuration = duration
-            let progress = max(0.0, min(1.0, cur / duration))
+            // NaN guard: a non-finite clock would publish NaN progress and
+            // collapse the hairline bar layout (width NaN).
+            let progress = cur.isFinite ? max(0.0, min(1.0, cur / duration)) : 0.0
             self.currentProgress = progress
 
             // 80% progress milestone trigger with once-per-reel latch

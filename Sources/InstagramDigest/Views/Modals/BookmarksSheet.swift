@@ -577,16 +577,6 @@ public struct BookmarkPlayerOverlay: View {
         }
     }
 
-    private func retreatToPreviousBookmark() {
-        guard currentIndex > 0 else { return }
-        isCaptionExpanded = false
-        currentIndex -= 1
-        scrolledReelID = bookmarks[currentIndex].reelID
-        if let bm = currentBookmark {
-            loadVideo(for: bm)
-        }
-    }
-
     private func handleUnsave(bookmark: BookmarkItem) {
         let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
         if remaining.isEmpty {
