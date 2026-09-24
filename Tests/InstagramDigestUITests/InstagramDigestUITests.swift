@@ -187,12 +187,13 @@ final class InstagramDigestUITests: XCTestCase {
 
         // The per-week wall-clock pill must render as "X.X hrs" (never empty,
         // never a raw second count). Value may be restored from a prior test
-        // in this simulator, so match the format, not an exact value.
-        let pill = app.descendants(matching: .any)["WatchTimerPill"]
-        XCTAssertTrue(pill.waitForExistence(timeout: 5.0), "WatchTimerPill must exist in header")
+        // in this simulator, so match the format, not an exact value. Query
+        // the text app-wide and lazily (.element, not .firstMatch, so the
+        // wait actually polls): accessibilityIdentifier on a plain HStack
+        // container is not reliably exposed to XCUITest, but its Text is.
         let format = NSPredicate(format: "label MATCHES %@", "\\d+\\.\\d+ hrs")
-        let pillText = pill.descendants(matching: .staticText).matching(format).firstMatch
-        XCTAssertTrue(pillText.waitForExistence(timeout: 3.0), "WatchTimerPill must read like \"0.0 hrs\"")
+        let pillText = app.staticTexts.matching(format).element
+        XCTAssertTrue(pillText.waitForExistence(timeout: 10.0), "WatchTimerPill must read like \"0.0 hrs\"")
     }
 
     // MARK: - 8. Caption Expansion Toggle
