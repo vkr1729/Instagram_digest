@@ -1189,10 +1189,40 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             with _RECOMMENDATIONS_LOCK:
                 rec_state = dict(_RECOMMENDATIONS_STATE)
             recs = recommendations.load_recommended_creators()
+            channel_handles: list[str] = []
+            try:
+                # Membership set so the dashboard renders "Added ✓" for
+                # channels instead of reverting to "+ Add to Channel List".
+                if config.SOURCES_FILE.exists():
+                    srcs = _load_json_tolerant(config.SOURCES_FILE, [])
+                    channel_handles = sorted({
+                        str(s.get("handle", "")).lower().replace("@", "")
+                        for s in srcs if isinstance(s, dict) and s.get("handle")
+                    })
+                # Serve-time backstop: a rejection or a 5x-ignored handle must
+                # vanish even if the persisted set predates the feedback
+                # (the next refresh backfills the freed slots).
+                fb = recommendations.load_feedback()
+                dnr = {str(h).lower() for h in (fb.get("do_not_recommend") or [])}
+                exp = fb.get("exposures") or {}
+                channels = set(channel_handles)
+                recs = [
+                    r for r in recs if isinstance(r, dict) and (
+                        (str(r.get("handle", "")).lower() not in dnr)
+                        and not (
+                            int(exp.get(str(r.get("handle", "")).lower(), 0) or 0)
+                            >= recommendations.MAX_EXPOSURES
+                            and str(r.get("handle", "")).lower() not in channels
+                        )
+                    )
+                ]
+            except Exception as exc:
+                logger.debug("Recommendation serve-time filter skipped: %s", exc)
             resp = {
                 "success": True,
                 "creators": recs,
                 "count": len(recs),
+                "channel_handles": channel_handles,
                 "refresh_state": rec_state,
             }
             body = json.dumps(resp).encode("utf-8")
@@ -1403,6 +1433,33 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        if parsed.path in ("/api/recommendations/do-not-recommend", "/api/recommendations/do-not-recommend/"):
+            try:
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
+            handle = str(payload.get("handle") or "").strip().lstrip("@").lower()
+            if not handle:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing handle")
+                return
+            if not extractor.clean_handle(handle):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid handle")
+                return
+            import recommendations
+            recommendations.add_do_not_recommend(handle)
+            pruned = recommendations.prune_recommended_cache({handle})
+            logger.info("Do-not-recommend @%s recorded (%d cached cards pruned).", handle, pruned)
+            resp = {"success": True, "handle": handle, "pruned": pruned,
+                    "message": f"Won't recommend @{handle} again"}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if parsed.path in ("/api/channels/add", "/api/channels/add/"):
             try:
                 payload = _read_json_body(self)
@@ -1430,6 +1487,14 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                         _atomic_write_json(config.BLACKLIST_FILE, b_data)
                     except Exception as e:
                         logger.error("Error updating blacklist: %s", e)
+
+                # Adding overrides a prior do-not-recommend: the user changed
+                # their mind, so the stale rejection must not steer the scout.
+                try:
+                    import recommendations
+                    recommendations.clear_do_not_recommend(handle)
+                except Exception as e:
+                    logger.debug("Could not clear do-not-recommend for @%s: %s", handle, e)
 
                 existing = {s.get("handle", "").lower().replace("@", ""): s for s in sources if s.get("handle")}
                 if handle not in existing:

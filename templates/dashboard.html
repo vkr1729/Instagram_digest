@@ -101,6 +101,8 @@
   .add-btn { font-size: 12px; font-weight: 600; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
   .add-btn:hover { border-color: var(--muted); }
   .add-btn.added { background: rgba(101,214,163,.18); color: var(--mint); border-color: rgba(101,214,163,.4); cursor: default; }
+  .dnr-btn { font-size: 12px; font-weight: 600; padding: 6px 10px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--faint); cursor: pointer; }
+  .dnr-btn:hover { color: #e5484d; border-color: rgba(229,72,77,.4); }
   footer { margin-top: 22px; font-size: 12px; color: var(--faint); }
   footer a { color: var(--muted); }
   @media (max-width: 760px) {
@@ -487,6 +489,11 @@
   });
   let allRecs = [];
   let activeRecCat = "all";
+  // Channel membership: server set (per poll) + handles added this session.
+  // Render consults both, so "Added ✓" survives the 30s auto-refresh and
+  // category switches instead of reverting to "+ Add to Channel List".
+  let channelHandles = new Set();
+  let addedNow = new Set();
 
   async function loadRecommendations() {
     try {
@@ -496,6 +503,7 @@
         return;
       }
       allRecs = data.creators || [];
+      channelHandles = new Set(data.channel_handles || []);
       const refreshSt = data.refresh_state || {};
       if (refreshSt.is_running) {
         $("refreshRecsBtn").disabled = true;
@@ -522,7 +530,12 @@
       const cat = esc(r.category || "entertainment");
       const reason = esc(r.reason || "Recommended similar creator");
       const scale = esc(r.follower_scale || "");
-      return '<div class="rec-card">' +
+      const isAdded = channelHandles.has(h.toLowerCase()) || addedNow.has(h.toLowerCase());
+      const actionBtn = isAdded
+        ? '<button class="add-btn added" disabled>Added ✓</button>'
+        : '<button class="add-btn" data-add-handle="' + h + '" data-add-name="' + name + '" data-add-cat="' + cat + '">+ Add to Channel List</button>' +
+          ' <button class="dnr-btn" data-dnr-handle="' + h + '" title="Do not recommend this creator again">✕</button>';
+      return '<div class="rec-card" data-rec-handle="' + h + '">' +
         '<div class="rec-head">' +
           '<div><a class="rec-handle" href="https://instagram.com/' + h + '" target="_blank">@' + h + '</a>' +
           '<div class="rec-name">' + name + '</div></div>' +
@@ -531,7 +544,7 @@
         '<div class="rec-reason">' + reason + '</div>' +
         '<div class="rec-actions">' +
           '<span class="cat-badge">' + cat + '</span>' +
-          '<button class="add-btn" data-add-handle="' + h + '" data-add-name="' + name + '" data-add-cat="' + cat + '">+ Add to Channel List</button>' +
+          '<span>' + actionBtn + '</span>' +
         '</div>' +
       '</div>';
     }).join("");
@@ -539,6 +552,12 @@
     $("recsGrid").querySelectorAll("[data-add-handle]").forEach((btn) => {
       btn.addEventListener("click", () => {
         addChannel(btn.getAttribute("data-add-handle"), btn.getAttribute("data-add-name"), btn.getAttribute("data-add-cat"), btn);
+      });
+    });
+
+    $("recsGrid").querySelectorAll("[data-dnr-handle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        doNotRecommend(btn.getAttribute("data-dnr-handle"), btn);
       });
     });
   }
@@ -554,13 +573,35 @@
       const data = await res.json();
       if (data.success) {
         toast("Added @" + handle + " to channel list!");
-        if (btn) {
-          btn.textContent = "Added ✓";
-          btn.className = "add-btn added";
-          btn.disabled = true;
-        }
+        addedNow.add(String(handle || "").toLowerCase());
+        renderRecommendations();
       } else {
         toast(data.error || "Failed to add channel.");
+        if (btn) btn.disabled = false;
+      }
+    } catch (e) {
+      toast("Request error: " + e.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function doNotRecommend(handle, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch("/api/recommendations/do-not-recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ handle }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast("Won't recommend @" + handle + " again.");
+        allRecs = allRecs.filter((r) => (r.handle || "").toLowerCase() !== String(handle || "").toLowerCase());
+        const card = btn ? btn.closest(".rec-card") : null;
+        if (card) card.remove();
+        else renderRecommendations();
+      } else {
+        toast(data.error || "Failed to save preference.");
         if (btn) btn.disabled = false;
       }
     } catch (e) {

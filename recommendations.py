@@ -1,6 +1,17 @@
 """
 recommendations.py — AI-powered creator discovery using headless Antigravity (agy -p).
-Discovers 10 high-quality similar Instagram creators per category via deep web search.
+Discovers similar Instagram creators per category via deep web search.
+
+Request 12 per category, keep 10: the headroom backfills slots freed by
+exclusions (channels, do-not-recommend, 5x-ignored) so each refresh still
+lands ~10 fresh faces per category.
+
+A persistent feedback file (data/recommendation_feedback.json) records per
+creator exposures plus explicit do-not-recommend handles. It steers the AI
+prompt (channels + DNR + history) and enforces two rules:
+  * DNR handles are never suggested again.
+  * Handles suggested 5 times without being added stop being suggested;
+    their slots go to new creators.
 """
 
 from __future__ import annotations
@@ -12,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +36,18 @@ logger = logging.getLogger("InstagramDigest.Recommendations")
 
 RECOMMENDED_FILE: Path | None = None
 QUARANTINE_FILE: Path | None = None
+FEEDBACK_FILE: Path | None = None
+
+#: Suggest-then-ignore limit: a creator recommended this many times without
+#: being added stops being recommended; the slot goes to someone new.
+MAX_EXPOSURES = 5
+#: AI returns extras so exclusions backfill instead of shrinking the set.
+REQUEST_PER_CATEGORY = 12
+KEEP_PER_CATEGORY = 10
+#: Cap per feedback list inside the AI prompt (token bound).
+PROMPT_LIST_CAP = 30
+
+_FEEDBACK_LOCK = threading.Lock()
 
 
 def get_recommended_file() -> Path:
@@ -36,6 +60,191 @@ def get_quarantine_file() -> Path:
     if QUARANTINE_FILE is not None:
         return QUARANTINE_FILE
     return config.DATA_DIR / "recommended_creators.quarantine.json"
+
+
+def get_feedback_file() -> Path:
+    if FEEDBACK_FILE is not None:
+        return FEEDBACK_FILE
+    return config.DATA_DIR / "recommendation_feedback.json"
+
+
+def normalize_rec_handle(handle: Any) -> str:
+    """Normalize a creator handle for feedback/exclusion comparisons."""
+    return str(handle or "").strip().lstrip("@").lower()
+
+
+def _default_feedback() -> dict[str, Any]:
+    return {"version": 1, "exposures": {}, "do_not_recommend": []}
+
+
+def load_feedback() -> dict[str, Any]:
+    """Load recommendation feedback (exposures + do-not-recommend). Tolerant:
+    missing/corrupt files yield defaults, corrupt files are quarantined."""
+    fb_file = get_feedback_file()
+    if not fb_file.exists():
+        return _default_feedback()
+    try:
+        data = json.loads(fb_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("feedback root must be an object")
+        exposures = data.get("exposures")
+        clean_exp: dict[str, int] = {}
+        if isinstance(exposures, dict):
+            for k, v in exposures.items():
+                try:
+                    clean_exp[str(k)] = max(0, int(v))
+                except (TypeError, ValueError):
+                    continue
+        dnr = data.get("do_not_recommend")
+        return {
+            "version": 1,
+            "exposures": clean_exp,
+            "do_not_recommend": list(dnr) if isinstance(dnr, list) else [],
+        }
+    except Exception as exc:
+        logger.warning("Error reading recommendation feedback (quarantining): %s", exc)
+        try:
+            qname = fb_file.with_name(f"{fb_file.name}.corrupt-{int(time.time())}")
+            fb_file.rename(qname)
+        except Exception:
+            pass
+        return _default_feedback()
+
+
+def save_feedback(feedback: dict[str, Any]) -> None:
+    """Persist feedback atomically."""
+    payload = {
+        "version": 1,
+        "exposures": dict(feedback.get("exposures") or {}),
+        "do_not_recommend": sorted({normalize_rec_handle(h) for h in (feedback.get("do_not_recommend") or []) if normalize_rec_handle(h)}),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    atomic_io.durable_write_json(get_feedback_file(), payload)
+
+
+def record_exposures(handles: list[str]) -> dict[str, int]:
+    """Count one recommendation event per handle; returns the updated map."""
+    with _FEEDBACK_LOCK:
+        fb = load_feedback()
+        exposures = {str(k): int(v) for k, v in fb.get("exposures", {}).items()}
+        for h in handles:
+            nh = normalize_rec_handle(h)
+            if nh:
+                exposures[nh] = exposures.get(nh, 0) + 1
+        fb["exposures"] = exposures
+        save_feedback(fb)
+        return exposures
+
+
+def add_do_not_recommend(handle: str) -> bool:
+    """Persist an explicit rejection. Returns True if it changed anything."""
+    nh = normalize_rec_handle(handle)
+    if not nh:
+        return False
+    with _FEEDBACK_LOCK:
+        fb = load_feedback()
+        dnr = {normalize_rec_handle(h) for h in fb.get("do_not_recommend", [])}
+        if nh in dnr:
+            return False
+        dnr.add(nh)
+        fb["do_not_recommend"] = sorted(dnr)
+        save_feedback(fb)
+        return True
+
+
+def clear_do_not_recommend(handle: str) -> bool:
+    """Drop a handle from the rejection list (e.g. user added it anyway)."""
+    nh = normalize_rec_handle(handle)
+    if not nh:
+        return False
+    with _FEEDBACK_LOCK:
+        fb = load_feedback()
+        dnr = {normalize_rec_handle(h) for h in fb.get("do_not_recommend", [])}
+        if nh not in dnr:
+            return False
+        dnr.discard(nh)
+        fb["do_not_recommend"] = sorted(dnr)
+        save_feedback(fb)
+        return True
+
+
+def prune_recommended_cache(handles: set[str]) -> int:
+    """Remove handles from the persisted recommendation set (DNR takes effect
+    immediately, before the next refresh). Returns removed count."""
+    unwanted = {normalize_rec_handle(h) for h in handles if normalize_rec_handle(h)}
+    if not unwanted:
+        return 0
+    rec_file = get_recommended_file()
+    if not rec_file.exists():
+        return 0
+    try:
+        raw = json.loads(rec_file.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if isinstance(raw, dict):
+        creators = raw.get("creators", [])
+    elif isinstance(raw, list):
+        creators, raw = raw, None
+    else:
+        return 0
+    kept = [c for c in creators
+            if normalize_rec_handle(c.get("handle") if isinstance(c, dict) else None) not in unwanted]
+    removed = len(creators) - len(kept)
+    if removed and raw is not None:
+        raw["creators"] = kept
+        raw["total_count"] = len(kept)
+        try:
+            atomic_io.durable_write_json(rec_file, raw)
+        except Exception as exc:
+            logger.warning("Could not prune recommended cache: %s", exc)
+            return 0
+    return removed
+
+
+def apply_exclusions(
+    recs: list[dict[str, Any]],
+    seen: set[str],
+    hard_exclude: set[str],
+) -> list[dict[str, Any]]:
+    """Post-discovery filter: drop strays the scout returned despite the
+    exclusion set (sanitize normally catches these; mocks/odds slips land
+    here) so they never occupy a slot meant for a new creator."""
+    fresh: list[dict[str, Any]] = []
+    for r in recs:
+        h = normalize_rec_handle(r.get("handle") if isinstance(r, dict) else None)
+        if h and h not in seen and h not in hard_exclude:
+            fresh.append(r)
+    return fresh
+
+
+def build_steering_context(
+    do_not_recommend: set[str] | list[str],
+    previously_suggested: set[str] | list[str],
+    added_examples: set[str] | list[str],
+    cap: int = PROMPT_LIST_CAP,
+) -> str:
+    """Compact prompt addendum steering the scout: hard rejects, positive
+    examples (added past suggestions), and anti-repeat history."""
+    parts: list[str] = []
+    dnr = sorted({normalize_rec_handle(h) for h in do_not_recommend if normalize_rec_handle(h)})[:cap]
+    if dnr:
+        parts.append(
+            "The user explicitly rejected these creators — NEVER suggest them "
+            "or closely similar accounts: " + ", ".join(f"@{h}" for h in dnr) + "."
+        )
+    added = sorted({normalize_rec_handle(h) for h in added_examples if normalize_rec_handle(h)})[:cap]
+    if added:
+        parts.append(
+            "The user chose to follow these past suggestions — prefer more "
+            "creators like them: " + ", ".join(f"@{h}" for h in added) + "."
+        )
+    prev = sorted({normalize_rec_handle(h) for h in previously_suggested if normalize_rec_handle(h)})[:cap]
+    if prev:
+        parts.append(
+            "Already suggested in the past — do NOT repeat them, find NEW "
+            "creators: " + ", ".join(f"@{h}" for h in prev) + "."
+        )
+    return " ".join(parts)
 
 SCHEMA_DEF = {
     "type": "array",
@@ -89,6 +298,7 @@ def sanitize_and_validate_recommendations(
     raw_text: str,
     category: str,
     existing_handles: set[str],
+    limit: int = KEEP_PER_CATEGORY,
 ) -> list[dict[str, Any]]:
     """Defensively parse and sanitize JSON output from agy -p."""
     text = raw_text.strip()
@@ -161,7 +371,7 @@ def sanitize_and_validate_recommendations(
             "recommended_at": datetime.now(timezone.utc).isoformat(),
         })
         seen_handles.add(raw_handle)
-        if len(valid) >= 10:
+        if len(valid) >= limit:
             break
 
     return valid
@@ -172,8 +382,14 @@ def discover_category_creators(
     sample_creators: list[str],
     existing_handles: set[str],
     timeout_secs: int = 600,
+    steering: str = "",
 ) -> list[dict[str, Any]]:
-    """Invoke agy -p for a single category with a 600-second timeout."""
+    """Invoke agy -p for a single category with a 600-second timeout.
+
+    `existing_handles` is the hard exclusion set (channels + DNR +
+    5x-ignored + anti-repeat); `steering` carries the why (rejects,
+    positives, history) so the scout finds NEW creators instead.
+    """
     agy_bin = _find_agy_binary()
     if not agy_bin:
         return []
@@ -182,11 +398,13 @@ def discover_category_creators(
     prompt = (
         f"You are a talent scout for high-signal Instagram content. "
         f"In the category '{category}', the user follows creators: {sample_str}. "
-        f"Do a deep web search and identify 10 similar HIGH QUALITY, active Instagram creators in '{category}' "
+        f"Do a deep web search and identify {REQUEST_PER_CATEGORY} similar HIGH QUALITY, active Instagram creators in '{category}' "
         f"whose content style and depth matches or exceeds these creators. "
-        f"Return ONLY a valid JSON array of 10 creators with keys: handle, name, category, reason (why they are recommended based on the user's tastes), "
+        f"Return ONLY a valid JSON array of {REQUEST_PER_CATEGORY} creators with keys: handle, name, category, reason (why they are recommended based on the user's tastes), "
         f"and follower_scale (e.g. '250K followers')."
     )
+    if steering:
+        prompt += f" Additional guidance from the user's past choices: {steering}"
 
     cmd = [
         agy_bin,
@@ -261,6 +479,23 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
 
     existing_handles = {s.get("handle", "").lower().lstrip("@") for s in sources if s.get("handle")}
 
+    # 1b. Feedback exclusions + steering: do-not-recommend is a hard never;
+    # creators suggested MAX_EXPOSURES times without being added retire and
+    # free their slots for new faces. History steers the scout prompt.
+    feedback = load_feedback()
+    exposures: dict[str, int] = {str(k): int(v) for k, v in (feedback.get("exposures") or {}).items()}
+    dnr_handles = {normalize_rec_handle(h) for h in (feedback.get("do_not_recommend") or []) if normalize_rec_handle(h)}
+    retired_handles = {h for h, c in exposures.items() if c >= MAX_EXPOSURES and h not in existing_handles}
+    hard_exclude = set(existing_handles) | dnr_handles | retired_handles
+    if retired_handles:
+        logger.info("Retiring %d over-exposed creators (>=%d suggestions, never added).",
+                    len(retired_handles), MAX_EXPOSURES)
+    previously_suggested = (set(exposures) | {
+        normalize_rec_handle(c.get("handle")) for c in load_recommended_creators() if isinstance(c, dict)
+    }) - set(existing_handles) - dnr_handles
+    added_examples = (set(exposures) | previously_suggested) & set(existing_handles)
+    steering_text = build_steering_context(dnr_handles, previously_suggested, added_examples)
+
     by_category: dict[str, list[str]] = {}
     for s in sources:
         cat = s.get("category", "entertainment")
@@ -303,7 +538,10 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
 
     def _discover_one(cat: str) -> tuple[str, list[dict[str, Any]]]:
         samples = by_category.get(cat, [])
-        return cat, discover_category_creators(cat, samples, set(all_seen), timeout_secs=timeout_per_category)
+        return cat, discover_category_creators(
+            cat, samples, set(all_seen) | hard_exclude,
+            timeout_secs=timeout_per_category, steering=steering_text,
+        )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(_discover_one, target_categories))
@@ -312,7 +550,7 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
         if recs:
             successful_categories += 1
             with _rec_lock:
-                fresh = [r for r in recs if r["handle"] not in all_seen]
+                fresh = apply_exclusions(recs, all_seen, hard_exclude)
                 for r in fresh:
                     new_recommendations.append(r)
                     all_seen.add(r["handle"])
@@ -331,6 +569,9 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
             "creators": new_recommendations,
         }
         atomic_io.durable_write_json(rec_file, payload)
+        # One exposure per served creator: the 5th unanswered suggestion
+        # retires the handle (see hard_exclude above).
+        record_exposures([r["handle"] for r in new_recommendations])
         logger.info("Successfully refreshed %d recommended creators across %d categories.",
                     len(new_recommendations), successful_categories)
         return new_recommendations

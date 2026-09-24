@@ -44,7 +44,7 @@ def test_refresh_recommendations_quarantines_insufficient_categories(tmp_path, m
     monkeypatch.setattr("recommendations.QUARANTINE_FILE", tmp_path / "quarantine.json")
 
     # Only 1 category succeeds
-    def mock_discover(cat, samples, existing, timeout_secs=600):
+    def mock_discover(cat, samples, existing, timeout_secs=600, steering=""):
         if cat == "ai_tech":
             return [{"handle": "ai_hero", "name": "AI Hero", "category": "ai_tech", "reason": "AI"}]
         return []
