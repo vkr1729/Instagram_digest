@@ -50,6 +50,56 @@ def _quarantine_corrupt(path: Path, exc: Exception) -> None:
         logger.warning("Unreadable %s; starting fresh: %s", path, exc)
 
 
+def _lock_info_path() -> Path:
+    return config.DATA_DIR / ".pipeline.lock.info"
+
+
+def _write_lock_info() -> None:
+    """Best-effort holder sidecar so busy errors can name the owner."""
+    try:
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _lock_info_path().write_text(json.dumps({
+            "pid": os.getpid(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "cmd": " ".join(sys.argv[:4]),
+        }), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_lock_info() -> None:
+    try:
+        _lock_info_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _holder_is_alive(pid: Any) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def lock_holder_info() -> dict[str, Any] | None:
+    """Read the holder sidecar, sweeping it when the owner is provably gone.
+
+    Read-only w.r.t. the lock itself: flock self-heals on process death, so
+    this only ever removes stale *metadata*, never breaks a live exclusion.
+    """
+    try:
+        raw = json.loads(_lock_info_path().read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or not raw.get("pid"):
+        return None
+    if not _holder_is_alive(raw["pid"]):
+        _clear_lock_info()
+        return None
+    return raw
+
+
 @contextmanager
 def _pipeline_file_lock() -> Iterator[None]:
     """Cross-process exclusion for digest-mutating pipelines.
@@ -74,15 +124,22 @@ def _pipeline_file_lock() -> Iterator[None]:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            holder = lock_holder_info()
+            detail = ""
+            if holder:
+                detail = (f" (held by pid {holder['pid']} since "
+                          f"{holder.get('started_at', '?')}: {holder.get('cmd', '?')})")
             raise PipelineBusy(
-                "another pipeline (sync/expand) holds data/.pipeline.lock"
+                "another pipeline (sync/expand) holds data/.pipeline.lock" + detail
             )
+        _write_lock_info()
         yield
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except Exception:
             pass
+        _clear_lock_info()
         os.close(fd)
 
 
@@ -2380,7 +2437,17 @@ def main() -> int:
                         help="Finish parked uploads for WEEK (default: live digest week) without touching Instagram")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
+    parser.add_argument("--lock-status", action="store_true", help="Show which process holds data/.pipeline.lock, if any (read-only)")
     args = parser.parse_args()
+
+    # Lock-holder readout: read-only, never touches the lock itself.
+    if args.lock_status:
+        holder = lock_holder_info()
+        if holder:
+            print(f"LOCKED by pid {holder['pid']} since {holder.get('started_at', '?')}: {holder.get('cmd', '?')}")
+        else:
+            print("FREE: no live pipeline holds data/.pipeline.lock.")
+        return 0
 
     # Reconcile mode: finish parked uploads, zero Meta access (safe on any
     # network). Runs before everything else and never scrapes.

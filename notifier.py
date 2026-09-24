@@ -436,6 +436,8 @@ def build_health_report_message(report: dict[str, Any]) -> MIMEMultipart:
              _safe_outbox_pending(report) == 0),
         _row("Resume pending", str(report.get("resume_pending", "none")),
              str(report.get("resume_pending", "none")) == "none"),
+        _row("Recommendations", str(report.get("recs_status", "?")),
+             bool(report.get("recs_ok", False))),
     ])
     notes = "<br>".join(html.escape(n) for n in report.get("notes", [])) or "All checks green."
     html_content = f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
@@ -447,7 +449,7 @@ def build_health_report_message(report: dict[str, Any]) -> MIMEMultipart:
 <p style="color:#a1a1aa;font-size:13px;margin-top:16px;">{notes}</p>
 </div></body></html>"""
     text_lines = [f"Weekly Health Report — {week} (exit {report.get('exit_code', '?')})", ""]
-    for key in ("digest", "r2", "pages", "session", "outbox", "resume"):
+    for key in ("digest", "r2", "pages", "session", "outbox", "resume", "recs"):
         text_lines.append(f"- {key}: {report.get(key + '_status', report.get(key, '?'))}")
     text_lines += [""] + [str(n) for n in report.get("notes", [])]
     msg.attach(MIMEText("\n".join(text_lines), "plain", "utf-8"))
@@ -551,6 +553,30 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
             report["notes"].append(f"Resume state left behind: {report['resume_pending']}.")
     except Exception:
         report["resume_pending"] = "?"
+    try:
+        import recommendations as _recs
+        fb = _recs.load_feedback()
+        dnr = fb.get("do_not_recommend") or []
+        exp = fb.get("exposures") or {}
+        retired = sum(1 for _h, _c in exp.items()
+                      if isinstance(_c, int) and _c >= _recs.MAX_EXPOSURES)
+        served, stale = 0, False
+        try:
+            raw = _json.loads((_recs.get_recommended_file()).read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                served = len(raw.get("creators", []))
+                stale = bool(raw.get("recommendations_stale", False))
+        except Exception:
+            pass
+        report["recs_status"] = (f"{served} served · {len(dnr)} muted · "
+                                 f"{retired} retired" + (" · STALE" if stale else ""))
+        report["recs_ok"] = not stale
+        if stale:
+            report["notes"].append("Recommendations cache is stale; refresh from the dashboard.")
+    except Exception as exc:
+        report["recs_ok"] = False
+        report["recs_status"] = "unreadable"
+        report["notes"].append(f"Recommendations feedback unreadable: {exc}")
     report["healthy"] = bool(report.get("digest_ok") and report.get("r2_ok")
                               and report.get("pages_ok") and report.get("session_ok")
                               and report.get("outbox_pending") == 0)

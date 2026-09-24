@@ -1190,6 +1190,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 rec_state = dict(_RECOMMENDATIONS_STATE)
             recs = recommendations.load_recommended_creators()
             channel_handles: list[str] = []
+            dnr: set[str] = set()
             try:
                 # Membership set so the dashboard renders "Added ✓" for
                 # channels instead of reverting to "+ Add to Channel List".
@@ -1206,6 +1207,15 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 dnr = {str(h).lower() for h in (fb.get("do_not_recommend") or [])}
                 exp = fb.get("exposures") or {}
                 channels = set(channel_handles)
+                for r in recs:
+                    if isinstance(r, dict):
+                        h = str(r.get("handle", "")).lower()
+                        # Times suggested (>=1: served now). Explains repeats and
+                        # the 5-strike retirement to the dashboard reader.
+                        try:
+                            r["times_suggested"] = max(1, int(exp.get(h, 0) or 0))
+                        except (TypeError, ValueError):
+                            r["times_suggested"] = 1
                 recs = [
                     r for r in recs if isinstance(r, dict) and (
                         (str(r.get("handle", "")).lower() not in dnr)
@@ -1223,6 +1233,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 "creators": recs,
                 "count": len(recs),
                 "channel_handles": channel_handles,
+                "do_not_recommend_count": len(dnr),
                 "refresh_state": rec_state,
             }
             body = json.dumps(resp).encode("utf-8")
@@ -1342,6 +1353,35 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 logger.debug("Category progress failed: %s", exc)
                 resp = {"success": True, "week_id": week_id, "categories": [],
                         "total": 0, "total_watched": 0}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # API digest status -> /api/digest-status (latest digest vs target).
+        # Powers the expand shortfall suggestion; tolerant like its neighbors.
+        if clean_path in ("/api/digest-status", "/api/digest-status/"):
+            try:
+                target = int(getattr(config, "TOP_DIGEST_COUNT", 250) or 250)
+            except (TypeError, ValueError):
+                target = 250
+            week_id, count = "", 0
+            try:
+                cands = sorted(config.DIGESTS_DIR.glob("*.json"),
+                               key=lambda p: p.stat().st_mtime, reverse=True)
+                if cands:
+                    week_id = cands[0].stem
+                    items = _load_json_tolerant(cands[0], {})
+                    items = items.get("items", []) if isinstance(items, dict) else []
+                    count = len(items) if isinstance(items, list) else 0
+            except Exception as exc:
+                logger.debug("Digest status probe failed: %s", exc)
+            shortfall = max(0, target - count)
+            resp = {"success": True, "week_id": week_id, "count": count,
+                    "target": target, "shortfall": shortfall}
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

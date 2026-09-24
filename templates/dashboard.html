@@ -143,6 +143,7 @@
     <div class="card">
       <div class="row1"><h2>Expand digest</h2><span class="pill idle" id="expandPill">IDLE</span></div>
       <div class="meta" id="expandMeta">Loading…</div>
+      <div class="meta" id="shortfallMeta" style="margin-top: 4px;"></div>
       <div class="actions">
         <input class="count" id="expandCount" type="number" value="100" min="1" max="500" title="Reels to add">
         <button class="primary" id="expandBtn">Start expand</button>
@@ -512,6 +513,12 @@
       }
       allRecs = data.creators || [];
       channelHandles = new Set(data.channel_handles || []);
+      const dnrN = Number(data.do_not_recommend_count || 0);
+      const recMeta = document.querySelector("#recommendedSection .meta");
+      if (recMeta) {
+        recMeta.textContent = "AI talent scout suggestions based on channels you follow. Add to channel list to follow them permanently." +
+          (dnrN > 0 ? " " + dnrN + " muted." : "") + " Repeated ignores retire after 5 suggestions.";
+      }
       const refreshSt = data.refresh_state || {};
       if (refreshSt.is_running) {
         $("refreshRecsBtn").disabled = true;
@@ -537,7 +544,9 @@
       const name = esc(r.name || h);
       const cat = esc(r.category || "entertainment");
       const reason = esc(r.reason || "Recommended similar creator");
-      const scale = esc(r.follower_scale || "");
+      const scaleRaw = r.follower_scale || "";
+      const suggested = Number(r.times_suggested || 1);
+      const scaleTxt = esc(scaleRaw + (suggested > 1 ? " · suggested " + suggested + "×" : ""));
       const isAdded = channelHandles.has(h.toLowerCase()) || addedNow.has(h.toLowerCase());
       const actionBtn = isAdded
         ? '<button class="add-btn added" disabled>Added ✓</button>'
@@ -547,7 +556,7 @@
         '<div class="rec-head">' +
           '<div><a class="rec-handle" href="https://instagram.com/' + h + '" target="_blank">@' + h + '</a>' +
           '<div class="rec-name">' + name + '</div></div>' +
-          (scale ? '<span class="rec-scale">' + scale + '</span>' : '') +
+          (scaleTxt ? '<span class="rec-scale">' + scaleTxt + '</span>' : '') +
         '</div>' +
         '<div class="rec-reason">' + reason + '</div>' +
         '<div class="rec-actions">' +
@@ -652,13 +661,40 @@
   loadRecommendations();
   loadStorageGauge();
   loadWatchProgress();
+  loadDigestStatus();
   setInterval(refresh, 5000);
   setInterval(loadRecommendations, 30000);
   setInterval(loadStorageGauge, 60000);
   setInterval(loadWatchProgress, 60000);
+  setInterval(loadDigestStatus, 60000);
 
-  async function loadWatchProgress() {
-    const pill = $("watchProgPill"), meta = $("watchProgMeta");
+  async function loadDigestStatus() {
+    const meta = $("shortfallMeta");
+    try {
+      const data = await getJSONsoft("/api/digest-status");
+      if (!data || !data.success || !data.target) throw new Error("no data");
+      if (data.shortfall > 0 && data.count > 0) {
+        meta.innerHTML = "Digest " + esc(String(data.count)) + "/" + esc(String(data.target)) +
+          " — shortfall " + esc(String(data.shortfall)) + ". " +
+          '<a href="#" id="shortfallExpand" style="color: var(--cyan, #38bdf8);">Expand +' +
+          esc(String(Math.min(500, data.shortfall))) + "</a>";
+        const link = $("shortfallExpand");
+        if (link) link.addEventListener("click", (e) => {
+          e.preventDefault();
+          $("expandCount").value = Math.min(500, Math.max(1, data.shortfall));
+          startExpand($("expandCount").value, $("expandBtn"));
+        });
+      } else if (data.count > 0) {
+        meta.textContent = "Digest complete (" + data.count + "/" + data.target + ").";
+      } else {
+        throw new Error("no digest");
+      }
+    } catch (e) {
+      if (meta) meta.textContent = "";
+    }
+  }
+
+  async function loadWatchProgress() {    const pill = $("watchProgPill"), meta = $("watchProgMeta");
     try {
       const data = await getJSONsoft("/api/category-progress");
       if (!data || !data.success || !data.total) throw new Error("no data");
