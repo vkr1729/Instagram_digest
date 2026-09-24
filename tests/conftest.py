@@ -70,4 +70,5 @@ def _isolate_test_environment(monkeypatch, request):
         monkeypatch.setattr(notifier, "send_digest_email", lambda *a, **kw: False)
         monkeypatch.setattr(notifier, "send_cookie_alert_email", lambda *a, **kw: False)
         monkeypatch.setattr(notifier, "send_failure_alert_email", lambda *a, **kw: False)
+        monkeypatch.setattr(notifier, "send_health_report_email", lambda *a, **kw: False)
 

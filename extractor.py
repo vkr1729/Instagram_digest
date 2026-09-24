@@ -50,6 +50,35 @@ VIEWPORT_POOL = ((1280, 800), (1366, 768), (1440, 900), (1536, 864), (1920, 1080
 LOCALE_POOL = ("en-US", "en-GB")
 TIMEZONE_POOL = ("America/New_York", "Europe/London", "Asia/Kolkata")
 
+# Safety cap for the Following-API pagination loop: a normal account never
+# needs more than a handful of 100-user pages; the cap only stops a runaway
+# loop (e.g. a cycling max_id served to a flagged session).
+MAX_FOLLOWING_PAGES = 40
+
+
+def _chrome_major_from_ua(ua: str) -> str:
+    """Extract the Chrome major version from a UA string (default: 120)."""
+    m = re.search(r"Chrome/(\d+)", ua or "")
+    return m.group(1) if m else "120"
+
+
+def _client_hint_headers(ua: str) -> dict[str, str]:
+    """Sec-CH-UA client hints matching the given Chrome UA major version.
+
+    Sending a Chrome/120+ UA without these hints is a mismatch signal:
+    real Chrome always emits them. The brand list mirrors what Chrome sends
+    (Chromium + Google Chrome + Not-A.Brand).
+    """
+    major = _chrome_major_from_ua(ua)
+    return {
+        "Sec-CH-UA": (
+            f'"Chromium";v="{major}", "Google Chrome";v="{major}", '
+            '"Not-A.Brand";v="99"'
+        ),
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+    }
+
 # Minimal webdriver-masking init script (hides the most trivial headless
 # signals; not a full stealth framework, but removes the zero-effort tells).
 # NOTE (known limit): the UA override below does not rewrite the
@@ -65,19 +94,75 @@ def _stealth_script_for_locale(locale: str) -> str:
     langs_js = "[" + ", ".join(f"'{l}'" for l in langs) + "]"
     return """() => {
   try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    if (!window.chrome) { window.chrome = { runtime: {} }; }
-    const _fakePlugins = {
-      length: 3,
-      item(i) { return this[i] || null; },
-      namedItem(n) { return this[n] || null; },
-      refresh() {},
-      0: { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-      1: { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-      2: { name: 'Native Client', filename: 'internal-nacl-plugin' },
-    };
-    Object.defineProperty(navigator, 'plugins', { get: () => _fakePlugins });
-    Object.defineProperty(navigator, 'languages', { get: () => LANGS });
+    try {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    } catch (e) {}
+    try {
+      if (!window.chrome) { window.chrome = { runtime: {} }; }
+      if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+      if (!window.chrome.loadTimes) {
+        window.chrome.loadTimes = function () {
+          const t = Date.now() / 1000;
+          return { requestTime: t, startLoadTime: t, commitLoadTime: t,
+            finishDocumentLoadTime: t, finishLoadTime: t, firstPaintTime: t,
+            layoutType: 'Blink', navigationType: 'Other',
+            wasAlternateProtocolAvailable: false, wasFetchedViaSpdy: true,
+            wasNpnNegotiated: true, npnNegotiatedProtocol: 'h2' };
+        };
+      }
+      if (!window.chrome.csi) {
+        window.chrome.csi = function () {
+          return { startE: Date.now(), onloadT: Date.now(), pageT: 120, tran: 15 };
+        };
+      }
+    } catch (e) {}
+    try {
+      const _fakePlugins = {
+        length: 3,
+        item(i) { return this[i] || null; },
+        namedItem(n) { return this[n] || null; },
+        refresh() {},
+        0: { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+        1: { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+        2: { name: 'Native Client', filename: 'internal-nacl-plugin' },
+      };
+      Object.defineProperty(navigator, 'plugins', { get: () => _fakePlugins });
+      if (navigator.plugins.length === 0) { throw new Error('plugins guard'); }
+    } catch (e) {}
+    try {
+      const _cores = 4 + Math.floor(Math.random() * 5);
+      Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => _cores });
+      Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    } catch (e) {}
+    try {
+      const _spoofGL = function (orig) {
+        return function (p) {
+          if (p === 37445) return 'Google Inc. (Intel)';
+          if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00005917) Direct3D11 vs_5_0 ps_5_0, D3D11)';
+          return orig.call(this, p);
+        };
+      };
+      if (window.WebGLRenderingContext) {
+        WebGLRenderingContext.prototype.getParameter = _spoofGL(WebGLRenderingContext.prototype.getParameter);
+      }
+      if (window.WebGL2RenderingContext) {
+        WebGL2RenderingContext.prototype.getParameter = _spoofGL(WebGL2RenderingContext.prototype.getParameter);
+      }
+    } catch (e) {}
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const _permQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = function (params) {
+          if (params && params.name === 'notifications') {
+            return Promise.resolve({ state: 'default', onchange: null });
+          }
+          return _permQuery(params);
+        };
+      }
+    } catch (e) {}
+    try {
+      Object.defineProperty(navigator, 'languages', { get: () => LANGS });
+    } catch (e) {}
   } catch (e) {}
 }""".replace("LANGS", langs_js)
 
@@ -307,12 +392,19 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
                 "X-CSRFToken": csrftoken,
                 "X-IG-App-ID": "936619743392459",
                 "Referer": "https://www.instagram.com/",
+                **_client_hint_headers(DEFAULT_USER_AGENT),
             }
 
             max_id = None
             page_count = 0
             api_failures = 0
             while True:
+                if page_count >= MAX_FOLLOWING_PAGES:
+                    logger.warning(
+                        "Following pagination hit safety cap (%d pages); stopping.",
+                        MAX_FOLLOWING_PAGES,
+                    )
+                    break
                 url = f"https://www.instagram.com/api/v1/friendships/{user_id}/following/?count=100"
                 if max_id:
                     url += f"&max_id={max_id}"
@@ -356,6 +448,9 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
                         })
                 max_id = data.get("next_max_id")
                 if not max_id:
+                    break
+                if data.get("has_more") is False:
+                    # API explicitly signals end of list; ignore any stale cursor.
                     break
                 # Humanized inter-page pacing (was: no delay at all).
                 time.sleep(max(0.8, random.gauss(1.4, 0.5)))
@@ -447,6 +542,16 @@ class InstagramBlocked(RuntimeError):
     """Instagram served a login/challenge wall instead of content."""
 
 
+class InstagramChallenged(InstagramBlocked):
+    """Instagram locked the session behind a checkpoint/challenge.
+
+    Distinct from a plain login redirect: the account itself is gated
+    (challenge_required / checkpoint_required / scraping_warning), so
+    grinding further burns hours AND risks the account. Callers must abort
+    fast, not retry.
+    """
+
+
 class CookieExpiredException(RuntimeError):
     """Instagram session cookies are missing or expired (redirected to login).
 
@@ -465,8 +570,20 @@ _BLOCK_MARKERS = (
     "/accounts/suspended",
     "/checkpoint/",
     "checkpoint_required",
+    "checkpoint_url",
+    "challenge_required",
+    "challenge_context",
+    "scraping_warning",
     "rate_limit",
     "limited_action",
+    # Out-of-band risky-contactpoint challenge served to low-trust accounts
+    # ("email may not be secure"). Any redirect here must abort loudly via
+    # InstagramBlocked, never spin as a silent scrape loop.
+    "/update_risky_contactpoint",
+    "risky_contactpoint",
+    "verify_contactpoint",
+    "/accounts/confirm",
+    "checkpoint",
 )
 
 # Soft-block tells served with HTTP 200 (no redirect to catch).
@@ -501,10 +618,41 @@ def _page_html_indicates_block(html: str) -> bool:
     return any(s in text.lower() for s in _SOFT_BLOCK_SNIPPETS)
 
 
+# Markers that mean the ACCOUNT is gated behind a challenge/checkpoint
+# (not merely logged out). Any hit must abort the run immediately — no
+# sleep-and-retry: grinding a gated account burns hours AND risks the
+# account. Subset of _BLOCK_MARKERS checked first by _assert_not_blocked.
+_CHALLENGE_MARKERS = (
+    "/challenge/",
+    "/checkpoint/",
+    "checkpoint_required",
+    "checkpoint_url",
+    "challenge_required",
+    "challenge_context",
+    "scraping_warning",
+    "/update_risky_contactpoint",
+    "risky_contactpoint",
+    "/accounts/suspended",
+)
+
+
 def _assert_not_blocked(page, context: str) -> None:
     url = getattr(page, "url", "") or ""
+    if any(m in url for m in _CHALLENGE_MARKERS):
+        raise InstagramChallenged(f"{context}: challenge-gated, redirected to {url}")
     if any(m in url for m in _BLOCK_MARKERS):
         raise InstagramBlocked(f"{context}: redirected to {url}")
+
+
+def _response_indicates_challenge(status: int, body_text: str) -> bool:
+    """True when an API JSON/body says checkpoint/challenge required."""
+    text = (body_text or "").lower()
+    return status in (400, 401, 403) and any(
+        m in text for m in (
+            "checkpoint_required", "challenge_required", "checkpoint_url",
+            "scraping_warning", "risky_contactpoint", "sentry_block",
+        )
+    )
 
 
 _DATE_FORMATS = ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%d %B %Y", "%m/%d/%Y")
@@ -543,7 +691,7 @@ def _extract_shortcode(href: str) -> str:
     return m.group(1) if m else ""
 
 
-_HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9._]{0,29}$")
+_HANDLE_RE = re.compile(r"^[a-z0-9._]{1,30}$")
 
 
 def clean_handle(raw: Any) -> str:
@@ -675,11 +823,25 @@ class InstagramSession:
         self._nav_count += 1
         return self._page
 
+    def new_isolated_page(self):
+        """Create a dedicated secondary tab inside the existing context for metadata inspections.
+
+        Does not bump the context navigation recycle counter and keeps the caller's primary
+        page untouched. The caller MUST close the returned page in a finally block.
+        """
+        self.start()
+        if not self._context:
+            self._open_context()
+        page = self._context.new_page()
+        page.set_default_navigation_timeout(20000)
+        return page
+
 
 def discover_creator_reel_urls(
     handle: str,
     max_reels: int = 10,
     session: InstagramSession | None = None,
+    include_pinned: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Use headless Playwright to load creator's reels tab and extract recent reel URLs + view counts.
@@ -689,7 +851,7 @@ def discover_creator_reel_urls(
     target_url = f"https://www.instagram.com/{clean_handle}/reels/"
     reels_found: list[dict[str, Any]] = []
 
-    logger.info("Discovering reels for @%s via Playwright...", clean_handle)
+    logger.info("Discovering reels for @%s via Playwright (include_pinned=%s)...", clean_handle, include_pinned)
     local_session = None
     try:
         if session:
@@ -741,7 +903,7 @@ def discover_creator_reel_urls(
                 except Exception:
                     pass
 
-                if is_pinned:
+                if is_pinned and not include_pinned:
                     logger.info("Skipping pinned reel %s for @%s", href, clean_handle)
                     continue
 
@@ -761,6 +923,7 @@ def discover_creator_reel_urls(
                         "creator_handle": clean_handle,
                         "view_count": view_count,
                         "thumbnail": thumb_url,
+                        "is_pinned": is_pinned,
                     })
 
             if len(reels_found) >= max_reels:
@@ -777,9 +940,177 @@ def discover_creator_reel_urls(
     return reels_found
 
 
+def _shortcode_to_media_id(shortcode: str) -> str:
+    """Convert a reel shortcode to its numeric media id (same math as yt-dlp)."""
+    table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    code = (shortcode or "")[:28]
+    value = 0
+    for ch in code:
+        value = value * 64 + table.index(ch)
+    return str(value)
+
+
+def fetch_media_info_batch(
+    shortcodes: list[str],
+    pause_secs: float = 2.0,
+    timeout: int = 15,
+) -> dict[str, dict[str, Any]]:
+    """Fetch full metadata for reel shortcodes via the media/{id}/info/ API.
+
+    One cheap GET per reel (~2.7s incl. pacing) returning timestamp,
+    like/comment counts, caption, duration, thumbnail, best video URL and
+    play_count — everything the per-reel Playwright visit provides, without
+    rendering a page. 429s are honored with Retry-After backoff; failures
+    return no entry so callers fall back to per-reel extraction.
+    """
+    try:
+        import requests as _rq
+    except ImportError:
+        return {}
+    try:
+        cdata = json.loads((config.DATA_DIR / "cookies.json").read_text(encoding="utf-8"))
+        cd = cdata.get("cookies_dict", {})
+        sessionid = cd.get("sessionid", "")
+    except Exception:
+        return {}
+    if not sessionid:
+        return {}
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "X-IG-App-ID": "936619743392459",
+        "Referer": "https://www.instagram.com/",
+        **_client_hint_headers(DEFAULT_USER_AGENT),
+    }
+    sess = _rq.Session()
+    sess.cookies.set("sessionid", sessionid, domain=".instagram.com")
+    out: dict[str, dict[str, Any]] = {}
+    for sc in shortcodes:
+        try:
+            mid = _shortcode_to_media_id(sc)
+        except (ValueError, TypeError):
+            continue
+        try:
+            resp = sess.get(
+                f"https://i.instagram.com/api/v1/media/{mid}/info/",
+                headers=headers, timeout=timeout,
+            )
+        except Exception as exc:
+            logger.debug("media-info request failed for %s: %s", sc, exc)
+            continue
+        if resp.status_code == 429:
+            wait = 60.0
+            try:
+                wait = max(wait, float(resp.headers.get("Retry-After") or 0))
+            except (TypeError, ValueError):
+                pass
+            logger.warning("media-info rate-limited (429); backing off %.0fs.", wait)
+            time.sleep(wait)
+            continue
+        if _response_indicates_challenge(resp.status_code, resp.text[:500]):
+            # Account is gated: stop the whole batch NOW. Callers convert
+            # this to a fast abort; further requests only risk the account.
+            logger.error("media-info challenge-gated (%d) on %s; aborting batch.",
+                         resp.status_code, sc)
+            raise InstagramChallenged(
+                f"media-info batch challenge-gated on {sc}: {resp.text[:120]}")
+        if resp.status_code != 200:
+            logger.debug("media-info HTTP %d for %s.", resp.status_code, sc)
+            continue
+        try:
+            items = resp.json().get("items") or []
+            item = items[0] if items else {}
+        except Exception:
+            continue
+        if not isinstance(item, dict) or not item.get("taken_at"):
+            continue
+        user = item.get("user") or {}
+        caption = item.get("caption") or {}
+        versions = item.get("video_versions") or []
+        best_url = ""
+        best_area = 0
+        for v in versions:
+            try:
+                area = int(v.get("width") or 0) * int(v.get("height") or 0)
+            except (TypeError, ValueError):
+                area = 0
+            if v.get("url") and area >= best_area:
+                best_area = area
+                best_url = v["url"]
+        thumbs = ((item.get("image_versions2") or {}).get("candidates")) or []
+        thumb_url = ""
+        for t in thumbs:
+            if t.get("url"):
+                thumb_url = t["url"]
+                break
+        views = item.get("view_count")
+        if views is None:
+            views = item.get("play_count") or 0
+        out[sc] = {
+            "timestamp": int(item.get("taken_at") or 0),
+            "like_count": int(item.get("like_count") or 0),
+            "comment_count": int(item.get("comment_count") or 0),
+            "view_count": int(views or 0),
+            "caption": str(caption.get("text") or ""),
+            "duration": float(item.get("video_duration") or 0),
+            "thumbnail": thumb_url,
+            "video_cdn_url": best_url,
+            "creator_handle": str(user.get("username") or ""),
+            "creator_name": str(user.get("full_name") or user.get("username") or ""),
+            "metrics_estimated": False,
+        }
+        time.sleep(pause_secs + random.uniform(0, 1.0))
+    return out
+
+
+def enrich_candidates_via_media_api(
+    candidates: list[dict[str, Any]],
+    cutoff_timestamp: int = 0,
+) -> list[dict[str, Any]]:
+    """Batch-enrich discovery candidates via media/{id}/info/ (no browser).
+
+    Applies the date cutoff BEFORE ranking so stale reels never burn a
+    Playwright visit: reels older than cutoff_timestamp (or dateless) are
+    dropped here, where each check cost one cheap GET instead of a ~7s page
+    load. Entries the API misses keep their discovery fields for the
+    per-reel fallback path. Pinned reels bypass the cutoff.
+    Raises InstagramChallenged when the account is gated (callers abort).
+    """
+    if not candidates:
+        return []
+    shortcodes = [str(c.get("id") or "") for c in candidates if c.get("id")]
+    info_map = fetch_media_info_batch(shortcodes)
+    if not info_map:
+        logger.warning("media-info batch returned nothing; keeping candidates for per-reel fallback.")
+        return list(candidates)
+    enriched: list[dict[str, Any]] = []
+    dropped_stale = 0
+    for cand in candidates:
+        sc = str(cand.get("id") or "")
+        info = info_map.get(sc)
+        if not info:
+            enriched.append(cand)
+            continue
+        merged = dict(cand)
+        merged.update(info)
+        merged["view_count"] = merged.get("view_count") or cand.get("view_count", 0)
+        merged["thumbnail"] = merged.get("thumbnail") or cand.get("thumbnail", "")
+        merged["video_cdn_url"] = merged.get("video_cdn_url") or cand.get("video_cdn_url", "")
+        if not merged.get("creator_handle"):
+            merged["creator_handle"] = cand.get("creator_handle", "")
+        ts = merged.get("timestamp") or 0
+        if not cand.get("is_pinned") and cutoff_timestamp and (not ts or ts < cutoff_timestamp):
+            dropped_stale += 1
+            continue
+        enriched.append(merged)
+    if dropped_stale:
+        logger.info("media-info pre-filter: dropped %d stale reels before ranking.", dropped_stale)
+    return enriched
+
+
 def extract_single_reel_metadata(
     reel_info: dict[str, Any],
     session: InstagramSession | None = None,
+    page: Any = None,
 ) -> dict[str, Any] | None:
     """
     Extract full metadata and direct CDN progressive MP4 stream for an individual reel.
@@ -792,7 +1123,9 @@ def extract_single_reel_metadata(
     # 1. Attempt high-speed Playwright extraction (bypasses broken yt-dlp & login walls)
     local_session = None
     try:
-        if session:
+        if page is not None:
+            pass  # Caller provided a dedicated isolated page
+        elif session:
             page = session.get_page()
         else:
             local_session = InstagramSession()
@@ -908,6 +1241,7 @@ def extract_single_reel_metadata(
                 "thumbnail": thumb_url,
                 "video_cdn_url": video_cdn_url,
                 "metrics_estimated": metrics_estimated,
+                "is_pinned": bool(reel_info.get("is_pinned", False)),
             }
     except Exception as exc:
         logger.debug("Playwright extraction failed on %s: %s; trying yt-dlp fallback...", reel_url, exc)
@@ -950,6 +1284,7 @@ def extract_single_reel_metadata(
                 "thumbnail": data.get("thumbnail") or reel_info.get("thumbnail", ""),
                 "video_cdn_url": data.get("url", ""),
                 "metrics_estimated": False,
+                "is_pinned": bool(reel_info.get("is_pinned", False)),
             }
     except Exception as exc:
         logger.warning("yt-dlp fallback failed for %s: %s", reel_url, exc)
@@ -968,6 +1303,7 @@ def extract_single_reel_metadata(
         "thumbnail": reel_info.get("thumbnail", ""),
         "video_cdn_url": reel_info.get("video_cdn_url", ""),
         "metrics_estimated": True,
+        "is_pinned": bool(reel_info.get("is_pinned", False)),
     }
 
 
@@ -978,6 +1314,7 @@ def extract_creator_reels(
     use_cookies: bool = True,
     fast_mode: bool = False,
     session: InstagramSession | None = None,
+    include_pinned: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Extract recent reels and metrics for a creator:
@@ -989,9 +1326,14 @@ def extract_creator_reels(
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     cutoff_timestamp = int(cutoff_dt.timestamp())
 
+    kwargs: dict[str, Any] = {}
     if session is not None:
-        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, session=session)
-    else:
+        kwargs["session"] = session
+    if include_pinned:
+        kwargs["include_pinned"] = include_pinned
+    try:
+        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, **kwargs)
+    except TypeError:
         reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels)
     if not reels_info:
         return []
@@ -1012,6 +1354,7 @@ def extract_creator_reels(
                 "thumbnail": info.get("thumbnail", ""),
                 "video_cdn_url": "",
                 "metrics_estimated": True,
+                "is_pinned": bool(info.get("is_pinned", False)),
             })
             continue
 
@@ -1022,8 +1365,11 @@ def extract_creator_reels(
         if not meta:
             continue
 
+        is_pinned = bool(info.get("is_pinned") or meta.get("is_pinned"))
         ts = meta.get("timestamp") or 0
-        if not ts or ts < cutoff_timestamp:
+        if is_pinned:
+            meta["is_pinned"] = True
+        elif not ts or ts < cutoff_timestamp:
             logger.info("Discarding reel %s: timestamp %s older than %d-day cutoff %s (or missing)",
                         meta.get("id"), ts, days_back, cutoff_timestamp)
             continue
@@ -1085,6 +1431,7 @@ def download_reel_video(
         "User-Agent": DEFAULT_USER_AGENT,
         "Referer": "https://www.instagram.com/",
         "Accept": "*/*",
+        **_client_hint_headers(DEFAULT_USER_AGENT),
     }
 
     # 1. Resolve CDN URL if not provided (never reopen Playwright here:
@@ -1193,6 +1540,8 @@ def extract_external_reels_from_feed(
     existing_ids: set[str] | None = None,
     active_sources: list[dict[str, Any]] | None = None,
     max_evaluations: int | None = None,
+    min_likes: int | None = None,
+    min_comments: int | None = None,
     on_progress: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Crawl Instagram Reels discovery feed (instagram.com/reels/) with Playwright to discover
@@ -1200,18 +1549,27 @@ def extract_external_reels_from_feed(
 
     Filters:
       - Excludes followed channels, blacklist, and existing IDs.
-      - Requires visible likes >= 25,000 OR (if hidden) comments >= 150.
+      - Requires visible likes >= min_likes (default config.MIN_EXTERNAL_LIKES)
+        OR (if hidden) comments >= min_comments (default MIN_EXTERNAL_COMMENTS).
       - Classifies topic into the 6 digest categories (ai_tech, finance, health, entertainment, niche, food).
       - Maximum 2 reels per external creator.
-      - Raises CookieExpiredException if redirected to login.
+      - Raises InstagramChallenged immediately when the account is gated;
+        raises CookieExpiredException if redirected to plain login.
       - on_progress (optional) receives a cumulative snapshot every 10 finds so
         callers can stream-checkpoint; a failing callback never breaks discovery.
     """
     if target_count <= 0:
         return []
 
+    if min_likes is None:
+        min_likes = config.MIN_EXTERNAL_LIKES
+    if min_comments is None:
+        min_comments = config.MIN_EXTERNAL_COMMENTS
+    feed_eval_cap = config.MAX_FEED_EVALUATIONS
     if max_evaluations is None:
-        max_evaluations = max(120, target_count * 8)
+        max_evaluations = min(feed_eval_cap, max(120, target_count * 8))
+    else:
+        max_evaluations = min(feed_eval_cap, max_evaluations)
 
     existing = set(existing_ids or set())
     followed_handles = set(
@@ -1223,9 +1581,13 @@ def extract_external_reels_from_feed(
     # Randomized anti-detection cooldown schedule (low-profile: more often,
     # longer rests after the automation warning).
     next_cooldown_at = random.randint(*FEED_COOLDOWN_EVERY)
+    logger.info(
+        "Opening Instagram Reels feed to discover up to %d external reels "
+        "(bar: >=%d likes or >=%d comments when hidden; eval cap %d)...",
+        target_count, min_likes, min_comments, max_evaluations,
+    )
 
     page = session.get_page()
-    logger.info("Opening Instagram Reels feed to discover %d external high-signal reels...", target_count)
 
     try:
         page.goto("https://www.instagram.com/reels/", wait_until="domcontentloaded", timeout=30000)
@@ -1233,8 +1595,11 @@ def extract_external_reels_from_feed(
         logger.warning("Failed navigating to reels feed: %s", exc)
         return []
 
-    # Check for authentication redirect
+    # Check for authentication redirect — challenge gates first (abort at
+    # once), plain login second (cookie death).
     current_url = getattr(page, "url", "") or ""
+    if any(m in current_url for m in _CHALLENGE_MARKERS):
+        raise InstagramChallenged(f"Instagram feed challenge-gated: redirected to {current_url}")
     if any(m in current_url for m in _BLOCK_MARKERS):
         raise CookieExpiredException(f"Instagram session expired: redirected to {current_url}")
 
@@ -1244,6 +1609,9 @@ def extract_external_reels_from_feed(
     while len(external_candidates) < target_count and eval_count < max_evaluations:
         eval_count += 1
         current_url = getattr(page, "url", "") or ""
+        if any(m in current_url for m in _CHALLENGE_MARKERS):
+            raise InstagramChallenged(
+                f"Instagram feed challenge-gated during scroll: {current_url}")
         if any(m in current_url for m in _BLOCK_MARKERS):
             raise CookieExpiredException(
                 f"Instagram session expired during feed scroll: {current_url}",
@@ -1359,9 +1727,25 @@ def extract_external_reels_from_feed(
             video_cdn = data.get("videoSrc", "") or ""
             poster = data.get("posterSrc", "") or ""
 
-            # If handle or metrics not fully parsed from DOM, enrich via yt-dlp fallback
+            # If handle or metrics not fully parsed from DOM, enrich via isolated secondary tab
             if not h or (likes == 0 and comments == 0):
-                meta = extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, session=session)
+                isolated_tab = None
+                try:
+                    isolated_tab = session.new_isolated_page()
+                    meta = (
+                        extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, page=isolated_tab)
+                        if isolated_tab else
+                        extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, session=session)
+                    )
+                except Exception as meta_err:
+                    logger.debug("Isolated metadata extraction failed on %s: %s", rid, meta_err)
+                    meta = None
+                finally:
+                    if isolated_tab:
+                        try:
+                            isolated_tab.close()
+                        except Exception:
+                            pass
                 if meta:
                     h = clean_handle(meta.get("creator_handle")) or h
                     caption = caption or meta.get("caption", "")
@@ -1378,8 +1762,9 @@ def extract_external_reels_from_feed(
                 and h not in blacklist
                 and creator_counts.get(h, 0) < 2
             ):
-                # High-signal threshold: visible likes >= 25,000 OR (if hidden) comments >= 150
-                is_high_signal = (likes >= 25000) or (likes == 0 and comments >= 150)
+                # High-signal threshold: visible likes >= min_likes OR
+                # (if hidden) comments >= min_comments.
+                is_high_signal = (likes >= min_likes) or (likes == 0 and comments >= min_comments)
                 if is_high_signal:
                     cat = categorize_creator(h, caption)
                     if cat:
@@ -1424,13 +1809,227 @@ def extract_external_reels_from_feed(
             time.sleep(cooldown)
             next_cooldown_at = eval_count + random.randint(*FEED_COOLDOWN_EVERY)
 
-        # Scroll to next reel with Gaussian humanized jitter + varied keys
+        # Scroll to next reel with humanized, non-repeating motion:
+        # randomized trackpad-style wheel deltas (2-4 flicks of varying
+        # distance) with an occasional full PageDown, plus small random
+        # mouse moves before evaluation so the pointer trail is not static.
+        # Fixed-choice PageDown presses were a trivial key-event signature.
         try:
-            page.keyboard.press(random.choice(["PageDown", "PageDown", "PageDown", "ArrowDown"]))
+            vw, vh = 1280, 800
+            try:
+                _vs = page.viewport_size or {}
+                vw = int(_vs.get("width", 1280))
+                vh = int(_vs.get("height", 800))
+            except Exception:
+                vw, vh = 1280, 800
+            if not (200 <= vw <= 4000):
+                vw = 1280
+            if not (200 <= vh <= 4000):
+                vh = 800
+            for _ in range(random.randint(2, 4)):
+                page.mouse.wheel(
+                    random.randint(-40, 40),
+                    random.randint(int(vh * 0.5), int(vh * 1.1)),
+                )
+                try:
+                    page.wait_for_timeout(random.randint(120, 450))
+                except Exception:
+                    # Mock/minimal pages in unit tests may not implement timeouts.
+                    pass
+            if random.random() < 0.25:
+                try:
+                    page.keyboard.press("PageDown")
+                except Exception:
+                    pass
+            for _ in range(random.randint(1, 3)):
+                try:
+                    page.mouse.move(
+                        random.randint(0, max(vw - 1, 1)),
+                        random.randint(0, max(vh - 1, 1)),
+                        steps=random.randint(2, 6),
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
         human_pause()
 
+        # Ensure feed crawler page did not navigate away from /reels/
+        feed_url = getattr(page, "url", "") or ""
+        if "/reels/" not in feed_url:
+            logger.warning("Feed page navigated away to %s; recovering to /reels/...", feed_url)
+            try:
+                page.goto("https://www.instagram.com/reels/", wait_until="domcontentloaded", timeout=25000)
+            except Exception as rec_err:
+                logger.warning("Failed reloading reels feed during recovery: %s", rec_err)
+
     logger.info("External Reels discovery finished: harvested %d high-signal external reels (evaluated %d).",
                 len(external_candidates), eval_count)
     return external_candidates
+
+
+_FOLLOW_BUTTON_TEXTS_JS = (
+    "() => Array.from(document.querySelectorAll('button'))"
+    ".map(b => (b.innerText || '').trim())"
+)
+
+_FOLLOW_CLICK_JS = (
+    "() => {"
+    " const btns = Array.from(document.querySelectorAll('button'));"
+    " for (const b of btns) {"
+    "  const t = (b.innerText || '').trim().toLowerCase();"
+    "  if (t === 'follow' || t === 'follow back') { b.click(); return true; }"
+    " }"
+    " return false; }"
+)
+
+
+def _follow_button_texts(page) -> list[str]:
+    """All button innerTexts on the profile (raw-DOM probe).
+
+    Probe 2026-09-19: page.get_by_role misses the Following state in
+    headless Chromium, so state detection must read every <button>'s
+    innerText via evaluate instead of role queries.
+    """
+    try:
+        texts = page.evaluate(_FOLLOW_BUTTON_TEXTS_JS)
+    except Exception:
+        return []
+    if not isinstance(texts, list):
+        return []
+    return [str(t or "").strip() for t in texts]
+
+
+def _follow_state_from_texts(texts: list[str]) -> str | None:
+    """Map button texts to a follow state: following/requested/follow/follow_back."""
+    for raw in texts:
+        t = (raw or "").strip().lower()
+        if not t:
+            continue
+        if "following" in t:
+            return "following"
+        if "requested" in t:
+            return "requested"
+    for raw in texts:
+        t = (raw or "").strip().lower()
+        if t == "follow back":
+            return "follow_back"
+        if t == "follow":
+            return "follow"
+    return None
+
+
+def follow_creator(handle: str, timeout: int = 25) -> dict[str, Any]:
+    """Follow one creator on the logged-in Instagram account (browser only).
+
+    Uses the existing InstagramSession (cookie injection + stealth
+    context). No API calls — they 429 under automation load. Steps:
+    validate session, goto profile, detect already-following/requested
+    via ALL-button innerText, click Follow/Follow Back via get_by_role
+    with a raw-DOM evaluate fallback, wait, then re-check innerText.
+
+    Returns {"ok": True, "state": "followed|requested|already"} or
+    {"ok": False, "error": "not_found|blocked|..."}.
+    """
+    clean = clean_handle(handle)
+    if not clean:
+        return {"ok": False, "error": "invalid_handle"}
+    try:
+        timeout_ms = max(5, int(timeout)) * 1000
+    except (TypeError, ValueError):
+        timeout_ms = 25000
+
+    session = InstagramSession()
+    try:
+        try:
+            valid = session.validate()
+        except Exception:
+            valid = False
+        if not valid:
+            return {"ok": False, "error": "session_invalid"}
+
+        try:
+            page = session.get_page()
+        except Exception as exc:
+            logger.warning("Follow @%s: could not open page: %s", clean, exc)
+            return {"ok": False, "error": "session_invalid"}
+
+        try:
+            page.goto(f"https://www.instagram.com/{clean}/",
+                      wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception as exc:
+            logger.warning("Follow @%s: profile navigation failed: %s", clean, exc)
+            return {"ok": False, "error": "navigation_failed"}
+        try:
+            _assert_not_blocked(page, f"follow-@{clean}")
+        except InstagramBlocked:
+            return {"ok": False, "error": "blocked"}
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+        if _page_html_indicates_block(html or ""):
+            return {"ok": False, "error": "blocked"}
+        if "sorry, this page isn't available" in (html or "").lower():
+            return {"ok": False, "error": "not_found"}
+
+        texts = _follow_button_texts(page)
+        state = _follow_state_from_texts(texts)
+        if state in ("following", "requested"):
+            human_pause()
+            return {"ok": True, "state": "already"}
+        if state is None:
+            # No follow-state button at all: missing profile vs. logged-out
+            # wall. Block markers were already checked, so treat the most
+            # likely case (nonexistent/renamed handle) as not_found.
+            lowered = " ".join(t.lower() for t in texts)
+            if "log in" in lowered or "sign up" in lowered:
+                return {"ok": False, "error": "blocked"}
+            return {"ok": False, "error": "not_found"}
+
+        clicked = False
+        try:
+            locator = page.get_by_role("button", name=re.compile(r"^Follow( Back)?$", re.I))
+            locator.first.click(timeout=5000)
+            clicked = True
+        except Exception:
+            clicked = False
+        if not clicked:
+            try:
+                clicked = bool(page.evaluate(_FOLLOW_CLICK_JS))
+            except Exception as exc:
+                logger.warning("Follow @%s: fallback click failed: %s", clean, exc)
+                clicked = False
+        if not clicked:
+            return {"ok": False, "error": "click_failed"}
+
+        try:
+            page.wait_for_timeout(2500)
+        except Exception:
+            time.sleep(2.5)
+        try:
+            _assert_not_blocked(page, f"follow-@{clean}-after-click")
+        except InstagramBlocked:
+            return {"ok": False, "error": "blocked"}
+        try:
+            html = page.content()
+        except Exception:
+            html = ""
+        if _page_html_indicates_block(html or ""):
+            return {"ok": False, "error": "blocked"}
+
+        texts = _follow_button_texts(page)
+        state = _follow_state_from_texts(texts)
+        human_pause()
+        if state == "following":
+            return {"ok": True, "state": "followed"}
+        if state == "requested":
+            return {"ok": True, "state": "requested"}
+        if state in ("follow", "follow_back"):
+            return {"ok": False, "error": "click_failed"}
+        return {"ok": False, "error": "unknown_state"}
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass

@@ -139,14 +139,6 @@ public struct BookmarksSheet: View {
 
                                             VStack(alignment: .leading, spacing: 2) {
                                                 HStack {
-                                                    Text(String(format: "#%02d", bookmark.rank))
-                                                        .font(.system(size: 11, weight: .bold))
-                                                        .foregroundColor(.white)
-                                                        .padding(.horizontal, 6)
-                                                        .padding(.vertical, 2)
-                                                        .background(Color.black.opacity(0.6))
-                                                        .clipShape(Capsule())
-
                                                     Spacer()
 
                                                     if bookmark.localStatus == .cached {
@@ -394,14 +386,6 @@ public struct BookmarkPlayerOverlay: View {
                             Text("@\(bookmark.creatorHandle)")
                                 .font(.system(size: 16, weight: .bold))
                                 .foregroundColor(.white)
-
-                            Text(String(format: "#%02d", bookmark.rank))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white.opacity(0.8))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.white.opacity(0.15))
-                                .clipShape(Capsule())
 
                             Spacer()
 

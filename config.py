@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_VERSION = "5.0.0"  # Single source of truth for the release version.
+APP_VERSION = "5.1.0"  # Single source of truth for the release version.
 
 # Base paths
 ROOT_DIR = Path(__file__).resolve().parent
@@ -109,8 +109,28 @@ NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("RECIPIENT_EMAIL"
 # Pipeline & Retention Limits (Default: 1 week rolling archive)
 RETENTION_WEEKS = _env_int("RETENTION_WEEKS", 1, 1, 52)
 RETENTION_DAYS = _env_int("RETENTION_DAYS", RETENTION_WEEKS * 7 + 1, 1, 365)
-TOP_DIGEST_COUNT = _env_int("TOP_DIGEST_COUNT", 300, 1, 1000)
+TOP_DIGEST_COUNT = _env_int("TOP_DIGEST_COUNT", 250, 1, 1000)
 MAX_PER_CREATOR = _env_int("MAX_PER_CREATOR", 4, 1, 50)
+# Tier 3 (external feed discovery) guardrails. Fresh/low-trust accounts get
+# flagged for long discovery-feed scrolls, so Tier 3 fills at most
+# MAX_EXTERNAL_SHARE of the digest and stops after MAX_FEED_EVALUATIONS DOM
+# evaluations (~7s each incl. pacing => ~2h ceiling) instead of grinding.
+MAX_EXTERNAL_SHARE = _env_float("MAX_EXTERNAL_SHARE", 0.40)
+MAX_FEED_EVALUATIONS = _env_int("MAX_FEED_EVALUATIONS", 1000, 100, 2000)
+# High-signal bar for Tier 3 externals: visible likes, or (likes hidden)
+# comment count. Lowering this raises the hit rate (fewer evals per find)
+# but admits weaker reels; the estimator below reports the tradeoff.
+MIN_EXTERNAL_LIKES = _env_int("MIN_EXTERNAL_LIKES", 25000, 1000, 1000000)
+MIN_EXTERNAL_COMMENTS = _env_int("MIN_EXTERNAL_COMMENTS", 150, 10, 10000)
+# Cooldown after mass-following a fresh account (new accounts get flagged
+# for follow-then-scrape bursts). Refuses scrape starts within this window
+# of a high-velocity follow burst unless --force is passed.
+FOLLOW_COOLDOWN_HOURS = _env_float("FOLLOW_COOLDOWN_HOURS", 48.0)
+FOLLOW_BURST_THRESHOLD = _env_int("FOLLOW_BURST_THRESHOLD", 20, 1, 1000)
+# Warming mode for young accounts: multiplies creator/enrich pauses to slow
+# the run down. Auto-enabled while the account is < 14 days past its first
+# follow burst; TRUST_WARMING=0 forces off, =1 forces on.
+TRUST_WARMING = os.getenv("TRUST_WARMING", "").strip()
 # One-sided flood guard: no single category may exceed this share of the digest.
 # (Replaces the old fixed 40/15/15/10/10/10 percentage targets.)
 MAX_CATEGORY_SHARE = _env_float("MAX_CATEGORY_SHARE", 0.50)

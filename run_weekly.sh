@@ -42,4 +42,11 @@ else
     .venv/bin/python notifier.py --failure-alert --context "Weekly Friday sync (main.py --sync --deploy)" --exit-code $EXIT_CODE >> "$LOG_FILE" 2>&1 || true
     exit $EXIT_CODE
 fi
+
+# Weekly self-audit: one summary email (digest vs target, R2 vs quota, Pages,
+# session, outbox/resume state) so drift gets noticed without dashboards.
+# Best-effort: never changes the pipeline exit code (explicit re-exit below).
+WEEK_ID=$(date -u '+%F')
+.venv/bin/python notifier.py --health-report --week-id "$WEEK_ID" --exit-code "$EXIT_CODE" >> "$LOG_FILE" 2>&1 || true
 echo "=================================================================" >> "$LOG_FILE"
+exit $EXIT_CODE

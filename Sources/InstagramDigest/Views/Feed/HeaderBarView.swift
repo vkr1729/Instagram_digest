@@ -9,6 +9,7 @@ public struct HeaderBarView: View {
     public let currentIndex: Int
     public let totalCount: Int
     public let bookmarkCount: Int
+    public let watchHoursText: String
     public var onTapGrid: () -> Void
     public var onTapOffline: () -> Void
     public var onTapBookmarks: () -> Void
@@ -17,6 +18,7 @@ public struct HeaderBarView: View {
         currentIndex: Int,
         totalCount: Int,
         bookmarkCount: Int,
+        watchHoursText: String = "0.0 hrs",
         onTapGrid: @escaping () -> Void = {},
         onTapOffline: @escaping () -> Void = {},
         onTapBookmarks: @escaping () -> Void = {}
@@ -24,6 +26,7 @@ public struct HeaderBarView: View {
         self.currentIndex = currentIndex
         self.totalCount = totalCount
         self.bookmarkCount = bookmarkCount
+        self.watchHoursText = watchHoursText
         self.onTapGrid = onTapGrid
         self.onTapOffline = onTapOffline
         self.onTapBookmarks = onTapBookmarks
@@ -40,8 +43,29 @@ public struct HeaderBarView: View {
 
             Spacer()
 
-            // 2. Action Controls Group (Grid, Download, Bookmarks)
+            // 2. Action Controls Group (Timer, Grid, Download, Bookmarks)
             HStack(spacing: 8) {
+                // Watch Timer Pill (⏱ X.X hrs)
+                HStack(spacing: 4) {
+                    Image(systemName: "stopwatch")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Color.white.opacity(0.85))
+                    Text(watchHoursText)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 32)
+                .background(Color.white.opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                )
+                .contentShape(Rectangle())
+                .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
+                .accessibilityIdentifier("WatchTimerPill")
                 // Grid View Button (⊞)
                 Button(action: onTapGrid) {
                     Image(systemName: "square.grid.3x3.fill")

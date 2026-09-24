@@ -85,6 +85,8 @@ def test_c1_viability_gate_aborts_run_without_touching_digest(tmp_path, monkeypa
         {"handle": "cara", "category": "food", "enabled": True},
     ])
     monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [])
 
     rc = main.run_full_sync(dry_run=True, deploy=False, days_back=7, limit_per_creator=15)
@@ -178,6 +180,8 @@ def test_c1_blocked_session_aborts_without_touching_digest(tmp_path, monkeypatch
         {"handle": "bob", "category": "finance", "enabled": True},
     ])
     monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
 
     def _blocked(**kw):
         raise InstagramBlocked("@alice: redirected to https://www.instagram.com/accounts/login/")
@@ -265,6 +269,8 @@ def test_c3_two_pass_cutoff_drops_old_and_unknown_dates(tmp_path, monkeypatch):
         {"handle": "alice", "category": "entertainment", "enabled": True, "name": "Alice"},
     ])
     monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [
         {"id": f"r{i}", "url": f"https://www.instagram.com/reel/r{i}/",
          "creator_handle": "alice", "caption": "", "view_count": 10000,
@@ -640,6 +646,8 @@ def test_c3_all_stale_enrichment_aborts_without_touching_digest(tmp_path, monkey
         {"handle": "alice", "category": "entertainment", "enabled": True, "name": "Alice"},
     ])
     monkeypatch.setattr(extractor, "InstagramSession", mock.MagicMock)
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [
         {"id": f"old{i}", "url": f"https://www.instagram.com/reel/old{i}/",
          "creator_handle": "alice", "caption": "", "view_count": 999999,

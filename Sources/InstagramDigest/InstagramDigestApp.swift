@@ -98,6 +98,7 @@ struct FeedMainView: View {
     @State private var errorMessage: String?
 
     @State private var activeIndex: Int = 0
+    @State private var watchSeconds: Double = 0
     @State private var selectedCategoryId: String = "all"
     @State private var lastScrollEndTime: TimeInterval = 0
     @State private var seekPreviewFraction: Double? = nil
@@ -258,6 +259,7 @@ struct FeedMainView: View {
                         currentIndex: activeIndex,
                         totalCount: pool.currentItems.count,
                         bookmarkCount: savedBookmarks.count,
+                        watchHoursText: String(format: "%.1f hrs", watchSeconds / 3600.0),
                         onTapGrid: {
                             wasPlayingBeforeSheet = pool.isPlaying
                             pool.pause()
@@ -357,8 +359,18 @@ struct FeedMainView: View {
                 isChromeVisible = !isPlaying
             }
         }
+        .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
+            guard pool.isPlaying, let weekID = manifest?.weekId else { return }
+            watchSeconds += 1.0
+            if Int(watchSeconds) % 5 == 0 {
+                UserDefaults.standard.set(watchSeconds, forKey: "watchSeconds_\(weekID)")
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
             saveLastActiveReel(index: activeIndex)
+            if let weekID = manifest?.weekId {
+                UserDefaults.standard.set(watchSeconds, forKey: "watchSeconds_\(weekID)")
+            }
         }
         .task {
             loadManifest()
@@ -419,6 +431,7 @@ struct FeedMainView: View {
                         UserDefaults.standard.removeObject(forKey: "lastActiveIndex_\(oldWeek)")
                         UserDefaults.standard.removeObject(forKey: "lastActiveReelID_global")
                         UserDefaults.standard.removeObject(forKey: "lastActiveIndex_global")
+                        UserDefaults.standard.removeObject(forKey: "watchSeconds_\(oldWeek)")
                         Task {
                             await MediaCacheManager.shared.purgeOldWeekDirectory(oldWeekID: oldWeek)
                         }
@@ -470,6 +483,7 @@ struct FeedMainView: View {
                 }
 
                 self.activeIndex = resumeIndex
+                self.watchSeconds = UserDefaults.standard.double(forKey: "watchSeconds_\(fetched.weekId)")
                 if !fetched.items.isEmpty {
                     self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: resumeIndex)
                     if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {

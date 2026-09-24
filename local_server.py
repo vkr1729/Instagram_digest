@@ -190,6 +190,134 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
     }
 
 
+def trigger_sync_resume_task(deploy: bool = True) -> dict[str, Any]:
+    """Launch a weekly sync resume thread continuing from shortfall_paused or interrupted checkpoint."""
+    import main as main_module
+
+    with _SYNC_LOCK:
+        if _SYNC_STATE["is_running"]:
+            return {
+                "success": True,
+                "status": "already_running",
+                "message": "Sync is already running in background.",
+                "sync_state": dict(_SYNC_STATE),
+                "last_run": main_module.get_last_run_info(),
+            }
+
+    cross_busy = _cross_process_pipeline_busy()
+    acquired = _PIPELINE_LOCK.acquire(blocking=False)
+    if not acquired or cross_busy:
+        if acquired:
+            try:
+                _PIPELINE_LOCK.release()
+            except RuntimeError:
+                pass
+        with _SYNC_LOCK:
+            snapshot = dict(_SYNC_STATE)
+        return {
+            "success": True,
+            "status": "already_running",
+            "message": "Another pipeline (sync or expand) is already running.",
+            "sync_state": snapshot,
+            "last_run": main_module.get_last_run_info(),
+        }
+
+    with _SYNC_LOCK:
+        _SYNC_STATE["is_running"] = True
+        _SYNC_STATE["status"] = "running"
+        _SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        _SYNC_STATE["last_error"] = None
+
+    def _worker():
+        try:
+            logger.info("Background resume sync thread started: refreshing Chrome cookies...")
+            if not refresh_cookies_or_abort(pipeline="weekly-sync-resume"):
+                with _SYNC_LOCK:
+                    _SYNC_STATE["is_running"] = False
+                    _SYNC_STATE["status"] = "failed"
+                    _SYNC_STATE["last_error"] = "cookie refresh failed; login session missing"
+                return
+
+            ret = main_module.run_full_sync(
+                dry_run=False,
+                deploy=deploy,
+                resume=True,
+            )
+            with _SYNC_LOCK:
+                _SYNC_STATE["is_running"] = False
+                _SYNC_STATE["status"] = "completed" if ret == 0 else "failed"
+                _SYNC_STATE["last_result"] = ret
+            if ret == 0:
+                clear_cookie_attention()
+        except Exception as exc:
+            logger.exception("Resume sync worker error: %s", exc)
+            with _SYNC_LOCK:
+                _SYNC_STATE["is_running"] = False
+                _SYNC_STATE["status"] = "failed"
+                _SYNC_STATE["last_error"] = str(exc)
+        finally:
+            try:
+                _PIPELINE_LOCK.release()
+            except RuntimeError:
+                pass
+
+    t = threading.Thread(target=_worker, name="ResumeSyncWorker", daemon=True)
+    t.start()
+    return {
+        "success": True,
+        "status": "running",
+        "message": "Weekly sync resumption launched in background.",
+        "started_at": _SYNC_STATE["started_at"],
+    }
+
+
+_RECOMMENDATIONS_LOCK = threading.Lock()
+_RECOMMENDATIONS_STATE: dict[str, Any] = {
+    "is_running": False,
+    "status": "idle",
+    "started_at": None,
+    "last_error": None,
+}
+
+
+def trigger_refresh_recommendations_task() -> dict[str, Any]:
+    """Launch background task to refresh creator recommendations via agy -p."""
+    import recommendations
+    with _RECOMMENDATIONS_LOCK:
+        if _RECOMMENDATIONS_STATE["is_running"]:
+            return {
+                "success": True,
+                "status": "already_running",
+                "message": "Recommendations refresh is already in progress.",
+            }
+        _RECOMMENDATIONS_STATE["is_running"] = True
+        _RECOMMENDATIONS_STATE["status"] = "running"
+        _RECOMMENDATIONS_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        _RECOMMENDATIONS_STATE["last_error"] = None
+
+    def _worker():
+        try:
+            logger.info("Background thread refreshing AI creator recommendations...")
+            recommendations.refresh_recommendations(force=True, timeout_per_category=600)
+            with _RECOMMENDATIONS_LOCK:
+                _RECOMMENDATIONS_STATE["is_running"] = False
+                _RECOMMENDATIONS_STATE["status"] = "completed"
+        except Exception as exc:
+            logger.exception("Error refreshing recommendations: %s", exc)
+            with _RECOMMENDATIONS_LOCK:
+                _RECOMMENDATIONS_STATE["is_running"] = False
+                _RECOMMENDATIONS_STATE["status"] = "failed"
+                _RECOMMENDATIONS_STATE["last_error"] = str(exc)
+
+    t = threading.Thread(target=_worker, name="RecommendationsWorker", daemon=True)
+    t.start()
+    return {
+        "success": True,
+        "status": "running",
+        "message": "Creator recommendations refresh launched in background.",
+    }
+
+
 _EXPAND_LOCK = threading.Lock()
 _EXPAND_STATE: dict[str, Any] = {
     "is_running": False,
@@ -201,6 +329,38 @@ _EXPAND_STATE: dict[str, Any] = {
 
 _FOLLOWING_LOCK = threading.Lock()
 _FOLLOWING_RUNNING = False
+
+# Last IG follow outcomes from dashboard "add channel" (handle -> result dict
+# from extractor.follow_creator). In-memory only; polled by channels.html via
+# GET /api/channels/follow-status?handle=h. Bounded so it cannot grow forever.
+_FOLLOW_LOCK = threading.Lock()
+_FOLLOW_RESULTS: dict[str, Any] = {}
+_FOLLOW_RESULTS_MAX = 500
+
+
+def _store_follow_result(handle: str, result: Any) -> None:
+    """Record a follow worker outcome, evicting oldest entries past the cap."""
+    if not isinstance(result, dict):
+        result = {"ok": False, "error": "internal"}
+    with _FOLLOW_LOCK:
+        _FOLLOW_RESULTS[handle] = result
+        while len(_FOLLOW_RESULTS) > _FOLLOW_RESULTS_MAX:
+            _FOLLOW_RESULTS.pop(next(iter(_FOLLOW_RESULTS)), None)
+
+
+def _launch_follow_worker(handle: str) -> None:
+    """Follow @handle on Instagram in a short background thread (never blocks POST)."""
+
+    def _worker() -> None:
+        try:
+            res = extractor.follow_creator(handle)
+        except Exception as exc:
+            logger.warning("Follow worker for @%s failed: %s", handle, exc)
+            res = {"ok": False, "error": str(exc) or "internal"}
+        _store_follow_result(handle, res)
+
+    t = threading.Thread(target=_worker, name=f"FollowWorker-{handle}", daemon=True)
+    t.start()
 
 _MAX_JSON_BODY = 4 * 1024 * 1024  # watched/bulk payloads are KBs; 4MB is generous
 
@@ -638,7 +798,7 @@ def resume_pipeline_state() -> dict[str, Any]:
             data = json.loads(prog.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if not isinstance(data, dict) or data.get("stage") not in ("extracting", "enriched", "ranked"):
+        if not isinstance(data, dict) or data.get("stage") not in ("extracting", "enriched", "ranked", "shortfall_paused", "cooling_down", "publishing"):
             continue
         try:
             updated = datetime.fromtimestamp(prog.stat().st_mtime, tz=timezone.utc).isoformat()
@@ -649,7 +809,7 @@ def resume_pipeline_state() -> dict[str, Any]:
             "stage": data["stage"],
             "updated_at": updated,
         }
-        if data["stage"] == "ranked":
+        if data["stage"] in ("ranked", "shortfall_paused", "publishing"):
             entry["banked"] = len([r for r in data.get("ranked", []) if isinstance(r, dict) and r.get("id")])
         elif data["stage"] == "enriched":
             entry["banked"] = len([r for r in data.get("enriched", []) if isinstance(r, dict) and r.get("id")])
@@ -1023,6 +1183,26 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API Recommended Creators route -> /api/recommended-creators
+        if clean_path in ("/api/recommended-creators", "/api/recommended-creators/"):
+            import recommendations
+            with _RECOMMENDATIONS_LOCK:
+                rec_state = dict(_RECOMMENDATIONS_STATE)
+            recs = recommendations.load_recommended_creators()
+            resp = {
+                "success": True,
+                "creators": recs,
+                "count": len(recs),
+                "refresh_state": rec_state,
+            }
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # API Expand status route -> /api/expand/status
         if clean_path in ("/api/expand/status", "/api/expand/status/"):
             with _EXPAND_LOCK:
@@ -1096,6 +1276,46 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
+        # API Route: /api/channels/follow-status?handle=h
+        if clean_path in ("/api/channels/follow-status", "/api/channels/follow-status/"):
+            query = parse_qs(parsed.query)
+            raw = (query.get("handle", [""])[0] or "").strip().lstrip("@").lower()
+            handle = extractor.clean_handle(raw)
+            if not handle:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing handle")
+                return
+            with _FOLLOW_LOCK:
+                result = _FOLLOW_RESULTS.get(handle)
+            resp_data = {
+                "success": True,
+                "handle": handle,
+                "status": "pending" if result is None else "done",
+                "result": result,
+            }
+            body = json.dumps(resp_data).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # API Route: /api/channels/audit (read-only reconciliation diff)
+        if clean_path in ("/api/channels/audit", "/api/channels/audit/"):
+            try:
+                import audit_channels
+                resp_data = {"success": True, **audit_channels.audit()}
+            except Exception as exc:
+                logger.warning("Channel audit failed: %s", exc)
+                resp_data = {"success": False, "error": str(exc)[:200]}
+            body = json.dumps(resp_data, ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # API Route: /api/channels
         if clean_path == "/api/channels":
             sources = []
@@ -1159,6 +1379,90 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/sync/resume", "/api/sync/resume/"):
+            logger.info("Weekly sync resume triggered via API.")
+            resp = trigger_sync_resume_task(deploy=True)
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/recommendations/refresh", "/api/recommendations/refresh/"):
+            logger.info("Creator recommendations refresh triggered via API.")
+            resp = trigger_refresh_recommendations_task()
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/channels/add", "/api/channels/add/"):
+            try:
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
+            handle = str(payload.get("handle") or "").strip().lstrip("@").lower()
+            if not handle:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing handle")
+                return
+            if not extractor.clean_handle(handle):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid handle")
+                return
+            name = str(payload.get("name") or handle).strip()
+            cat = str(payload.get("category") or "entertainment").strip()
+
+            with _STATE_LOCK:
+                sources = _load_json_tolerant(config.SOURCES_FILE, []) if config.SOURCES_FILE.exists() else []
+                b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
+                blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
+                if handle in blacklist:
+                    blacklist.remove(handle)
+                    b_data["creators"] = sorted(list(blacklist))
+                    try:
+                        _atomic_write_json(config.BLACKLIST_FILE, b_data)
+                    except Exception as e:
+                        logger.error("Error updating blacklist: %s", e)
+
+                existing = {s.get("handle", "").lower().replace("@", ""): s for s in sources if s.get("handle")}
+                if handle not in existing:
+                    sources.append({
+                        "handle": handle,
+                        "name": name,
+                        "category": cat,
+                        "enabled": True,
+                    })
+                    try:
+                        _atomic_write_json(config.SOURCES_FILE, sources)
+                        logger.info("Added recommended creator @%s to sources.json", handle)
+                    except Exception as e:
+                        logger.error("Error writing sources.json: %s", e)
+                else:
+                    existing[handle]["enabled"] = True
+                    try:
+                        _atomic_write_json(config.SOURCES_FILE, sources)
+                    except Exception:
+                        pass
+
+            resp = {"success": True, "handle": handle, "message": f"Added @{handle} to channels list", "total_sources": len(sources), "ig_follow": "pending"}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            # Follow on Instagram in the background; never block the response.
+            try:
+                _launch_follow_worker(handle)
+            except Exception as exc:
+                logger.warning("Could not launch follow worker for @%s: %s", handle, exc)
             return
 
         if parsed.path in ("/api/expand", "/api/expand/"):

@@ -264,12 +264,6 @@
     "enabled": true
   },
   {
-    "handle": "psychotherapybar",
-    "name": "Radhika Bapat",
-    "category": "health",
-    "enabled": true
-  },
-  {
     "handle": "raj.ganpath",
     "name": "Raj Ganpath",
     "category": "health",
@@ -303,12 +297,6 @@
     "handle": "sandeepdasauthor",
     "name": "Sandeep Das",
     "category": "niche",
-    "enabled": true
-  },
-  {
-    "handle": "satwikpedia",
-    "name": "Satvik Bhatia | Nutritionist | Health and mindset Coach",
-    "category": "health",
     "enabled": true
   },
   {
@@ -416,6 +404,18 @@
   {
     "handle": "tjpower",
     "name": "tjpower",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "ral.livezy",
+    "name": "ral.livezy",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "stories_by_srilok",
+    "name": "stories_by_srilok",
     "category": "entertainment",
     "enabled": true
   }

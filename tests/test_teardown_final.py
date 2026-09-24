@@ -84,6 +84,8 @@ def test_p1_1_dry_run_skips_site_compile(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(extractor, "load_sources", lambda: sources)
     monkeypatch.setattr(extractor, "InstagramSession", lambda: _FakeSession())
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(extractor, "human_pause", lambda **k: 0.0)
 
     def _fake_extract(*, handle, max_reels, days_back, fast_mode, session):
@@ -143,6 +145,8 @@ def test_p1_3_topup_drops_unplayables_and_maps_build(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(extractor, "load_sources", lambda: sources)
     monkeypatch.setattr(extractor, "InstagramSession", lambda: _FakeSession())
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     pauses = []
     monkeypatch.setattr(extractor, "human_pause", lambda **k: pauses.append(1) or 0.0)
     monkeypatch.setattr(
@@ -588,7 +592,13 @@ def test_p3_16_video_stat_guarded():
 
 
 def test_p3_17_dead_block_removed():
-    assert "zero playable reels" not in _src("main.py")
+    # The old dead "zero playable reels" log line was repurposed: the
+    # empty-save guard now aborts (rc 2) instead of clobbering the live
+    # digest, and parks everything in the upload outbox for --reconcile.
+    src = _src("main.py")
+    assert "Zero playable reels after upload phase" in src
+    assert "outbox holds" in src
+    assert "shortfall_paused" in src
 
 
 def test_p3_20_limit_help_is_honest():
@@ -777,6 +787,8 @@ def test_audit_p1_topup_drops_stale_backfill(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(extractor, "load_sources", lambda: sources)
     monkeypatch.setattr(extractor, "InstagramSession", lambda: _FakeSession())
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(extractor, "human_pause", lambda **k: 0.0)
     monkeypatch.setattr(
         extractor, "extract_single_reel_metadata",
@@ -833,6 +845,8 @@ def test_audit_p2_corrupt_candidates_cache_quarantined(tmp_path, monkeypatch):
         {"handle": "alice", "category": "entertainment", "enabled": True},
     ])
     monkeypatch.setattr(extractor, "InstagramSession", lambda: _FakeSession())
+    monkeypatch.setattr("recommendations.refresh_recommendations", lambda **kw: [])
+    monkeypatch.setattr("recommendations.load_recommended_creators", lambda: [])
     monkeypatch.setattr(extractor, "extract_creator_reels", lambda **kw: [])
     monkeypatch.setattr(extractor, "extract_single_reel_metadata", lambda r, session=None: r)
 

@@ -55,6 +55,10 @@ def test_adhoc_sync_since_timestamp_plumbing(monkeypatch):
 
     test_args = ["main.py", "--ad-hoc", "--dry-run"]
     monkeypatch.setattr("sys.argv", test_args)
+    # Dry runs skip the follow-cooldown guard; stub it regardless so the
+    # test pins the since_timestamp plumbing, not the guard.
+    monkeypatch.setattr(main, "_check_follow_cooldown", lambda force=False: True)
+    monkeypatch.setattr(main, "_trust_warming_active", lambda: False)
 
     ret = main.main()
     assert ret == 0
@@ -76,6 +80,8 @@ def test_adhoc_sync_fallback_when_no_previous_run(monkeypatch):
 
     test_args = ["main.py", "--ad-hoc", "--days-back", "5", "--dry-run"]
     monkeypatch.setattr("sys.argv", test_args)
+    monkeypatch.setattr(main, "_check_follow_cooldown", lambda force=False: True)
+    monkeypatch.setattr(main, "_trust_warming_active", lambda: False)
 
     ret = main.main()
     assert ret == 0

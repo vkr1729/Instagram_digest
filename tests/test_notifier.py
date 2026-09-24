@@ -117,3 +117,55 @@ def test_cookie_alert_email(monkeypatch):
         mock_smtp_instance.__enter__.return_value = mock_smtp_instance
         res = notifier.send_cookie_alert_email("http://localhost:8080/retrigger")
         assert res is True
+
+
+def test_health_report_message_structure(monkeypatch):
+    monkeypatch.setattr(config, "SMTP_USER", "bot@example.com")
+    monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "owner@example.com")
+    report = {
+        "week_id": "2026-09-19", "healthy": True, "exit_code": 0,
+        "run_summary": "sync ok", "digest_count": 250, "digest_target": 250,
+        "digest_ok": True, "r2_gb": "3.19", "quota_gb": "8", "r2_ok": True,
+        "pages_status": "HTTP 200", "pages_ok": True,
+        "session_status": "sessionid present", "session_ok": True,
+        "outbox_pending": 0, "resume_pending": "none", "notes": [],
+    }
+    msg = notifier.build_health_report_message(report)
+    assert "2026-09-19" in msg["Subject"]
+    payloads = [part.get_payload(decode=True).decode("utf-8") for part in msg.get_payload()]
+    assert "250 / 250" in payloads[1]
+    assert "All checks green" in payloads[1]
+
+
+def test_health_report_unhealthy_subject(monkeypatch):
+    monkeypatch.setattr(config, "SMTP_USER", "bot@example.com")
+    monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "owner@example.com")
+    report = {"week_id": "2026-09-19", "healthy": False, "digest_count": 100,
+              "digest_target": 250, "notes": ["shortfall"]}
+    msg = notifier.build_health_report_message(report)
+    assert msg["Subject"].startswith("⚠️")
+
+
+def test_collect_health_report_never_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "nope.json")
+    monkeypatch.setattr(config, "PAGES_BASE_URL", "http://127.0.0.1:9/")
+    report = notifier.collect_health_report(week_id="2026-09-19", exit_code=1)
+    assert report["healthy"] is False
+    assert report["digest_ok"] is False
+    assert report["pages_ok"] is False
+
+
+def test_send_health_report_unconfigured(monkeypatch):
+    monkeypatch.setattr(config, "SMTP_USER", "")
+    assert notifier.send_health_report_email({}) is False
+
+
+def test_send_health_report_success(monkeypatch):
+    monkeypatch.setattr(config, "SMTP_USER", "user@example.com")
+    monkeypatch.setattr(config, "SMTP_PASS", "secret")
+    monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "owner@example.com")
+    mock_smtp_instance = MagicMock()
+    with patch("smtplib.SMTP", return_value=mock_smtp_instance):
+        mock_smtp_instance.__enter__.return_value = mock_smtp_instance
+        assert notifier.send_health_report_email({"week_id": "w"}) is True
