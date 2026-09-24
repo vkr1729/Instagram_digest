@@ -124,10 +124,10 @@ public final class AVPlayerPool: ObservableObject {
     /// AVPlayer ignores play()/rate at end; only a seek to .zero restarts it.
     /// Without this, swiping back to a fully-watched reel strands it on the
     /// last frame (field bug: auto-advanced reel stays completed on return).
-    public static let endRestartThreshold: Double = 0.3
+    public nonisolated static let endRestartThreshold: Double = 0.3
 
     /// Pure helper: true when playback sits at/over the end and needs a restart.
-    public static func isAtEnd(currentTime: Double, duration: Double, threshold: Double = endRestartThreshold) -> Bool {
+    public nonisolated static func isAtEnd(currentTime: Double, duration: Double, threshold: Double = endRestartThreshold) -> Bool {
         guard currentTime.isFinite, duration.isFinite, duration > 0, threshold.isFinite else { return false }
         return currentTime >= duration - threshold
     }

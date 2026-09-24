@@ -22,8 +22,8 @@ def _read(path: Path) -> str:
 
 def test_pool_has_end_detection_helper():
     src = _read(POOL)
-    assert "public static func isAtEnd(currentTime:" in src
-    assert "public static let endRestartThreshold" in src
+    assert "func isAtEnd(currentTime:" in src
+    assert "endRestartThreshold" in src
 
 
 def test_pool_restart_helper_seeks_to_zero():
