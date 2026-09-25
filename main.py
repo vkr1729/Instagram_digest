@@ -120,6 +120,7 @@ def _pipeline_file_lock() -> Iterator[None]:
         yield
         return
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = False
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -132,6 +133,7 @@ def _pipeline_file_lock() -> Iterator[None]:
             raise PipelineBusy(
                 "another pipeline (sync/expand) holds data/.pipeline.lock" + detail
             )
+        acquired = True
         _write_lock_info()
         yield
     finally:
@@ -139,7 +141,10 @@ def _pipeline_file_lock() -> Iterator[None]:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except Exception:
             pass
-        _clear_lock_info()
+        # Only remove the sidecar we wrote: a failed contender must never
+        # unlink the live holder's attribution.
+        if acquired:
+            _clear_lock_info()
         os.close(fd)
 
 
@@ -809,6 +814,18 @@ def _run_full_sync(
             recommended_creators = recommendations.load_recommended_creators()
     else:
         recommended_creators = recommendations.load_recommended_creators()
+
+    # Use-site filter: DNR handles and 5x-ignored creators recorded after the
+    # set was written must not enter Tier 2 scraping (or the digest email).
+    # Frozen checkpoint sets are left untouched for resume consistency.
+    if not (sync_progress and sync_progress.get("recommended_creators")):
+        try:
+            _tier2_channels = {str(s.get("handle", "")).lower().replace("@", "")
+                               for s in active_sources if s.get("handle")}
+            recommended_creators = recommendations.finalize_recommendations(
+                recommended_creators, _tier2_channels)
+        except Exception as exc:
+            logger.debug("Recommendation finalize skipped: %s", exc)
 
     all_sources = list(active_sources)
     existing_handles = {s["handle"].lower().replace("@", "") for s in active_sources if "handle" in s}
@@ -1926,6 +1943,8 @@ def _run_full_sync(
                 external_count=ext_cnt,
                 top_reels=ranked_reels[:5],
                 site_url=config.PAGES_BASE_URL if deploy else None,
+                recommended=recommended_creators,
+                target=config.TOP_DIGEST_COUNT,
             )
         except Exception as exc:
             logger.warning("Failed to send refresh confirmation email: %s", exc)

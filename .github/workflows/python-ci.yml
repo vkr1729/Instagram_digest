@@ -1,0 +1,48 @@
+name: Python CI (pipeline, server, templates)
+
+# Covers everything the iOS workflow does not: the Python digest pipeline,
+# local server endpoints, dashboard/channel templates, and scripts.
+# Browser suites run headless Chromium; tests/e2e stays excluded
+# (needs live Instagram/network).
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: pytest (non-e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Install browsers (headless Chromium + ffmpeg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m playwright install --with-deps chromium
+
+      - name: Run test suite (excluding live-network e2e)
+        run: python -m pytest tests/ --ignore=tests/e2e -q
+
+      - name: Compile-check entry points and scripts
+        run: |
+          python -m py_compile main.py local_server.py recommendations.py notifier.py audit_channels.py extractor.py ranker.py site_builder.py storage_r2.py scripts/check_media_urls.py scripts/check_local_media.py

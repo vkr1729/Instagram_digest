@@ -169,3 +169,30 @@ def test_send_health_report_success(monkeypatch):
     with patch("smtplib.SMTP", return_value=mock_smtp_instance):
         mock_smtp_instance.__enter__.return_value = mock_smtp_instance
         assert notifier.send_health_report_email({"week_id": "w"}) is True
+
+
+def test_send_digest_email_forwards_recommended_and_target(monkeypatch):
+    """P0-1 wiring: the weekly send path must pass recommendations + target."""
+    import inspect
+    params = inspect.signature(notifier.send_digest_email).parameters
+    assert "recommended" in params and "target" in params
+    monkeypatch.setattr(config, "SMTP_USER", "bot@example.com")
+    monkeypatch.setattr(config, "SMTP_PASS", "pass")
+    monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "owner@example.com")
+    seen = {}
+
+    def _spy(**kwargs):
+        seen.update(kwargs)
+        import email.message
+        m = email.message.Message()
+        m["Subject"] = "x"
+        return m
+
+    monkeypatch.setattr(notifier, "build_email_message", _spy)
+    mock_smtp_instance = MagicMock()
+    with patch("smtplib.SMTP", return_value=mock_smtp_instance):
+        mock_smtp_instance.__enter__.return_value = mock_smtp_instance
+        recs = [{"handle": "a", "name": "A", "reason": "r"}]
+        assert notifier.send_digest_email(
+            "2026-09-20", count=10, recommended=recs, target=250) is True
+    assert seen["recommended"] == recs and seen["target"] == 250

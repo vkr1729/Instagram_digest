@@ -9,6 +9,7 @@ import logging
 import math
 import mimetypes
 import os
+import re
 import shutil
 import signal
 import threading
@@ -886,6 +887,14 @@ def _load_json_tolerant(path: Path, default: Any) -> Any:
         return default
 
 
+def _exp_count(exposures: Any, handle: str) -> int:
+    """Tolerant exposure lookup (corrupt values read as 0, never raise)."""
+    try:
+        return max(0, int((exposures or {}).get(handle, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class LocalDigestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler supporting partial video range streaming and on-demand sync API."""
     protocol_version = "HTTP/1.1"
@@ -1191,25 +1200,27 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             recs = recommendations.load_recommended_creators()
             channel_handles: list[str] = []
             dnr: set[str] = set()
+            filter_degraded = False
             try:
+                norm = recommendations.normalize_rec_handle
                 # Membership set so the dashboard renders "Added ✓" for
                 # channels instead of reverting to "+ Add to Channel List".
                 if config.SOURCES_FILE.exists():
                     srcs = _load_json_tolerant(config.SOURCES_FILE, [])
                     channel_handles = sorted({
-                        str(s.get("handle", "")).lower().replace("@", "")
-                        for s in srcs if isinstance(s, dict) and s.get("handle")
+                        norm(s.get("handle"))
+                        for s in srcs if isinstance(s, dict) and norm(s.get("handle"))
                     })
                 # Serve-time backstop: a rejection or a 5x-ignored handle must
                 # vanish even if the persisted set predates the feedback
                 # (the next refresh backfills the freed slots).
                 fb = recommendations.load_feedback()
-                dnr = {str(h).lower() for h in (fb.get("do_not_recommend") or [])}
+                dnr = {norm(h) for h in (fb.get("do_not_recommend") or [])} - {""}
                 exp = fb.get("exposures") or {}
                 channels = set(channel_handles)
                 for r in recs:
                     if isinstance(r, dict):
-                        h = str(r.get("handle", "")).lower()
+                        h = norm(r.get("handle"))
                         # Times suggested (>=1: served now). Explains repeats and
                         # the 5-strike retirement to the dashboard reader.
                         try:
@@ -1218,22 +1229,24 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                             r["times_suggested"] = 1
                 recs = [
                     r for r in recs if isinstance(r, dict) and (
-                        (str(r.get("handle", "")).lower() not in dnr)
+                        (norm(r.get("handle")) not in dnr)
                         and not (
-                            int(exp.get(str(r.get("handle", "")).lower(), 0) or 0)
+                            _exp_count(exp, norm(r.get("handle")))
                             >= recommendations.MAX_EXPOSURES
-                            and str(r.get("handle", "")).lower() not in channels
+                            and norm(r.get("handle")) not in channels
                         )
                     )
                 ]
             except Exception as exc:
                 logger.debug("Recommendation serve-time filter skipped: %s", exc)
+                filter_degraded = True
             resp = {
                 "success": True,
                 "creators": recs,
                 "count": len(recs),
                 "channel_handles": channel_handles,
                 "do_not_recommend_count": len(dnr),
+                "filter_degraded": filter_degraded,
                 "refresh_state": rec_state,
             }
             body = json.dumps(resp).encode("utf-8")
@@ -1306,6 +1319,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if clean_path in ("/api/category-progress", "/api/category-progress/"):
             query = parse_qs(parsed.query)
             week_id = (query.get("week_id", [""])[0] or "").strip()
+            # Containment: week_id reaches the filesystem, so only the
+            # YYYY-MM-DD digest shape is accepted (../../sources probing
+            # would otherwise escape DIGESTS_DIR).
+            if week_id and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_id):
+                week_id = ""
             digest_path = None
             try:
                 if week_id:
@@ -1402,21 +1420,18 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             return
 
         # API lock status -> /api/lock-status (who holds the pipeline lock).
-        # Reads main.py's holder sidecar directly (no main import: local_server
-        # must stay import-light). Stale sidecars read as free.
+        # Single source of truth lives in main.lock_holder_info (lazy import:
+        # main imports this module for --serve, so a top-level import would
+        # be circular). Stale sidecars read as free.
         if clean_path in ("/api/lock-status", "/api/lock-status/"):
             holder = None
             try:
-                info_path = config.DATA_DIR / ".pipeline.lock.info"
-                raw = json.loads(info_path.read_text(encoding="utf-8"))
-                pid = int((raw or {}).get("pid") or 0)
-                try:
-                    os.kill(pid, 0)
-                    holder = {"pid": pid,
-                              "started_at": str(raw.get("started_at") or "?"),
-                              "cmd": str(raw.get("cmd") or "?")}
-                except Exception:
-                    holder = None
+                import main as pipeline_main
+                raw_holder = pipeline_main.lock_holder_info()
+                if raw_holder:
+                    holder = {"pid": raw_holder.get("pid"),
+                              "started_at": str(raw_holder.get("started_at") or "?"),
+                              "cmd": str(raw_holder.get("cmd") or "?")}
             except Exception as exc:
                 logger.debug("Lock status probe failed: %s", exc)
             resp = {"success": True, "locked": holder is not None, "holder": holder}
@@ -1621,6 +1636,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             except ValueError as exc:
                 self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
                 return
+            # _read_json_body returns any JSON value: coerce non-objects so a
+            # non-dict body answers 400 instead of dying on .get (which drops
+            # the connection instead of the JSON error the dashboard renders).
+            if not isinstance(payload, dict):
+                payload = {}
             handle = str(payload.get("handle") or "").strip().lstrip("@").lower()
             if not handle:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Missing handle")
@@ -1628,9 +1648,14 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             if not extractor.clean_handle(handle):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid handle")
                 return
-            import recommendations
-            recommendations.add_do_not_recommend(handle)
-            pruned = recommendations.prune_recommended_cache({handle})
+            try:
+                import recommendations
+                recommendations.add_do_not_recommend(handle)
+                pruned = recommendations.prune_recommended_cache({handle})
+            except Exception as exc:
+                logger.error("Do-not-recommend failed for @%s: %s", handle, exc)
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not save preference")
+                return
             logger.info("Do-not-recommend @%s recorded (%d cached cards pruned).", handle, pruned)
             resp = {"success": True, "handle": handle, "pruned": pruned,
                     "message": f"Won't recommend @{handle} again"}
@@ -1648,6 +1673,8 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             except ValueError as exc:
                 self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
                 return
+            if not isinstance(payload, dict):
+                payload = {}
             handle = str(payload.get("handle") or "").strip().lstrip("@").lower()
             if not handle:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Missing handle")

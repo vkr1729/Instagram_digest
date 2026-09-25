@@ -42,7 +42,9 @@ def load_video_urls(digest_path: Path) -> list[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        for key in ("video_url", "r2_url", "url"):
+        # Prefer object-store media keys: the generic `url` is the Instagram
+        # permalink, which HEADs 200 even for dead media and would mask rot.
+        for key in ("r2_url", "video_url"):
             val = item.get(key)
             if isinstance(val, str) and val.startswith(("http://", "https://")):
                 urls.append(val)
@@ -95,9 +97,11 @@ def main(argv: list[str] | None = None) -> int:
 
     digest_path = Path(args.digest)
     if not digest_path.exists():
-        # Resolve the "latest" alias against data/digests/.
+        # Resolve the "latest" alias against the repo tree, not the CWD, so
+        # the script works from any working directory.
         if args.digest == "data/digests/latest.json":
-            cands = sorted(Path("data/digests").glob("*.json"))
+            repo_root = Path(__file__).resolve().parent.parent
+            cands = sorted((repo_root / "data" / "digests").glob("*.json"))
             if cands:
                 digest_path = cands[-1]
         if not digest_path.exists():
@@ -112,15 +116,18 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("No video URLs found in %s", digest_path)
         return 1
 
-    sample = deterministic_sample(urls, max(1, args.sample))
+    sample_n = max(1, min(int(args.sample), 100))
+    timeout = max(1, min(int(args.timeout), 120))
+    max_fail = min(1.0, max(0.0, float(args.max_fail_ratio)))
+    sample = deterministic_sample(urls, sample_n)
     logger.info("Probing %d of %d video URLs from %s ...", len(sample), len(urls), digest_path)
-    result = check_urls(sample, max(1, args.timeout))
+    result = check_urls(sample, timeout)
     logger.info("Reachable: %d, failed: %d", len(result["ok"]), len(result["failed"]))
     for url in result["failed"]:
         logger.warning("UNREACHABLE: %s", url)
     ratio = len(result["failed"]) / max(1, len(sample))
-    if ratio > args.max_fail_ratio:
-        logger.error("Failure ratio %.2f exceeds %.2f", ratio, args.max_fail_ratio)
+    if ratio > max_fail:
+        logger.error("Failure ratio %.2f exceeds %.2f", ratio, max_fail)
         return 2
     return 0
 

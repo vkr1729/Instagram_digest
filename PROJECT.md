@@ -1,18 +1,18 @@
-# Instagram Digest v5.0.0 — High-Signal Top 300 Reel Viewer & Rolling Retention
+# Instagram Digest v5.0.0 — High-Signal Top 250 Reel Viewer & Rolling Retention
 
 ## Outcome
-Curate a high-signal, finite weekly batch of the Top 300 Instagram reels across followed creators into a clean, mobile-first web viewer deployed to GitHub Pages and streamed via Cloudflare R2 (with an identical zero-bandwidth local desktop dashboard). Replaces Instagram's algorithmic addiction with a structured, high-efficiency media briefing that auto-advances at 1.25x speed, filters by 4 thematic buckets, and eliminates doom-scrolling.
+Curate a high-signal, finite weekly batch of the Top 250 Instagram reels across followed creators into a clean, mobile-first web viewer deployed to GitHub Pages and streamed via Cloudflare R2 (with an identical zero-bandwidth local desktop dashboard). Replaces Instagram's algorithmic addiction with a structured, high-efficiency media briefing that auto-advances at 1.25x speed, filters by 4 thematic buckets, and eliminates doom-scrolling.
 
 ## Scope
 - **Current module (v1.0 Core Pipeline):**
   1. **Source Ingestion & 30-Day Auto-Sync:** Extract followed accounts directly from your authenticated Chrome browser session (filtering out private personal accounts) with 30-day background refresh and an on-demand dashboard sync button.
-  2. **Fair-Share Viral Ranking:** Rank the weekly Top 300 using a creator-normalized viral velocity algorithm (guarantees ≥1 reel per active creator, caps max 4 per creator to prevent feed takeover).
-  3. **R2 Media Sync & 8-Day Rolling Purge:** Download Top 300 MP4s to local disk and upload to Cloudflare R2 free-tier object storage. Enforce a strict <5 GB pre-flight safety guard and automatically purge reels and site archives older than 8 days from both R2 and local storage.
+  2. **Fair-Share Viral Ranking:** Rank the weekly Top 250 using a creator-normalized viral velocity algorithm (guarantees ≥1 reel per active creator, caps max 4 per creator to prevent feed takeover).
+  3. **R2 Media Sync & 8-Day Rolling Purge:** Download Top 250 MP4s to local disk and upload to Cloudflare R2 free-tier object storage. Enforce a strict 8 GB pre-flight safety guard and automatically purge reels and site archives older than 8 days from both R2 and local storage.
   4. **Variant 1A Instagram-Styled Viewer (PWA & Desktop):**
      - **Clean Video Canvas:** Full-bleed 9:16 vertical video with zero intrusive rectangular boxes or floating plastic buttons obstructing the subject.
      - **Natural Text Scrim:** Subtle bottom-left soft dark gradient containing creator handle (`@handle • #01`) and clean 1-line expandable caption.
      - **Top App Header:** Instagram script logo, jump-to-reel, offline download, and week archive badge (plus +100/refresh/channels where available). Default 1.25x speed; no header speed pill.
-     - **5 Story Category Circles:** Gradient-ringed filter bubbles (`🔥 All Top 300`, `💻 Tech & AI`, `🏋️ Health & Wellness`, `🧠 Deep Explainer`, `🎨 Creative & Culture`).
+     - **5 Story Category Circles:** Gradient-ringed filter bubbles (`🔥 All Top 250`, `💻 Tech & AI`, `🏋️ Health & Wellness`, `🧠 Deep Explainer`, `🎨 Creative & Culture`).
      - **Hands-Free Playback:** Default **1.25x speed** with **0.5-second auto-advance** to the next unread reel upon completion.
      - **Anti-Doomscroll Watched State:** Watched videos saved in `localStorage` and hidden from the active playback sequence until all videos are completed ("You're all caught up! 🎉").
      - **MRT Snappiness:** 2-reel ahead in-memory DOM preloading (`preload="auto"`).
@@ -41,7 +41,7 @@ Curate a high-signal, finite weekly batch of the Top 300 Instagram reels across 
   - *Floating box overlay UI:* Rejected in favor of Variant 1A's clean native scrim.
 
 ## How it works
-`sources.json` (auto-synced from browser session) → `extractor.py` (yt-dlp reels & metadata) → `ranker.py` (fair-share viral scoring) → `storage_r2.py` (upload MP4s to R2 & purge >14d files) → `site_builder.py` (render `index.html` & push to `gh-pages`) → `main.py --serve` (local launcher).
+`sources.json` (auto-synced from browser session) → `extractor.py` (yt-dlp reels & metadata) → `ranker.py` (fair-share viral scoring) → `storage_r2.py` (upload MP4s to R2 & purge >8d files) → `site_builder.py` (render `index.html` & push to `gh-pages`) → `main.py --serve` (local launcher).
 
 ## File map
 | Path | What it contains | Why it exists / connects to |
@@ -50,8 +50,8 @@ Curate a high-signal, finite weekly batch of the Top 300 Instagram reels across 
 | `sources.json` | Curated list of Instagram accounts, handles, categories, and enabled toggles. | Input configuration for tracked creators. |
 | `config.py` | Central settings: paths, R2 bucket credentials, retention days, playback defaults. | Configuration hub reading from `.env`. |
 | `extractor.py` | Ingests reels via `yt-dlp` using Chrome session cookies; syncs followed accounts. | Ingestion layer; feeds candidates to ranker. |
-| `ranker.py` | Normalizes views by creator baseline, applies fair-share caps, outputs Top 300. | Selection intelligence; feeds Top 300 list. |
-| `storage_r2.py` | S3-compatible client for R2 upload, <5 GB quota check, and 8-day purge. | Media delivery engine with local fallback. |
+| `ranker.py` | Normalizes views by creator baseline, applies fair-share caps, outputs Top 250. | Selection intelligence; feeds Top 250 list. |
+| `storage_r2.py` | S3-compatible client for R2 upload, 8 GB quota check, and 8-day purge. | Media delivery engine with local fallback. |
 | `site_builder.py` | Compiles `templates/viewer.html` into static `index.html` and deploys to `gh-pages`. | Static presentation and deployment runner. |
 | `templates/viewer.html` | Variant 1A clean Instagram-styled PWA with story bucket circles, 1.25x speed, 0.5s auto-advance, read tracking. | UI presentation layer. |
 | `local_server.py` | Lightweight local HTTP server supporting local disk video streaming and on-demand sync. | Local dashboard backend. |
@@ -62,7 +62,7 @@ Curate a high-signal, finite weekly batch of the Top 300 Instagram reels across 
 1. **Scraping, Following Sync & Ranking Core (`extractor.py`, `ranker.py`, `sources.json`):**
    Implement `yt-dlp` session cookie extraction, Instagram following auto-sync with private-account filtering, and fair-share viral multiplier ranking.
 2. **Storage & Purge Engine (`storage_r2.py`, `config.py`):**
-   Implement S3-compatible client targeting Cloudflare R2 for uploading MP4s, quota safety check (<5 GB), and 8-day rolling retention purge across remote R2 and local directories.
+   Implement S3-compatible client targeting Cloudflare R2 for uploading MP4s, quota safety check (8 GB), and 8-day rolling retention purge across remote R2 and local directories.
 3. **Variant 1A Clean Viewer, Local Server & Launcher (`site_builder.py`, `templates/viewer.html`, `local_server.py`, `install_launcher.sh`):**
    Build the clean responsive PWA template (story buckets, 1.25x default speed, 0.5s auto-advance, watched state, 2-reel preloading), local server, desktop launcher, and GitHub Pages deployer.
 

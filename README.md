@@ -37,7 +37,7 @@
 Mainstream social media algorithms are engineered for **infinite retention** — optimizing for time-on-screen rather than signal. Users open an app to check one creator and emerge 45 minutes later trapped in an algorithmic rabbit hole of low-value dopamine loops.
 
 **Instagram Digest inverts this model:**
-1. **Finite Batches:** Delivers a curated, fixed weekly digest of top reels (default: 300) from creators you specifically respect, supplemented by high-engagement external discovery.
+1. **Finite Batches:** Delivers a curated, fixed weekly digest of top reels (default: 250) from creators you specifically respect, supplemented by high-engagement external discovery.
 2. **Strict Watched Tracking:** Reels are automatically marked as watched in client-side storage as you advance. Unwatched items are prioritized; previously watched reels are dimmed.
 3. **Celebratory Finish:** Once you watch all reels, you are presented with a celebratory *"You're All Caught Up! 🎉"* screen — no endless pagination, no algorithmically inserted filler.
 4. **Mindful Pace:** A configurable daily check-in counter (e.g. 50 reels/day target) provides a gentle pause to maintain deliberate media consumption.
@@ -47,7 +47,7 @@ Mainstream social media algorithms are engineered for **infinite retention** —
 ## ✨ Key Features
 
 ### 1. Intentional Curation & Anti-Doomscroll Engine
-* **Configurable Weekly Target:** Extracts and ranks a finite batch of the highest-signal reels (default 300 via `TOP_DIGEST_COUNT`), with on-demand `--expand` capability.
+* **Configurable Weekly Target:** Extracts and ranks a finite batch of the highest-signal reels (default 250 via `TOP_DIGEST_COUNT`), with on-demand `--expand` capability.
 * **Persistent Watched History:** Tracks watched reel IDs in browser `localStorage` and syncs dual-layer progress to local desktop servers. Departed reels are marked immediately upon swiping.
 * **All Caught Up Screen:** An explicit end-of-feed milestone celebration preventing unconscious looping.
 * **Daily Mindful Check-in:** Soft check-in reminder upon reaching your daily target (e.g., 50 reels) with quick *"Take a Break"* or *"Continue"* options.
@@ -63,9 +63,9 @@ Mainstream social media algorithms are engineered for **infinite retention** —
   - **Tap Unmute:** Persistent global audio state across reels.
 
 ### 3. 3-Column Visual Grid View
-* **Fast Visual Browsing:** Tap `⊞` in the header (or press `V` on desktop) to open a high-density 3-column explore grid of all 300 reels.
-* **Real-Time Instant Search:** Filter across all 300 reels in real time by creator handle, caption keywords, or rank numbers.
-* **Horizontal Category Chips:** One-tap filtering across categories: `All (300)`, `🎬 Entertain`, `💰 Finance`, `💻 Tech`, `🧠 Niche`, `🏋️ Health`, `🥗 Food`.
+* **Fast Visual Browsing:** Tap `⊞` in the header (or press `V` on desktop) to open a high-density 3-column explore grid of all 250 reels.
+* **Real-Time Instant Search:** Filter across all 250 reels in real time by creator handle, caption keywords, or rank numbers.
+* **Horizontal Category Chips:** One-tap filtering across categories: `All (250)`, `🎬 Entertain`, `💰 Finance`, `💻 Tech`, `🧠 Niche`, `🏋️ Health`, `🥗 Food`.
 * **Visual Status Hierarchy:**
   - Unwatched reels display full-opacity posters and rank badges (`#01`).
   - Watched reels are dimmed with a glowing green checkmark badge (`✓`).
@@ -94,7 +94,7 @@ Mainstream social media algorithms are engineered for **infinite retention** —
 * **Read-Only Guest Mode:** Shared links or guest devices without the Owner Key can view the digest but cannot modify bookmarks or trigger cloud sync.
 
 ### 7. Offline PWA & RFC 7233 Range Slicing
-* **Full Offline Mode:** One-tap download button (`📥`) caches all 300 videos to local device storage for flights and travel.
+* **Full Offline Mode:** One-tap download button (`📥`) caches all 250 videos to local device storage for flights and travel.
 * **Rolling Cache Window:** Automatically keeps a rolling window of adjacent videos (prev 5 + next 20) pre-cached in the background during playback.
 * **RFC 7233 Range Slicing:** Custom Service Worker (`sw.js`) serves cached MP4s as proper HTTP 206 partial content ranges, supporting smooth seeking and pause/resume on mobile WebKit (iOS Safari).
 
@@ -136,7 +136,7 @@ flowchart TD
     end
 
     subgraph Storage ["2. Zero-Egress Cloudflare Storage"]
-        D -->|Upload Top 300 MP4s| E[(Cloudflare R2 Bucket)]
+        D -->|Upload Top 250 MP4s| E[(Cloudflare R2 Bucket)]
     end
 
     subgraph Hosting ["3. Static PWA Compilation & Deploy"]
@@ -287,7 +287,7 @@ BOOKMARK_API_BASE=https://ig-digest-api.<your-subdomain>.workers.dev
 # ==============================================================================
 # Digest Settings
 # ==============================================================================
-TOP_DIGEST_COUNT=300
+TOP_DIGEST_COUNT=250
 MAX_PER_CREATOR=4
 RETENTION_WEEKS=1
 DEFAULT_PLAYBACK_SPEED=1.0
@@ -366,7 +366,7 @@ If you wish to bookmark reels from your phone, link your device:
 | `ArrowDown` / `J` | **Next Reel** | Advances to next reel in active category |
 | `ArrowUp` / `K` | **Previous Reel** | Returns to previous reel |
 | `V` | **Toggle Grid View** | Opens / closes 3-column explore grid |
-| `G` | **Jump to Reel** | Opens jump dialog to enter reel number (1–300) |
+| `G` | **Jump to Reel** | Opens jump dialog to enter reel number (1–250) |
 | `F` | **Fullscreen** | Toggles native browser fullscreen |
 | `B` | **Block Creator** | Unsubscribes and blocks creator from future digests |
 | `Escape` | **Close Overlays** | Closes Grid View, Bookmarks overlay, or modals |
@@ -388,7 +388,7 @@ All settings can be customized in `.env` or passed as environment variables:
 | `PAGES_BASE_URL` | `""` | Public GitHub Pages root URL |
 | `VIEWING_PIN` | `""` | 4-digit PIN for client-side viewer authentication |
 | `BOOKMARK_API_BASE` | `""` | HTTP URL for Cloudflare Worker Bookmarks API |
-| `TOP_DIGEST_COUNT` | `300` | Target number of top reels in each digest |
+| `TOP_DIGEST_COUNT` | `250` | Target number of top reels in each digest |
 | `MAX_PER_CREATOR` | `4` | Maximum reels allowed per creator (fairness cap) |
 | `RETENTION_WEEKS` | `1` | Weeks of historical digests to retain in storage |
 | `DEFAULT_PLAYBACK_SPEED` | `1.0` | Default video playback rate |
@@ -421,6 +421,13 @@ All settings can be customized in `.env` or passed as environment variables:
 * **Run Automated Test Suite:**
   ```bash
   .venv/bin/pytest tests/ -v
+  ```
+* **Manual-only maintenance checks** (report-only, never scheduled — run by hand when investigating):
+  ```bash
+  python scripts/check_media_urls.py --sample 10        # probe R2 video URL health
+  python scripts/check_local_media.py --sample 20       # ffprobe spot-check of videos/
+  python audit_channels.py --hygiene                   # sources.json handle hygiene
+  python main.py --lock-status                          # who holds the pipeline lock
   ```
 
 ---

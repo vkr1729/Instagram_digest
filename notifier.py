@@ -359,6 +359,8 @@ def send_digest_email(
     external_count: int | None = None,
     top_reels: list[dict[str, Any]] | None = None,
     site_url: str | None = None,
+    recommended: list[dict[str, Any]] | None = None,
+    target: int | None = None,
 ) -> bool:
     """Send an email confirmation that the weekly feed refresh is complete."""
     if not is_email_configured():
@@ -374,6 +376,8 @@ def send_digest_email(
             external_count=external_count,
             top_reels=top_reels,
             site_url=site_url,
+            recommended=recommended,
+            target=target,
         )
 
         with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=25) as server:
@@ -556,10 +560,12 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
             except Exception:
                 pass
         report["outbox_pending"] = pending
+        report["outbox_status"] = "none" if pending == 0 else f"{pending} reels parked"
         if pending:
             report["notes"].append(f"{pending} reels parked in upload outbox; run --reconcile.")
     except Exception:
         report["outbox_pending"] = "?"
+        report["outbox_status"] = "unreadable"
     try:
         import config as _cfg7
         syncs = sorted(_Path(_cfg7.DATA_DIR).glob("sync_progress_*.json"))
@@ -577,26 +583,35 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
         exp = fb.get("exposures") or {}
         retired = sum(1 for _h, _c in exp.items()
                       if isinstance(_c, int) and _c >= _recs.MAX_EXPOSURES)
-        served, stale = 0, False
+        served, stale, cache_known = 0, False, False
         try:
             raw = _json.loads((_recs.get_recommended_file()).read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 served = len(raw.get("creators", []))
                 stale = bool(raw.get("recommendations_stale", False))
+                cache_known = True
+            elif isinstance(raw, list):
+                served = len(raw)
+                cache_known = True
         except Exception:
             pass
-        report["recs_status"] = (f"{served} served · {len(dnr)} muted · "
-                                 f"{retired} retired" + (" · STALE" if stale else ""))
-        report["recs_ok"] = not stale
-        if stale:
-            report["notes"].append("Recommendations cache is stale; refresh from the dashboard.")
+        if not cache_known:
+            report["recs_status"] = "none yet"
+            report["recs_ok"] = True
+        else:
+            report["recs_status"] = (f"{served} served · {len(dnr)} muted · "
+                                     f"{retired} retired" + (" · STALE" if stale else ""))
+            report["recs_ok"] = not stale
+            if stale:
+                report["notes"].append("Recommendations cache is stale; refresh from the dashboard.")
     except Exception as exc:
         report["recs_ok"] = False
         report["recs_status"] = "unreadable"
         report["notes"].append(f"Recommendations feedback unreadable: {exc}")
     report["healthy"] = bool(report.get("digest_ok") and report.get("r2_ok")
                               and report.get("pages_ok") and report.get("session_ok")
-                              and report.get("outbox_pending") == 0)
+                              and report.get("outbox_pending") == 0
+                              and report.get("recs_ok", True))
     return report
 
 

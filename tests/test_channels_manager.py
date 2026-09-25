@@ -59,6 +59,7 @@ def test_channel_manager_api_routes(tmp_path, monkeypatch):
 
 def test_channel_manager_page_live():
     """Verify GET /channels returns 200 and loads channel rows via Playwright."""
+    import re
     import socket
     import threading
     from http.server import ThreadingHTTPServer
@@ -70,12 +71,14 @@ def test_channel_manager_page_live():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind(("127.0.0.1", port))
-        sock.close()
-        server = ThreadingHTTPServer(("127.0.0.1", port), local_server.LocalDigestHandler)
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
     except OSError:
+        pytest.skip("port 8080 already in use (local dashboard running)")
+    finally:
         sock.close()
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), local_server.LocalDigestHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
 
     try:
         with sync_playwright() as p:
@@ -89,14 +92,19 @@ def test_channel_manager_page_live():
             rows = page.locator(".channel-row")
             assert rows.count() > 0
 
-            # Test search filter
+            # Test search filter with a handle taken from the live rows
+            # (never a hardcoded handle: repo data changes over time).
+            first_text = rows.first.inner_text()
+            m = re.search(r"@([A-Za-z0-9._]{2,30})", first_text)
+            assert m, "first channel row must contain a handle"
+            term = m.group(1)
             search_input = page.locator("#searchInput")
-            search_input.fill("mkbhd")
+            search_input.fill(term)
             page.wait_for_timeout(200)
 
             filtered_rows = page.locator(".channel-row")
             assert filtered_rows.count() >= 1
-            assert "mkbhd" in filtered_rows.first.inner_text().lower()
+            assert term.lower() in filtered_rows.first.inner_text().lower()
 
             browser.close()
     finally:

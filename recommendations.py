@@ -25,9 +25,10 @@ import shutil
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import atomic_io
 import config
@@ -47,7 +48,54 @@ KEEP_PER_CATEGORY = 10
 #: Cap per feedback list inside the AI prompt (token bound).
 PROMPT_LIST_CAP = 30
 
-_FEEDBACK_LOCK = threading.Lock()
+_FEEDBACK_LOCK = threading.RLock()
+_feedback_depth = threading.local()
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    _fcntl = None
+
+
+@contextmanager
+def _feedback_file_lock() -> Iterator[None]:
+    """Cross-process guard for feedback/cache read-modify-writes.
+
+    The threading lock serializes dashboard request threads, but the weekly
+    pipeline (separate cron/CLI process) mutates the same files. flock makes
+    the read-modify-write one atomic unit so a DNR click landing mid-refresh
+    can neither be lost nor clobber the fresh set. Blocking is fine: every
+    critical section is milliseconds of local JSON I/O. Reentrant: helpers
+    like record_exposures may run inside an outer guarded block (a second
+    flock on another fd would self-deadlock, so nested entries reuse it).
+    """
+    with _FEEDBACK_LOCK:
+        depth = getattr(_feedback_depth, "value", 0)
+        if _fcntl is None or depth > 0:
+            _feedback_depth.value = depth + 1
+            try:
+                yield
+            finally:
+                _feedback_depth.value = depth
+            return
+        lock_path = config.DATA_DIR / ".feedback.lock"
+        try:
+            config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            yield
+            return
+        _feedback_depth.value = depth + 1
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            yield
+        finally:
+            _feedback_depth.value = depth
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+            except Exception:
+                pass
+            os.close(fd)
 
 
 def get_recommended_file() -> Path:
@@ -124,7 +172,7 @@ def save_feedback(feedback: dict[str, Any]) -> None:
 
 def record_exposures(handles: list[str]) -> dict[str, int]:
     """Count one recommendation event per handle; returns the updated map."""
-    with _FEEDBACK_LOCK:
+    with _feedback_file_lock():
         fb = load_feedback()
         exposures = {str(k): int(v) for k, v in fb.get("exposures", {}).items()}
         for h in handles:
@@ -141,7 +189,7 @@ def add_do_not_recommend(handle: str) -> bool:
     nh = normalize_rec_handle(handle)
     if not nh:
         return False
-    with _FEEDBACK_LOCK:
+    with _feedback_file_lock():
         fb = load_feedback()
         dnr = {normalize_rec_handle(h) for h in fb.get("do_not_recommend", [])}
         if nh in dnr:
@@ -157,7 +205,7 @@ def clear_do_not_recommend(handle: str) -> bool:
     nh = normalize_rec_handle(handle)
     if not nh:
         return False
-    with _FEEDBACK_LOCK:
+    with _feedback_file_lock():
         fb = load_feedback()
         dnr = {normalize_rec_handle(h) for h in fb.get("do_not_recommend", [])}
         if nh not in dnr:
@@ -174,31 +222,66 @@ def prune_recommended_cache(handles: set[str]) -> int:
     unwanted = {normalize_rec_handle(h) for h in handles if normalize_rec_handle(h)}
     if not unwanted:
         return 0
-    rec_file = get_recommended_file()
-    if not rec_file.exists():
-        return 0
-    try:
-        raw = json.loads(rec_file.read_text(encoding="utf-8"))
-    except Exception:
-        return 0
-    if isinstance(raw, dict):
-        creators = raw.get("creators", [])
-    elif isinstance(raw, list):
-        creators, raw = raw, None
-    else:
-        return 0
-    kept = [c for c in creators
-            if normalize_rec_handle(c.get("handle") if isinstance(c, dict) else None) not in unwanted]
-    removed = len(creators) - len(kept)
-    if removed and raw is not None:
-        raw["creators"] = kept
-        raw["total_count"] = len(kept)
+    with _feedback_file_lock():
+        rec_file = get_recommended_file()
+        if not rec_file.exists():
+            return 0
         try:
-            atomic_io.durable_write_json(rec_file, raw)
+            raw = json.loads(rec_file.read_text(encoding="utf-8"))
+        except Exception:
+            return 0
+        is_list_shape = isinstance(raw, list)
+        creators = raw if is_list_shape else raw.get("creators", []) if isinstance(raw, dict) else None
+        if not isinstance(creators, list):
+            return 0
+        kept = [c for c in creators
+                if normalize_rec_handle(c.get("handle") if isinstance(c, dict) else None) not in unwanted]
+        removed = len(creators) - len(kept)
+        if not removed:
+            return 0
+        try:
+            if is_list_shape:
+                atomic_io.durable_write_json(rec_file, kept)
+            else:
+                raw["creators"] = kept
+                raw["total_count"] = len(kept)
+                atomic_io.durable_write_json(rec_file, raw)
         except Exception as exc:
             logger.warning("Could not prune recommended cache: %s", exc)
             return 0
-    return removed
+        return removed
+
+
+def finalize_recommendations(
+    recs: list[dict[str, Any]],
+    channel_handles: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Use-site filter for already-cached sets (cache-hit, auth-failure
+    fallback, pipeline fallbacks): drop DNR handles and 5x-ignored creators
+    that were recorded after the set was written. No exposure changes, no
+    trimming — idempotent and safe to apply on every load path."""
+    try:
+        fb = load_feedback()
+    except Exception:
+        return recs
+    dnr = {normalize_rec_handle(h) for h in (fb.get("do_not_recommend") or [])}
+    exposures = fb.get("exposures") or {}
+    channels = {normalize_rec_handle(h) for h in (channel_handles or [])}
+    clean: list[dict[str, Any]] = []
+    for r in recs:
+        if not isinstance(r, dict):
+            continue
+        h = normalize_rec_handle(r.get("handle"))
+        if not h or h in dnr:
+            continue
+        try:
+            strikes = int(exposures.get(h, 0) or 0)
+        except (TypeError, ValueError):
+            strikes = 0
+        if strikes >= MAX_EXPOSURES and h not in channels:
+            continue
+        clean.append(r)
+    return clean
 
 
 def apply_exclusions(
@@ -352,7 +435,7 @@ def sanitize_and_validate_recommendations(
     for item in data:
         if not isinstance(item, dict):
             continue
-        raw_handle = str(item.get("handle") or "").strip().lstrip("@").lower()
+        raw_handle = normalize_rec_handle(item.get("handle"))
         if not raw_handle or not VALID_HANDLE_PATTERN.match(raw_handle):
             continue
         if raw_handle in existing_handles or raw_handle in seen_handles:
@@ -419,7 +502,11 @@ def discover_category_creators(
         if res.returncode != 0:
             logger.warning("agy -p error for category %s (code %d): %s", category, res.returncode, res.stderr.strip()[:250])
             return []
-        return sanitize_and_validate_recommendations(res.stdout, category, existing_handles)
+        # Over-request headroom: exclusions consume candidates, the refresh
+        # trims each category back to KEEP_PER_CATEGORY, so freed slots refill
+        # instead of shrinking the set.
+        return sanitize_and_validate_recommendations(
+            res.stdout, category, existing_handles, limit=REQUEST_PER_CATEGORY)
     except subprocess.TimeoutExpired:
         logger.warning("agy -p timed out after %ds for category %s", timeout_secs, category)
         return []
@@ -444,6 +531,18 @@ def load_recommended_creators() -> list[dict[str, Any]]:
     return []
 
 
+def _load_channel_handles() -> set[str]:
+    """Channel handles from sources.json via the canonical normalizer."""
+    try:
+        if config.SOURCES_FILE.exists():
+            sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+            return {normalize_rec_handle(s.get("handle"))
+                    for s in sources if isinstance(s, dict)} - {""}
+    except Exception:
+        pass
+    return set()
+
+
 def refresh_recommendations(force: bool = False, timeout_per_category: int = 600) -> list[dict[str, Any]]:
     """Refresh recommendations across all categories using agy -p."""
     logger.info("Starting AI creator recommendations refresh (force=%s)...", force)
@@ -465,7 +564,8 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
                     if age_seconds < 6 * 86400:
                         logger.info("Using cached recommended creators (%d creators, age %.1f hours)",
                                     len(cached_creators), age_seconds / 3600.0)
-                        return cached_creators
+                        # DNR/retirements recorded after the cache write still apply.
+                        return finalize_recommendations(cached_creators, _load_channel_handles())
         except Exception as read_err:
             logger.debug("Error checking existing recommendations cache: %s", read_err)
 
@@ -477,7 +577,7 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
         except Exception:
             sources = []
 
-    existing_handles = {s.get("handle", "").lower().lstrip("@") for s in sources if s.get("handle")}
+    existing_handles = {normalize_rec_handle(s.get("handle")) for s in sources} - {""}
 
     # 1b. Feedback exclusions + steering: do-not-recommend is a hard never;
     # creators suggested MAX_EXPOSURES times without being added retire and
@@ -499,7 +599,7 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
     by_category: dict[str, list[str]] = {}
     for s in sources:
         cat = s.get("category", "entertainment")
-        h = s.get("handle", "").lower().lstrip("@")
+        h = normalize_rec_handle(s.get("handle"))
         if h:
             by_category.setdefault(cat, []).append(h)
 
@@ -522,7 +622,7 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
                 })
             except Exception:
                 pass
-        return cached
+        return finalize_recommendations(cached, existing_handles)
 
     # 3. Discover category by category (parallel: 2 workers halves the
     # ~24min serial wall-clock; each agy call is network-bound on the LLM
@@ -550,7 +650,7 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
         if recs:
             successful_categories += 1
             with _rec_lock:
-                fresh = apply_exclusions(recs, all_seen, hard_exclude)
+                fresh = apply_exclusions(recs, all_seen, hard_exclude)[:KEEP_PER_CATEGORY]
                 for r in fresh:
                     new_recommendations.append(r)
                     all_seen.add(r["handle"])
@@ -568,10 +668,11 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
             "total_count": len(new_recommendations),
             "creators": new_recommendations,
         }
-        atomic_io.durable_write_json(rec_file, payload)
-        # One exposure per served creator: the 5th unanswered suggestion
-        # retires the handle (see hard_exclude above).
-        record_exposures([r["handle"] for r in new_recommendations])
+        with _feedback_file_lock():
+            atomic_io.durable_write_json(rec_file, payload)
+            # One exposure per served creator: the 5th unanswered suggestion
+            # retires the handle (see hard_exclude above).
+            record_exposures([r["handle"] for r in new_recommendations])
         logger.info("Successfully refreshed %d recommended creators across %d categories.",
                     len(new_recommendations), successful_categories)
         return new_recommendations
@@ -597,7 +698,7 @@ def refresh_recommendations(force: bool = False, timeout_per_category: int = 600
                     atomic_io.durable_write_json(rec_file, raw)
             except Exception:
                 pass
-        return cached
+        return finalize_recommendations(cached, existing_handles)
 
 
 if __name__ == "__main__":

@@ -876,7 +876,7 @@
       const resultText = document.getElementById('auditResultText');
       const quietBtn = document.getElementById('quietBulkBtn');
       if (btn) btn.disabled = true;
-      if (quietBtn) quietBtn.style.display = 'none';
+      if (quietBtn) { quietBtn.style.display = 'none'; quietBtn.disabled = false; }
       window._quietHandles = [];
       if (badge) {
         badge.textContent = 'Checking…';
@@ -901,9 +901,11 @@
             const inactive = data.inactive_creators || [];
             if (inactive.length) bits.push('inactive: ' + inactive.slice(0, 5).map(e => '@' + e.handle).join(', ') + (inactive.length > 5 ? ' (+' + (inactive.length - 5) + ' more)' : ''));
             if (inactive.length && quietBtn) {
-              window._quietHandles = inactive.map(e => e.handle);
-              quietBtn.querySelector('span').textContent = 'Unselect quiet (' + inactive.length + ')';
-              quietBtn.style.display = 'inline-flex';
+              window._quietHandles = inactive.map(e => e.handle).filter(Boolean);
+              if (window._quietHandles.length) {
+                quietBtn.querySelector('span').textContent = 'Unselect quiet (' + window._quietHandles.length + ')';
+                quietBtn.style.display = 'inline-flex';
+              }
             }
             resultText.textContent = bits.join(' · ') + '. Run `python audit_channels.py --import-missing` to import, or add from the ＋ form above.';
           }
@@ -920,7 +922,12 @@
     async function unselectQuietChannels() {
       const handles = window._quietHandles || [];
       if (!handles.length) return;
-      if (!window.confirm('Unselect ' + handles.length + ' quiet channels (zero reels in recent digests)? You can restore them anytime.')) return;
+      const quietBtn = document.getElementById('quietBulkBtn');
+      if (quietBtn) quietBtn.disabled = true;
+      if (!window.confirm('Unselect ' + handles.length + ' quiet channels (zero reels in recent digests)? You can restore them anytime.')) {
+        if (quietBtn) quietBtn.disabled = false;
+        return;
+      }
       try {
         const res = await fetch('/api/channels/bulk-unselect', {
           method: 'POST',
@@ -935,9 +942,11 @@
           loadChannels();
         } else {
           showToast('Unselect failed: ' + (data.error || 'unknown error'));
+          if (quietBtn) quietBtn.disabled = false;
         }
       } catch (e) {
         showToast('Operation failed');
+        if (quietBtn) quietBtn.disabled = false;
       }
     }
 

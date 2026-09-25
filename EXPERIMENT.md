@@ -30,9 +30,12 @@ discipline (no speculative frameworks). iOS changes avoided (no device farm here
 
 ## Round 1 — implementation log
 
-- F1: `audit_channels.py --yield` + `--yield-window N` (+ tests).
+- F1: one-click quiet bulk-unselect in channels.html reusing `inactive_creators()`
+  (`--inactive-weeks N`) + the bulk-unselect endpoint (+ tests).
 - F2: `GET /api/storage` + dashboard widget (+ tests).
-- F3: notifier recommended section (+ tests).
+- F3: notifier recommended section (+ tests). Production-wired: `send_digest_email`
+  forwards `recommended=`/`target=` and the weekly pipeline passes the
+  finalized set + `TOP_DIGEST_COUNT` (review fix).
 - F4: `scripts/check_media_urls.py` (+ tests).
 - F5: `GET /api/category-progress` (+ dashboard strip + tests).
 - F6: `audit_channels.py --hygiene [--fix]` (+ tests).
@@ -46,9 +49,9 @@ discipline (no speculative frameworks). iOS changes avoided (no device farm here
     rows (D1/worker only). → REJECT (no local source of truth)
 13. **Expand auto-suggest on shortfall** — after sync, if digest < target, dashboard
     banner suggests `+N` expand with precomputed N. FIT: medium-high, tiny. → IMPLEMENT (F8)
-14. **Stale pipeline-lock breaker** — `data/.pipeline.lock` held by dead PID gets
-    cleared with logging instead of exit-3 forever. FIT: medium (ops robustness).
-    → IMPLEMENT (F9, careful: only break provably-dead locks)
+14. **Stale pipeline-lock visibility** — flock self-heals on process death, so
+    what an operator actually needs is holder attribution (pid/since/cmd), not
+    a breaker. FIT: medium (ops robustness). → IMPLEMENT as holder sidecar (F9)
 15. **Local media integrity spot-check** (`ffprobe` duration gate on a sample of
     `videos/`, mirroring the download validator). FIT: medium. → IMPLEMENT (F10)
 16. **Weekly email watch-stats line** — needs PWA watch telemetry; doesn't exist
@@ -105,3 +108,31 @@ API · F13 email shortfall · F14 stale badge · F15 top channels.
 Rejected with reasons: iOS background refresh, cross-device sync, PWA grid
 toggle (core risk), archive index (duplicates Pages switcher), quiet hours
 (against paging intent), deploy-gate wiring (3am false-alarm risk).
+
+## Pre-merge adversarial review (3 tracks: backend, frontend, integration)
+
+Fixed, all pinned by `tests/test_review_fixes.py` (+ additions to
+`test_notifier.py`, `test_channels_manager.py`):
+- P0 lock sidecar ownership: failed contenders no longer delete the holder's
+  attribution (`acquired` flag).
+- P0 feedback lost-update: flock-guarded read-modify-writes (reentrant-safe)
+  for feedback + rec-cache mutations.
+- P0 email prod wiring: `send_digest_email` forwards `recommended=`/`target=`;
+  weekly pipeline passes the finalized set + target.
+- P0 pipeline bypasses: `finalize_recommendations()` applied on cache-hit,
+  auth-fail, quarantine-fallback, and Tier 2 use-site (frozen checkpoints
+  exempt for resume consistency).
+- P1 lock-status pid-0, prune list-shape, DNR/add payload guards, normalizer
+  unification, health verdicts (missing cache reads "none yet", stale flips
+  unhealthy), week_id containment, hygiene preservation, quiet endpoint test,
+  media-script hardening (r2 preference, repo-root alias, clamps, .MP4).
+- Frontend: empty-digest shortfall line, duplicate poller removed, esc/array/
+  finite guards, pill classes on all paths, membership esc order, quiet-button
+  disable, degraded flag surfaced.
+- Docs corrected to code truth (250 reels, 8 GB quota, 8-day retention);
+  README maintenance-scripts section; new `python-ci.yml` (pytest non-e2e on
+  all branches).
+- Declined with reasons: storage-walk caching (bounded by quota in practice),
+  PID-recycle corroboration (status text only, flock is truth),
+  Tier 2 cap-8 and all-seen fallback (deliberate pipeline design, digest
+  composition risk unsupervised), sys.path convention (matches topup script).

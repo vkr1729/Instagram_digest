@@ -198,22 +198,24 @@ def hygiene_report() -> dict[str, Any]:
     }
 
 
-def fix_hygiene(report: dict[str, Any]) -> int:
+def fix_hygiene(report: dict[str, Any] | None = None) -> int:
     """Normalize handles in place and drop post-normalization dupes (keep
-    first). Invalid handles are NEVER auto-deleted — reported only. Returns
-    number of entries changed/removed."""
+    first). Invalid and empty handles are NEVER auto-deleted — preserved
+    as-is and reported only. Returns number of entries changed/removed."""
     sources = _load_sources()
-    invalid_raw = {e["handle"] for e in report.get("invalid", [])}
+    if not isinstance(report, dict):
+        report = hygiene_report()
+    invalid_raw = {e["handle"] for e in report.get("invalid", []) if isinstance(e, dict)}
     fixed: list[dict[str, Any]] = []
     seen: set[str] = set()
     changed = 0
     for s in sources:
         raw = str(s.get("handle", ""))
-        if raw in invalid_raw:
+        norm = raw.strip().lstrip("@").lower()
+        if not norm or raw in invalid_raw:
             fixed.append(s)
             continue
-        norm = raw.strip().lstrip("@").lower()
-        if not norm or norm in seen:
+        if norm in seen:
             changed += 1
             continue
         seen.add(norm)
@@ -263,6 +265,9 @@ def main() -> int:
     parser.add_argument("--fix", action="store_true",
                         help="With --hygiene: normalize handles and drop dupes (never deletes invalid)")
     args = parser.parse_args()
+
+    if args.fix and not args.hygiene:
+        parser.error("--fix requires --hygiene")
 
     if args.hygiene:
         report = hygiene_report()

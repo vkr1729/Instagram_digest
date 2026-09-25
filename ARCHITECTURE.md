@@ -10,7 +10,7 @@
 ## 1. What the system is
 
 Instagram Digest converts an unbounded algorithmic Reels feed into a finite
-weekly briefing: top 300 reels (expandable by +100), ranked by
+weekly briefing: top 250 reels (expandable by +100), ranked by
 creator-normalized viral score, delivered as a zero-dependency static PWA.
 
 Hard constraints the architecture serves:
@@ -134,7 +134,7 @@ Choice: `content-visibility: auto` + `contain` on cards, compositing layer
 only on `.is-active`, decoder release on filter-hide and outside the
 `[-2,+3]` sliding window, scroll-guarded tap handlers.
 
-Rationale: 300 cards × listeners × layers is the actual mobile bottleneck,
+Rationale: 250 cards × listeners × layers is the actual mobile bottleneck,
 not network. A full DOM recycler stays rejected: intersection-driven
 `scrollIntoView` + containment gets most of the benefit at none of the
 complexity risk.

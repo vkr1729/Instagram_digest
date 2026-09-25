@@ -521,7 +521,8 @@
       if (recMeta) {
         recMeta.textContent = "AI talent scout suggestions based on channels you follow. Add to channel list to follow them permanently." +
           (dnrN > 0 ? " " + dnrN + " muted." : "") + " Repeated ignores retire after 5 suggestions." +
-          (staleRecs ? " Set is over a week old — refresh." : "");
+          (staleRecs ? " Set is over a week old — refresh." : "") +
+          (data.filter_degraded ? " Filters degraded." : "");
       }
       const refreshSt = data.refresh_state || {};
       if (refreshSt.is_running) {
@@ -544,14 +545,16 @@
       return;
     }
     $("recsGrid").innerHTML = filtered.map((r) => {
-      const h = esc(r.handle || "");
-      const name = esc(r.name || h);
+      const rawH = String(r.handle || "");
+      const h = esc(rawH);
+      const normH = rawH.trim().replace(/^@/, "").toLowerCase();
+      const name = esc(r.name || rawH);
       const cat = esc(r.category || "entertainment");
       const reason = esc(r.reason || "Recommended similar creator");
       const scaleRaw = r.follower_scale || "";
       const suggested = Number(r.times_suggested || 1);
       const scaleTxt = esc(scaleRaw + (suggested > 1 ? " · suggested " + suggested + "×" : ""));
-      const isAdded = channelHandles.has(h.toLowerCase()) || addedNow.has(h.toLowerCase());
+      const isAdded = channelHandles.has(normH) || addedNow.has(normH);
       const actionBtn = isAdded
         ? '<button class="add-btn added" disabled>Added ✓</button>'
         : '<button class="add-btn" data-add-handle="' + h + '" data-add-name="' + name + '" data-add-cat="' + cat + '">+ Add to Channel List</button>' +
@@ -594,7 +597,7 @@
       const data = await res.json();
       if (data.success) {
         toast("Added @" + handle + " to channel list!");
-        addedNow.add(String(handle || "").toLowerCase());
+        addedNow.add(String(handle || "").trim().replace(/^@/, "").toLowerCase());
         renderRecommendations();
       } else {
         toast(data.error || "Failed to add channel.");
@@ -689,19 +692,19 @@
       if (meta) meta.textContent = "";
     }
   }
-  setInterval(loadDigestStatus, 60000);
 
   async function loadDigestStatus() {
     const meta = $("shortfallMeta");
     try {
       const data = await getJSONsoft("/api/digest-status");
       if (!data || !data.success || !data.target) throw new Error("no data");
-      const tops = (data.top_channels || []).slice(0, 5).map((t) => "@" + t.handle + " (" + t.count + ")").join(", ");
-      if (data.shortfall > 0 && data.count > 0) {
+      const tops = (data.top_channels || []).slice(0, 8).map((t) => "@" + t.handle + " (" + t.count + ")").join(", ");
+      if (data.shortfall > 0) {
         meta.innerHTML = "Digest " + esc(String(data.count)) + "/" + esc(String(data.target)) +
           " — shortfall " + esc(String(data.shortfall)) + ". " +
           '<a href="#" id="shortfallExpand" style="color: var(--cyan, #38bdf8);">Expand +' +
-          esc(String(Math.min(500, data.shortfall))) + "</a>";
+          esc(String(Math.min(500, data.shortfall))) + "</a>" +
+          (tops ? "<br>Top: " + esc(tops) + "." : "");
         const link = $("shortfallExpand");
         if (link) link.addEventListener("click", (e) => {
           e.preventDefault();
@@ -719,26 +722,30 @@
     }
   }
 
-  async function loadWatchProgress() {    const pill = $("watchProgPill"), meta = $("watchProgMeta");
+  async function loadWatchProgress() {
+    const pill = $("watchProgPill"), meta = $("watchProgMeta");
     try {
       const data = await getJSONsoft("/api/category-progress");
-      if (!data || !data.success || !data.total) throw new Error("no data");
-      pill.textContent = data.total_watched + "/" + data.total;
-      pill.className = "pill " + (data.total_watched >= data.total ? "ok" : "idle");
-      meta.innerHTML = data.categories.map((c) =>
-        '<div style="margin: 3px 0;">' + progressBar(c.watched, c.total) +
-        ' <b>' + c.watched + ' / ' + c.total + '</b> ' + esc(c.category) + '</div>'
-      ).join("");
+      if (!data || !data.success || !data.total || !Array.isArray(data.categories)) throw new Error("no data");
+      const watched = Number(data.total_watched) || 0, total = Number(data.total) || 0;
+      pill.textContent = watched + "/" + total;
+      pill.className = "pill " + (total > 0 && watched >= total ? "ok" : "idle");
+      meta.innerHTML = data.categories.map((c) => {
+        const w = Number(c.watched) || 0, t = Number(c.total) || 0;
+        return '<div style="margin: 3px 0;">' + progressBar(w, t) +
+          ' <b>' + esc(String(w)) + ' / ' + esc(String(t)) + '</b> ' + esc(String(c.category || "")) + '</div>';
+      }).join("");
     } catch (e) {
       if (meta) meta.textContent = "No digest progress yet.";
     }
   }
 
   function fmtBytes(n) {
-    if (n === null || n === undefined) return "?";
-    if (n < 1000) return n + " B";
+    const v0 = Number(n);
+    if (!isFinite(v0)) return "?";
+    if (v0 < 1000) return v0 + " B";
     const units = ["KB", "MB", "GB", "TB"];
-    let v = n, u = -1;
+    let v = v0, u = -1;
     while (v >= 1000 && u < units.length - 1) { v /= 1000; u++; }
     return v.toFixed(1) + " " + units[u];
   }
@@ -749,25 +756,29 @@
       const data = await getJSONsoft("/api/storage");
       if (!data || !data.success) throw new Error("bad response");
       const bits = [];
-      if (data.local && data.local.bytes !== null) {
-        bits.push("Local " + fmtBytes(data.local.bytes) + " (" + (data.local.files || 0) + " files)");
+      if (data.local && data.local.bytes != null) {
+        bits.push("Local " + fmtBytes(data.local.bytes) + " (" + (Number(data.local.files) || 0) + " files)");
       }
-      if (data.r2 && data.r2.bytes !== null) {
-        const pct = data.r2.bytes / 10000000000 * 100;
-        bits.push("R2 " + fmtBytes(data.r2.bytes) + " / 10 GB (" + pct.toFixed(0) + "%)");
+      if (data.r2 && data.r2.bytes != null && isFinite(Number(data.r2.bytes))) {
+        const r2b = Number(data.r2.bytes);
+        const pct = r2b / 10000000000 * 100;
+        bits.push("R2 " + fmtBytes(r2b) + " / 10 GB (" + pct.toFixed(0) + "%)");
         pill.textContent = pct > 80 ? "FULL" : "OK";
-        pill.className = "pill " + (pct > 80 ? "warn" : "idle");
+        pill.className = "pill " + (pct > 80 ? "warn" : "ok");
       } else {
         bits.push("R2 unavailable");
         pill.textContent = "…";
+        pill.className = "pill idle";
       }
       if (!bits.length) throw new Error("no data");
       meta.textContent = bits.join(" · ");
-      if (data.r2 && data.r2.bytes === null && data.local && data.local.bytes !== null) {
+      if (data.r2 && data.r2.bytes == null && data.local && data.local.bytes != null) {
         pill.textContent = "LOCAL";
+        pill.className = "pill idle";
       }
     } catch (e) {
       if (meta) meta.textContent = "Storage probe unavailable.";
+      if (pill) pill.className = "pill idle";
     }
   }
 </script>
