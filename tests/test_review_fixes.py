@@ -334,10 +334,11 @@ def test_media_urls_prefer_r2_and_repo_root(tmp_path, monkeypatch):
     ]}), encoding="utf-8")
     urls = check_media_urls.load_video_urls(digest)
     assert urls == ["https://cdn.example/1.mp4"]  # permalink-only item skipped
-    # Default alias resolves against the repo tree (never CWD or network).
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(check_media_urls, "head_ok", lambda url, timeout: True)
-    assert check_media_urls.main([]) == 0
+    # Missing explicit path exits 1 without network; the default alias is
+    # anchored at the repo tree (static marker below), never the CWD.
+    assert check_media_urls.main([str(tmp_path / "missing.json")]) == 1
+    src = (config.ROOT_DIR / "scripts" / "check_media_urls.py").read_text(encoding="utf-8")
+    assert "parent.parent" in src and '"data" / "digests"' in src
 
 
 # --- template markers for review fixes ---

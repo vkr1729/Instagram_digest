@@ -40,8 +40,20 @@ jobs:
           sudo apt-get install -y ffmpeg
           python -m playwright install --with-deps chromium
 
-      - name: Run test suite (excluding live-network e2e)
-        run: python -m pytest tests/ --ignore=tests/e2e -q --junitxml=pytest-results.xml
+      # Maintainer-hardware suites stay local-only: test_grid_view,
+      # test_bookmarks_ui and test_mobile_pwa_uat build the viewer from
+      # generated site//data files (gitignored; absent on fresh clones), and
+      # the desktop-launcher test needs a real install. tests/e2e needs live
+      # Instagram/network.
+      - name: Run test suite (CI-safe subset)
+        run: >-
+          python -m pytest tests/ -q
+          --ignore=tests/e2e
+          --ignore=tests/test_grid_view.py
+          --ignore=tests/test_bookmarks_ui.py
+          --ignore=tests/test_mobile_pwa_uat.py
+          --deselect tests/test_uat_suite7_server_launcher.py::test_uat_7_3_desktop_launcher_file
+          --junitxml=pytest-results.xml
 
       - name: Upload pytest report on failure
         if: failure()

@@ -455,13 +455,19 @@ def test_p1_goto_card_generation_guard_and_b5_ring_throttle():
     assert "_paintCategoryProgressRings" in viewer_src
 
 
-def test_c7_do_head_returns_zero_body_bytes():
+def test_c7_do_head_returns_zero_body_bytes(tmp_path, monkeypatch):
     """Verify LocalDigestHandler.do_HEAD sends headers with exactly 0 body bytes."""
     handler = mock.MagicMock(spec=LocalDigestHandler)
     handler.path = "/"
     handler.headers = {}
     handler.wfile = mock.MagicMock()
-    
+    # Hermetic: serve a fixture index so the test never depends on a
+    # generated site/ directory (absent on fresh clones/CI).
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "local_index.html").write_text("<html></html>", encoding="utf-8")
+    import config as _config
+    monkeypatch.setattr(_config, "SITE_DIR", site)
     LocalDigestHandler.do_HEAD(handler)
     handler.send_response.assert_called_with(200)
     handler.send_header.assert_any_call("Content-Type", "text/html; charset=utf-8")
