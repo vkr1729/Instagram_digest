@@ -41,7 +41,15 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run test suite (excluding live-network e2e)
-        run: python -m pytest tests/ --ignore=tests/e2e -q
+        run: python -m pytest tests/ --ignore=tests/e2e -q --junitxml=pytest-results.xml
+
+      - name: Upload pytest report on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          if-no-files-found: ignore
 
       - name: Compile-check entry points and scripts
         run: |
