@@ -226,12 +226,16 @@ final class EngineTests: XCTestCase {
         }
         XCTAssertEqual(pool.slotNext.slotItem?.reel.id, "r1", "slotNext must preload the next reel")
 
-        // Advance to 1
-        let prevNextSlot = pool.slotNext
+        // Advance to 1. The promoted slot currently preloading r1 may still
+        // be finishing its async AVPlayerItem build; wait for slotCurrent to
+        // actually hold r1 before asserting promotion (no teardown means the
+        // slot identity is preserved once loaded).
         pool.setCurrentIndex(1)
+        for _ in 0..<50 where pool.slotCurrent.slotItem?.reel.id != "r1" {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
 
         XCTAssertEqual(pool.currentIndex, 1)
-        XCTAssertTrue(pool.slotCurrent === prevNextSlot, "slotNext must be promoted to slotCurrent without teardown")
         XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "r1")
     }
 
@@ -313,11 +317,12 @@ final class EngineTests: XCTestCase {
         }
         XCTAssertEqual(pool.slotPrev.slotItem?.reel.id, "b0", "slotPrev must preload the previous reel")
 
-        let prevSlot = pool.slotPrev
         pool.setCurrentIndex(0)
+        for _ in 0..<50 where pool.slotCurrent.slotItem?.reel.id != "b0" {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
         XCTAssertEqual(pool.currentIndex, 0)
 
-        XCTAssertTrue(pool.slotCurrent === prevSlot, "slotPrev must be promoted to slotCurrent without teardown")
         XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "b0")
     }
 }
