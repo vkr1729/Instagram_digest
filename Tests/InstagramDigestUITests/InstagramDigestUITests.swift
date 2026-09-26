@@ -148,18 +148,22 @@ final class InstagramDigestUITests: XCTestCase {
             ownerKeyAlert.buttons["Later"].tap()
         }
 
-        // Either the pop or the Saved label proves the toggle worked.
-        // Poll the label instead of snapshotting: the SwiftUI button label
-        // updates a runloop after the tap (previous snap-read flaked).
+        // Two fresh one-shot expectations: re-waiting the same XCTExpectation
+        // throws NSInternalInconsistencyException (API violation).
         let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
         let popAppeared = bookmarkIndicator.waitForExistence(timeout: 5.0)
-        let savedExpect = XCTNSPredicateExpectation(
+        let savedAck = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS 'Saved'"),
             object: saveButton)
-        let savedLabeled = XCTWaiter.wait(for: [savedExpect], timeout: 8.0) == .completed
+        let savedLabeled = XCTWaiter.wait(for: [savedAck], timeout: 8.0) == .completed
         XCTAssertTrue(popAppeared || savedLabeled, "Save must acknowledge (pop or Saved label)")
-        XCTAssertEqual(XCTWaiter.wait(for: [savedExpect], timeout: 5.0), .completed,
-                       "Save button must flip to 'Saved' after bookmarking")
+        if !savedLabeled {
+            let savedRecheck = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label CONTAINS 'Saved'"),
+                object: saveButton)
+            XCTAssertEqual(XCTWaiter.wait(for: [savedRecheck], timeout: 5.0), .completed,
+                           "Save button must flip to 'Saved' after bookmarking")
+        }
 
         // Open Bookmarks sheet from header chip
         let bookmarksChip = app.buttons["BookmarksChipButton"]
@@ -276,8 +280,16 @@ final class InstagramDigestUITests: XCTestCase {
             object: rankBadge)
         XCTAssertEqual(XCTWaiter.wait(for: [jumped], timeout: 5.0), .completed,
                        "grid jump must leave reel #01 (was \(beforeJump))")
-        let caption = app.staticTexts["ReelCaptionText"]
-        XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
+        // Caption snippet only renders for non-empty captions; item #0 is a
+        // 47-char caption (fits 2 lines), so if RankBadge labels arrive before
+        // the overlay text the staticText query may miss. Tap by predicate and
+        // verify the expand/collapse value flips (VoiceOver action always works
+        // even when an overlay hit-test shadows the text node).
+        let rankAfterJump = rankBadge.label
+        let captionQuery = app.staticTexts.matching(NSPredicate(format: "identifier == 'ReelCaptionText'"))
+        XCTAssertTrue(captionQuery.element.waitForExistence(timeout: 8.0),
+                      "ReelCaptionText must exist after grid jump (now at \(rankAfterJump))")
+        let caption = captionQuery.element
         caption.tap()
         // Fall back to the VoiceOver action when the tap lands on the
         // collection view instead of the text (CI hit-test flake).
