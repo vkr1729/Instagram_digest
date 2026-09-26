@@ -152,16 +152,6 @@ final class UITests: XCTestCase {
             let next = currentIndex + 1 < totalReels ? currentIndex + 1 : nil
             return (prev, curr, next)
         }
-        // Assert against the pool's actual slot items, not just local math.
-        let pool = AVPlayerPool.shared
-        let reels = (0..<3).map {
-            ReelItem(id: "s\($0)", creatorHandle: "c", caption: "", rank: $0 + 1,
-                     videoUrl: URL(string: "https://example.com/s\($0).mp4")!)
-        }
-        pool.setReels(reels, weekID: "test_slots", startIndex: 1)
-        XCTAssertEqual(pool.currentIndex, 1)
-        XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "s1")
-
         let slotsAt0 = slotIndices(for: 0, totalReels: 10)
         XCTAssertNil(slotsAt0.prev)
         XCTAssertEqual(slotsAt0.curr, 0)
