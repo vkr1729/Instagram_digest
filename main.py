@@ -572,9 +572,31 @@ def _ensure_valid_session(session) -> bool:
     try:
         import cookie_exporter
         cookie_exporter.export_instagram_cookies()
-    except Exception as exc:
-        logger.warning("Cookie refresh failed: %s", exc)
-        return False
+    except Exception as direct_exc:
+        # .venv lacks dbus/cryptography while system python has both:
+        # retry via system interpreter instead of failing the night run.
+        # Only for missing-module failures — a real export crash stays fatal
+        # so tests/behaviour for broken helpers are unchanged.
+        if not isinstance(direct_exc, (ModuleNotFoundError, ImportError)) \
+                and "No module named" not in str(direct_exc):
+            logger.warning("Cookie refresh failed: %s", direct_exc)
+            return False
+        logger.warning("Direct cookie refresh failed (%s); retrying via system python...", direct_exc)
+        try:
+            import subprocess
+            from pathlib import Path as _Path
+            try:
+                from extractor import _cookie_python as _cookie_py
+                _py = _cookie_py()
+            except Exception:
+                import sys as _sys
+                _py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else _sys.executable
+            _exporter = _Path(__file__).parent / "cookie_exporter.py"
+            subprocess.run([_py, str(_exporter)], check=False,
+                           capture_output=True, timeout=30)
+        except Exception as exc:
+            logger.warning("Cookie refresh failed: %s", exc)
+            return False
     for op in ("close", "start"):
         try:
             getattr(session, op)()

@@ -139,6 +139,7 @@
         <button id="adhocBtn">Run ad-hoc refresh</button>
         <a class="btn" href="/retrigger">Retrigger full sync</a>
       </div>
+      <div class="meta" style="margin-top: 8px;">Ad-hoc = quick top-up of new reels since the last run (minutes). Full sync = rebuilds the whole week from all channels (hours) — use it on Fridays or after a failure.</div>
     </div>
     <div class="card">
       <div class="row1"><h2>Expand digest</h2><span class="pill idle" id="expandPill">IDLE</span></div>
@@ -148,21 +149,25 @@
         <input class="count" id="expandCount" type="number" value="100" min="1" max="500" title="Reels to add">
         <button class="primary" id="expandBtn">Start expand</button>
       </div>
+      <div class="meta" style="margin-top: 8px;">Adds extra fresh reels on top of this week's digest. Type how many, then Start. Only runs when nothing else is running.</div>
     </div>
     <div class="card">
       <div class="row1"><h2>Cookies</h2><span class="pill idle" id="cookiePill">UNKNOWN</span></div>
       <div class="meta" id="cookieMeta">Press refresh to verify the Chrome login session.</div>
       <div class="actions"><button id="cookieBtn">Refresh cookies</button></div>
+      <div class="meta" style="margin-top: 8px;">Copies your Instagram login from Chrome so the sync can run. If this says NO SESSION, open instagram.com in Chrome first, then press it again.</div>
     </div>
     <div class="card">
       <div class="row1"><h2>Server</h2><span class="pill idle">LOCAL</span></div>
-      <div class="meta">Kill this server process, then relaunch from the desktop icon for a clean start.</div>
+      <div class="meta">Stops this dashboard page's background process. Only use it if the page is frozen — relaunch from the desktop icon afterwards.</div>
       <div class="meta" id="lockMeta" style="margin-top: 4px;"></div>
       <div class="actions"><button class="danger" id="serverKillBtn">Kill server process</button></div>
     </div>
     <div class="card">
       <div class="row1"><h2>Storage</h2><span class="pill idle" id="storagePill">…</span></div>
       <div class="meta" id="storageMeta">Probing local videos and R2 usage…</div>
+      <div class="actions"><button id="freeLocalBtn">Free laptop videos</button></div>
+      <div class="meta" style="margin-top: 8px;">Deletes downloaded copies on this laptop to reclaim disk. Your phone is unaffected — it plays from the cloud. Refuses to run while a sync is in progress.</div>
     </div>
     <div class="card">
       <div class="row1"><h2>Watch progress</h2><span class="pill idle" id="watchProgPill">…</span></div>
@@ -174,7 +179,7 @@
     <div class="row1">
       <div>
         <h2>Recommended This Week</h2>
-        <div class="meta" style="margin-top: 2px;">AI talent scout suggestions based on channels you follow. Add to channel list to follow them permanently.</div>
+        <div class="meta" style="margin-top: 2px;">AI talent scout suggestions based on channels you follow. Add to channel list to follow them permanently. ✕ means never suggest that creator again. Follower counts are AI estimates — often off, check the profile before judging.</div>
       </div>
       <div class="actions" style="margin: 0;">
         <button id="refreshRecsBtn" style="font-size: 12px; padding: 6px 14px;">Refresh recommendations</button>
@@ -476,6 +481,18 @@
     }
     btn.disabled = false;
   }
+  async function freeLocalVideos() {
+    const btn = $("freeLocalBtn");
+    if (!window.confirm("Delete downloaded videos on this laptop to free disk? Phone playback is unaffected (streams from the cloud). Skips anything a failed upload still needs.")) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/storage/free-local", { method: "POST" });
+      const data = await res.json();
+      toast(data.message || (data.success ? "Laptop videos freed." : "Could not free videos."));
+    } catch (e) { toast("Request error: " + e.message); }
+    btn.disabled = false;
+    loadStorageGauge();
+  }
   async function killServer() {
     if (!window.confirm("Kill the local server process? The dashboard will go dark until you relaunch it from the desktop icon.")) return;
     const btn = $("serverKillBtn");
@@ -553,7 +570,8 @@
       const reason = esc(r.reason || "Recommended similar creator");
       const scaleRaw = r.follower_scale || "";
       const suggested = Number(r.times_suggested || 1);
-      const scaleTxt = esc(scaleRaw + (suggested > 1 ? " · suggested " + suggested + "×" : ""));
+      const scaleBase = String(scaleRaw).replace(/^~\s*/, "");
+      const scaleTxt = esc((scaleBase ? "~" + scaleBase : "") + (suggested > 1 ? " · suggested " + suggested + "×" : ""));
       const isAdded = channelHandles.has(normH) || addedNow.has(normH);
       const actionBtn = isAdded
         ? '<button class="add-btn added" disabled>Added ✓</button>'
@@ -563,7 +581,7 @@
         '<div class="rec-head">' +
           '<div><a class="rec-handle" href="https://instagram.com/' + h + '" target="_blank">@' + h + '</a>' +
           '<div class="rec-name">' + name + '</div></div>' +
-          (scaleTxt ? '<span class="rec-scale">' + scaleTxt + '</span>' : '') +
+          (scaleTxt ? '<span class="rec-scale" title="AI estimate — often off, open the profile to verify">' + scaleTxt + '</span>' : '') +
         '</div>' +
         '<div class="rec-reason">' + reason + '</div>' +
         '<div class="rec-actions">' +
@@ -664,6 +682,7 @@
   $("adhocBtn").addEventListener("click", () => startAdhoc($("adhocBtn")));
   $("cookieBtn").addEventListener("click", refreshCookies);
   $("serverKillBtn").addEventListener("click", killServer);
+  $("freeLocalBtn").addEventListener("click", freeLocalVideos);
   refresh();
   loadRecommendations();
   loadStorageGauge();

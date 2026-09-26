@@ -620,3 +620,56 @@ def test_api_sync_resume_endpoint(tmp_path, monkeypatch):
     assert data["success"] is True
     assert calls == [True]
 
+
+
+def test_free_local_videos_deletes_mp4s_but_keeps_outbox(tmp_path, monkeypatch):
+    vdir = tmp_path / "videos"
+    (vdir / "2026-09-19").mkdir(parents=True)
+    keep = vdir / "2026-09-19" / "01_alice_reel1.mp4"
+    keep.write_bytes(b"x" * 1024)
+    (vdir / "2026-09-19" / "notes.txt").write_text("not a video", encoding="utf-8")
+    parked = vdir / "2026-09-19" / "02_bob_reel2.mp4"
+    parked.write_bytes(b"y" * 2048)
+    (tmp_path / "upload_outbox_2026-09-19.json").write_text(json.dumps({
+        "version": 1, "week_id": "2026-09-19",
+        "reels": [{"id": "reel2"}],
+        "local_paths": {"reel2": str(parked)},
+    }), encoding="utf-8")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", vdir)
+    resp = local_server.free_local_videos()
+    assert resp["success"] is True
+    assert resp["freed_files"] == 1
+    assert resp["freed_bytes"] == 1024
+    assert not keep.exists()
+    assert parked.exists()  # parked for --reconcile must survive
+    assert (vdir / "2026-09-19" / "notes.txt").exists()
+
+
+def test_free_local_videos_refuses_while_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
+    monkeypatch.setitem(local_server._SYNC_STATE, "is_running", True)
+    resp = local_server.free_local_videos()
+    assert resp["success"] is False
+    assert "running" in resp["error"]
+
+
+def test_free_local_videos_endpoint_and_help_copy(tmp_path, monkeypatch):
+    vdir = tmp_path / "videos"
+    (vdir / "w").mkdir(parents=True)
+    (vdir / "w" / "01_a_r.mp4").write_bytes(b"z" * 512)
+    monkeypatch.setattr(config, "VIDEOS_DIR", vdir)
+    srv = _LiveServer(tmp_path, monkeypatch)
+    try:
+        status, body = srv.post("/api/storage/free-local")
+        _, page = srv.get("/dashboard")
+    finally:
+        srv.close()
+    assert status == 200
+    data = json.loads(body)
+    assert data["success"] is True and data["freed_files"] == 1
+    assert not (vdir / "w" / "01_a_r.mp4").exists()
+    for marker in ("freeLocalBtn", "/api/storage/free-local",
+                   "quick top-up", "Free laptop videos"):
+        assert marker in page, marker

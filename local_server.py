@@ -861,6 +861,70 @@ def discard_pending_job(file_name: Any) -> dict[str, Any]:
     return {"success": True, "file": name, "message": f"Discarded {name}."}
 
 
+def free_local_videos() -> dict[str, Any]:
+    """Delete downloaded laptop MP4s under VIDEOS_DIR to reclaim disk.
+
+    Phone playback streams from R2, so local copies are upload cache only.
+    Refuses while a sync/expand pipeline runs; skips files parked in any
+    upload_outbox_*.json (they are needed by --reconcile). Never raises:
+    any probe failure fails open with success False.
+    """
+    if _pipeline_busy():
+        return {"success": False,
+                "error": "A sync or expand is running — try again when it finishes."}
+    try:
+        base = config.VIDEOS_DIR.resolve()
+    except Exception:
+        return {"success": False, "error": "Video folder unavailable."}
+    protected: set[str] = set()
+    try:
+        for box in config.DATA_DIR.glob("upload_outbox_*.json"):
+            try:
+                payload = json.loads(box.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            paths = (payload or {}).get("local_paths") or {}
+            if not isinstance(paths, dict):
+                continue
+            for p in paths.values():
+                try:
+                    protected.add(str(Path(str(p)).resolve()))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    if not base.is_dir():
+        return {"success": True, "freed_bytes": 0, "freed_files": 0,
+                "message": "Nothing to free — the laptop video folder is already empty."}
+    freed_bytes = 0
+    freed_files = 0
+    for root, _, files in os.walk(base):
+        for fn in files:
+            if not fn.endswith(".mp4"):
+                continue
+            try:
+                target = (Path(root) / fn).resolve()
+            except Exception:
+                continue
+            if target == base or base not in target.parents:
+                continue
+            if str(target) in protected:
+                continue
+            try:
+                freed_bytes += target.stat().st_size
+                target.unlink()
+                freed_files += 1
+            except OSError:
+                continue
+    if freed_files:
+        logger.info("Freed %d laptop video(s) (%.1f MB) via dashboard.",
+                    freed_files, freed_bytes / 1048576)
+        return {"success": True, "freed_bytes": freed_bytes, "freed_files": freed_files,
+                "message": f"Freed {freed_files} videos ({freed_bytes / 1073741824:.2f} GB). Phone playback is unaffected — it streams from the cloud."}
+    return {"success": True, "freed_bytes": 0, "freed_files": 0,
+            "message": "Nothing to free — the laptop video folder is already empty."}
+
+
 def _atomic_write_json(path: Path, data: Any) -> None:
     """Crash-safe JSON write: temp + flush + fsync + atomic replace + dir fsync."""
     atomic_io.durable_write_json(path, data)
@@ -2000,6 +2064,16 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             pid = _schedule_server_shutdown()
             resp = {"success": True, "pid": pid,
                     "message": f"Server process {pid} stopping; relaunch via launch.sh."}
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/storage/free-local", "/api/storage/free-local/"):
+            resp = free_local_videos()
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

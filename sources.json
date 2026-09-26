@@ -418,5 +418,89 @@
     "name": "stories_by_srilok",
     "category": "entertainment",
     "enabled": true
+  },
+  {
+    "handle": "matthewberman_ai",
+    "name": "Matthew Berman",
+    "category": "ai_tech",
+    "enabled": true
+  },
+  {
+    "handle": "ryanholiday",
+    "name": "Ryan Holiday",
+    "category": "niche",
+    "enabled": true
+  },
+  {
+    "handle": "mohak.mangal",
+    "name": "Mohak Mangal",
+    "category": "niche",
+    "enabled": true
+  },
+  {
+    "handle": "humansofcinema",
+    "name": "Harshit Bansal (Humans of Cinema)",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "rowancheung",
+    "name": "Rowan Cheung",
+    "category": "ai_tech",
+    "enabled": true
+  },
+  {
+    "handle": "pranjalkamra",
+    "name": "Pranjal Kamra",
+    "category": "finance",
+    "enabled": true
+  },
+  {
+    "handle": "glucosegoddess",
+    "name": "Jessie Inchauspé",
+    "category": "food",
+    "enabled": true
+  },
+  {
+    "handle": "foodpharmer",
+    "name": "Revant Himatsingka",
+    "category": "food",
+    "enabled": true
+  },
+  {
+    "handle": "dr.pal.manickam",
+    "name": "Dr. Pal Manickam",
+    "category": "food",
+    "enabled": true
+  },
+  {
+    "handle": "satshyaa",
+    "name": "Satshya Tharien",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "tim.spector",
+    "name": "Prof. Tim Spector",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "drkaranrajan",
+    "name": "Dr. Karan Rajan",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "dr_idz",
+    "name": "Dr. Idrees Mughal",
+    "category": "health",
+    "enabled": true
+  },
+  {
+    "handle": "adamgrant",
+    "name": "Adam Grant",
+    "category": "niche",
+    "enabled": true
   }
 ]

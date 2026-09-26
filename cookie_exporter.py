@@ -175,6 +175,22 @@ def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
     txt_path = output_dir / "cookies.txt"
     root_txt_path = Path(__file__).parent / "cookies.txt"
 
+    # Never clobber a good session with an empty/decrypted-zero result.
+    # Midnight runs (locked keyring, missing DBus, rotated secret) must keep
+    # last-known-good cookies so validation can still pass when you miss the
+    # 6PM Chrome check — a failed refresh returns the existing dict untouched.
+    if not cookies_dict.get("sessionid"):
+        logger.warning(
+            "Decrypted %d cookies with no sessionid; keeping existing %s untouched.",
+            len(cookies_dict), json_path,
+        )
+        try:
+            existing = json.loads(json_path.read_text(encoding="utf-8"))
+            return dict(existing.get("cookies_dict", {}))
+        except Exception:
+            return {}
+
+
     _secure_write_text(
         json_path,
         json.dumps({"cookies_playwright": cookies_pw, "cookies_dict": cookies_dict}, indent=2),
