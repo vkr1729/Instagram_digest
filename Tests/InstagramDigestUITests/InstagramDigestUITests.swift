@@ -118,6 +118,7 @@ final class InstagramDigestUITests: XCTestCase {
             object: rankBadge)
         XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5.0), .completed,
                        "Rank badge must change after grid jump (was \(labelBefore))")
+    }
 
     // MARK: - 4. Bottom HUD: WhatsApp Share & Bookmark Toggle
 
