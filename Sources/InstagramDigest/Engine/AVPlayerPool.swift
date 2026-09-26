@@ -200,14 +200,16 @@ public final class AVPlayerPool: ObservableObject {
     public func setReels(_ items: [ReelItem], weekID: String, startIndex: Int = 0) {
         var items = items
         // UI-test seam: the fixture's R2 media is purged, so every reel
-        // would fail and the skip cascade would move the pager mid-test.
+        // would fail and the skip/auto-advance cascade would move the pager
+        // mid-test (3s clip also self-advances off reel #1). Seed every
+        // fixture reel so the pager never moves unless the test moves it.
         // A bundled tone clip lets playback use the real local path.
         if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
            let clip = Bundle.main.url(forResource: "uitest_clip", withExtension: "mp4") {
             let fm = FileManager.default
             let resolver = LibraryPathResolver.shared
             try? resolver.ensureDirectoriesExist(for: weekID)
-            for reel in items.prefix(5) {
+            for reel in items {
                 let dest = resolver.localFileURL(for: weekID, reelID: reel.id)
                 if !fm.fileExists(atPath: dest.path) {
                     try? fm.copyItem(at: clip, to: dest)
@@ -571,6 +573,20 @@ public final class AVPlayerPool: ObservableObject {
 
     private func handlePlaybackEnded(for reel: ReelItem, slot: Slot) {
         guard slot === slotCurrent else { return }
+        // UI-test seam: the seeded tone clip is only 3s, so the real
+        // auto-advance would walk the pager off the test's reel mid-wait
+        // (the save/pop probe and the caption-expansion probe both span the
+        // clip boundary). Loop in place under -ui-testing; production keeps
+        // auto-advance.
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+            slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak slot] _ in
+                guard let self = self, let s = slot, self.slotCurrent === s else { return }
+                if self.wantsPlayback {
+                    s.player.rate = self.effectiveRate
+                }
+            }
+            return
+        }
         if currentIndex + 1 < currentItems.count {
             onAutoAdvanceToNext?()
         } else {

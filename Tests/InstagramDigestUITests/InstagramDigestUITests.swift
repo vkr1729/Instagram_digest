@@ -105,9 +105,15 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(rankBadgeBefore.waitForExistence(timeout: 5.0))
         let labelBefore = rankBadgeBefore.label
 
-        // Navigate to the second reel via the grid
+        // Navigate to the second reel via the grid (swipe inside the sheet
+        // until the item is hittable: edge-to-edge collection opens scrolled).
         let secondItem = app.buttons["GridReelItem_1"]
-        XCTAssertTrue(secondItem.waitForExistence(timeout: 5.0), "Grid item must exist")
+        var secondHittable = false
+        for _ in 0..<6 {
+            if secondItem.waitForExistence(timeout: 2.0) && secondItem.isHittable { secondHittable = true; break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(secondHittable, "GridReelItem_1 must become hittable")
         secondItem.tap()
 
         // Verify sheet dismissed and feed jumped to the selected reel (rank must change)
@@ -259,36 +265,42 @@ final class InstagramDigestUITests: XCTestCase {
     func testCaptionExpansionToggle() throws {
         // Jump to a long-caption reel via the grid (deterministic, no swipe
         // settle race): grid item 1 is the ~490-char caption that clamps.
+        // NOTE: with the in-memory store the app launches parked at the
+        // persisted index and the 3s seeded clip loops in place, so the grid
+        // jump target is stable; poll ReelCaptionText (not the rank badge)
+        // to confirm the destination settled.
         let gridButton = app.buttons["GridIconButton"]
         XCTAssertTrue(gridButton.waitForExistence(timeout: 8.0))
+        XCTAssertFalse(app.buttons["GridDoneButton"].exists, "grid sheet must start dismissed")
         gridButton.tap()
         let gridDone = app.buttons["GridDoneButton"]
         XCTAssertTrue(gridDone.waitForExistence(timeout: 5.0), "Grid sheet should be presented")
+        // Edge-to-edge collection: the sheet opens scrolled past row 0, so
+        // GridReelItem_1 may be off-screen — swipe inside the sheet until it is hittable.
         let gridItem = app.buttons["GridReelItem_1"]
-        XCTAssertTrue(gridItem.waitForExistence(timeout: 5.0), "Grid item must exist")
+        var gridHittable = false
+        for _ in 0..<6 {
+            if gridItem.waitForExistence(timeout: 2.0) && gridItem.isHittable { gridHittable = true; break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(gridHittable, "GridReelItem_1 must become hittable inside the sheet")
         gridItem.tap()
         // Sheet must be gone before asserting on feed elements; if the tap
         // missed, Done returns to the feed deterministically.
         if gridDone.waitForExistence(timeout: 3.0) {
             gridDone.tap()
         }
-        let rankBadge = app.staticTexts["ReelRankBadge"]
-        XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
-        let beforeJump = rankBadge.label
-        let jumped = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label != %@", beforeJump),
-            object: rankBadge)
-        XCTAssertEqual(XCTWaiter.wait(for: [jumped], timeout: 5.0), .completed,
-                       "grid jump must leave reel #01 (was \(beforeJump))")
-        // Caption snippet only renders for non-empty captions; item #0 is a
-        // 47-char caption (fits 2 lines), so if RankBadge labels arrive before
-        // the overlay text the staticText query may miss. Tap by predicate and
-        // verify the expand/collapse value flips (VoiceOver action always works
-        // even when an overlay hit-test shadows the text node).
-        let rankAfterJump = rankBadge.label
-        let captionQuery = app.staticTexts.matching(NSPredicate(format: "identifier == 'ReelCaptionText'"))
+        let captionQuery = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == 'ReelCaptionText'"))
         XCTAssertTrue(captionQuery.element.waitForExistence(timeout: 8.0),
-                      "ReelCaptionText must exist after grid jump (now at \(rankAfterJump))")
+                      "ReelCaptionText must exist after grid jump")
+        // Wait for the jump destination (reel #02's long caption), not for
+        // whatever reel the pager shows mid-settle.
+        let longCaption = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS 'apology to @zuck'"),
+            object: captionQuery.element)
+        XCTAssertEqual(XCTWaiter.wait(for: [longCaption], timeout: 8.0), .completed,
+                       "grid jump must land on reel #02's caption")
         let caption = captionQuery.element
         caption.tap()
         // Fall back to the VoiceOver action when the tap lands on the
