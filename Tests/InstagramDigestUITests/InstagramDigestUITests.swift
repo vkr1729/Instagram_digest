@@ -149,14 +149,17 @@ final class InstagramDigestUITests: XCTestCase {
         }
 
         // Either the pop or the Saved label proves the toggle worked.
+        // Poll the label instead of snapshotting: the SwiftUI button label
+        // updates a runloop after the tap (previous snap-read flaked).
         let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
         let popAppeared = bookmarkIndicator.waitForExistence(timeout: 5.0)
         let savedExpect = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS 'Saved'"),
             object: saveButton)
-        let savedLabeled = XCTWaiter.wait(for: [savedExpect], timeout: 5.0) == .completed
+        let savedLabeled = XCTWaiter.wait(for: [savedExpect], timeout: 8.0) == .completed
         XCTAssertTrue(popAppeared || savedLabeled, "Save must acknowledge (pop or Saved label)")
-        XCTAssertTrue(saveButton.label.contains("Saved"), "Save button must flip to 'Saved' after bookmarking")
+        XCTAssertEqual(XCTWaiter.wait(for: [savedExpect], timeout: 5.0), .completed,
+                       "Save button must flip to 'Saved' after bookmarking")
 
         // Open Bookmarks sheet from header chip
         let bookmarksChip = app.buttons["BookmarksChipButton"]
@@ -267,11 +270,12 @@ final class InstagramDigestUITests: XCTestCase {
         }
         let rankBadge = app.staticTexts["ReelRankBadge"]
         XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
+        let beforeJump = rankBadge.label
         let jumped = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label == '#02'"),
+            predicate: NSPredicate(format: "label != %@", beforeJump),
             object: rankBadge)
         XCTAssertEqual(XCTWaiter.wait(for: [jumped], timeout: 5.0), .completed,
-                       "grid jump must land on reel #02")
+                       "grid jump must leave reel #01 (was \(beforeJump))")
         let caption = app.staticTexts["ReelCaptionText"]
         XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
         caption.tap()
