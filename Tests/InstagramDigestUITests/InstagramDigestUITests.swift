@@ -241,11 +241,25 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 8. Caption Expansion Toggle
 
     func testCaptionExpansionToggle() throws {
-        let caption = app.staticTexts["ReelCaptionText"]
-        XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
+        // Find a reel with a long, clamping caption: the first reel's
+        // caption may be one line (tap is a no-op there).
+        var caption = app.staticTexts["ReelCaptionText"]
+        var found = false
+        for _ in 0..<6 {
+            if caption.waitForExistence(timeout: 5.0),
+               (caption.value as? String) == "collapsed",
+               caption.frame.height > 30 {
+                found = true
+                break
+            }
+            let pager = app.collectionViews["FeedCollectionView"]
+            if !pager.exists { break }
+            pager.swipeUp()
+            caption = app.staticTexts["ReelCaptionText"]
+        }
+        XCTAssertTrue(found, "need a reel with a clamping caption to test expansion")
         // Prefer the accessibility value (collapsed/expanded) when available;
         // fall back to frame-height transitions.
-        let initialValue = caption.value as? String ?? ""
         caption.tap()
         let expandedExpectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == 'expanded'"),
@@ -260,7 +274,7 @@ final class InstagramDigestUITests: XCTestCase {
                 if caption.frame.height > beforeHeight + 2.0 { grewHeight = true; break }
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            XCTAssertTrue(grewHeight, "Caption must expand on first tap (value=\(initialValue))")
+            XCTAssertTrue(grewHeight, "Caption must expand on first tap")
         }
         caption.tap()
         let collapsedExpectation = XCTNSPredicateExpectation(
@@ -274,10 +288,7 @@ final class InstagramDigestUITests: XCTestCase {
                 if abs(caption.frame.height - expandedHeight) > 1.0 { shrankBack = true; break }
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            // If the seeded caption is too short to clamp, heights may be equal;
-            // the value-based path above is then authoritative. Only assert when
-            // the value hook is absent and heights differ.
-            XCTAssertTrue(shrankBack || initialValue.isEmpty, "Caption must collapse on second tap")
+            XCTAssertTrue(shrankBack, "Caption must collapse on second tap")
         }
     }
 
