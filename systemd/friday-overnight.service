@@ -1,0 +1,13 @@
+[Unit]
+Description=Friday evening Instagram Digest + TubeLM chain with poweroff
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/Instagram_digest/run_friday_overnight.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

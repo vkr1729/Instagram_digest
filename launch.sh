@@ -73,8 +73,10 @@ fi
 EXPECTED_BUILD="$(our_build)"
 SERVING_BUILD="$(serving_build)"
 
-if [ -n "$SERVING_BUILD" ] && [ "$SERVING_BUILD" = "$EXPECTED_BUILD" ]; then
+if [ -n "$SERVING_BUILD" ] && [ "$SERVING_BUILD" = "$EXPECTED_BUILD" ] && [ "$EXPECTED_BUILD" != "unknown" ]; then
     # A current server is already up — just open it, never start a second one.
+    # B31: "unknown" (git unavailable) never counts as equal — a stale server
+    # must not pose as current.
     open_browser
     exit 0
 fi
@@ -115,4 +117,11 @@ mkdir -p "$SCRIPT_DIR/logs"
 exec >>"$SCRIPT_DIR/logs/launch.log" 2>&1
 
 # Run local dashboard server (inherits fd 9, so the lock is held until it exits).
-exec python3 "$SCRIPT_DIR/main.py" --serve
+# B31: use the venv interpreter explicitly — falling back to system python3
+# when the venv is broken dies into a log the desktop user never sees.
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+    exec "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/main.py" --serve
+fi
+notify-send "Instagram Digest" "Cannot start: .venv/bin/python is missing. Reinstall the venv, then relaunch." 2>/dev/null || true
+echo "FATAL: $SCRIPT_DIR/.venv/bin/python missing or not executable; refusing system-python fallback." >&2
+exit 1

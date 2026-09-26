@@ -49,9 +49,16 @@ def get_s3_client():
 
 
 def get_bucket_storage_usage() -> tuple[int, int]:
-    """Calculate total size in bytes and object count in R2 bucket."""
+    """Calculate total size in bytes and object count in R2 bucket.
+
+    Returns (-1, -1) when usage cannot be determined. B18: when credentials
+    are configured but the client cannot be built, (0, 0) used to fake an
+    empty bucket past the quota gate — that path now fails closed.
+    """
     s3 = get_s3_client()
     if not s3:
+        if config.R2_ACCOUNT_ID:
+            return -1, -1
         return 0, 0
 
     total_bytes = 0
@@ -376,21 +383,23 @@ def purge_expired_local_videos(max_age_days: int = config.RETENTION_DAYS) -> lis
 
     for f in config.VIDEOS_DIR.glob("**/*.mp4"):
         if f.is_file():
-            # Check date pattern or file modification time
+            # Check date pattern or file modification time. B23: when a date
+            # signal exists, BOTH must agree — a reel shortcode shaped like a
+            # date must never mark a fresh download stale on its own.
+            # Dateless files fall back to mtime alone.
             match = re.search(r"(\d{4}-\d{2}-\d{2})", f.name) or re.search(r"(\d{4}-\d{2}-\d{2})", str(f.parent))
-            is_stale = False
+            date_stale = False
             if match:
                 try:
                     f_date = datetime.strptime(match.group(1), "%Y-%m-%d").date()
                     if f_date < cutoff_date:
-                        is_stale = True
+                        date_stale = True
                 except ValueError:
                     pass
 
-            if not is_stale:
-                mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).date()
-                if mtime < cutoff_date:
-                    is_stale = True
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).date()
+            mtime_stale = mtime < cutoff_date
+            is_stale = (date_stale and mtime_stale) if match else mtime_stale
 
             if is_stale:
                 logger.info("Purging local stale video: %s", f.name)
@@ -486,5 +495,9 @@ def upload_reel_to_r2(
             logger.error("Failed uploading to R2: %s", exc)
             return ""  # Remote configured but upload failed; caller must drop this unplayable reel
 
-    # Local fallback path only if R2 is not configured at all
-    return f"/videos/{week_id}/{key_name}" if not s3 else ""
+    # Local fallback path only when R2 is entirely unconfigured. B18: when
+    # credentials exist but the client is unavailable, never emit a local
+    # URL into the digest — it would 404 on every non-laptop surface.
+    if config.R2_ACCOUNT_ID:
+        return ""
+    return f"/videos/{week_id}/{key_name}"

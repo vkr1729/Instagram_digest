@@ -51,9 +51,12 @@ def _load_blacklist() -> set[str]:
 
 def _load_following() -> list[dict[str, Any]]:
     """Cached following only — a forced scrape belongs in the weekly pipeline,
-    not in an on-demand audit."""
+    not in an on-demand audit. B21: reads FOLLOWING_CACHE_FILE directly so a
+    "report-only" audit can never trigger a live Following-API scrape or
+    rewrite sources.json when the cache ages past 30 days."""
     try:
-        accounts = extractor.sync_following_accounts(force=False)
+        raw = json.loads(config.FOLLOWING_CACHE_FILE.read_text(encoding="utf-8"))
+        accounts = raw.get("accounts", []) if isinstance(raw, dict) else []
     except Exception as exc:
         logger.warning("Could not load cached following: %s", exc)
         return []

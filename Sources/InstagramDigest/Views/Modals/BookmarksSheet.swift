@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AVFoundation
+import Combine
 
 /// Bookmarks sheet displaying saved reels in a 3-column Grid format (matching All Reels grid),
 /// with 1.5 GB storage gauge, and dedicated sequential BookmarkPlayerOverlay that auto-advances,
@@ -464,6 +465,16 @@ public struct BookmarkPlayerOverlay: View {
                 loadVideo(for: bm)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
+            // B11: this overlay owns a second AVPlayer outside the pool, so
+            // headphone-unplug would otherwise blast it on the speaker.
+            guard let userInfo = notification.userInfo,
+                  let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue),
+                  reason == .oldDeviceUnavailable else { return }
+            player?.pause()
+            isPlaying = false
+        }
         .onDisappear {
             teardownPlayer()
         }
@@ -513,6 +524,10 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func loadVideo(for bookmark: BookmarkItem) {
+        // B16: playing counts as use for LRU purposes.
+        Task {
+            await MediaCacheManager.shared.touchBookmarkAccess(reelID: bookmark.reelID)
+        }
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil

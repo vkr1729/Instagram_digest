@@ -93,6 +93,10 @@ public final class AVPlayerPool: ObservableObject {
     private var reelStrikes: [String: Int] = [:]
     private var localStallCount: [String: Int] = [:]
     private var watchedLatchedReelIDs: Set<String> = []
+    /// B2: user playback intent. Async slot-load completions must honor it:
+    /// a pause/background/interruption that lands mid-load must not be
+    /// overridden when the load finishes (ghost audio).
+    private var wantsPlayback: Bool = true
 
     /// Active index in playlist
     public private(set) var currentIndex: Int = -1
@@ -216,7 +220,11 @@ public final class AVPlayerPool: ObservableObject {
     }
 
     /// Filters the playback pool to a specific category (e.g. "all", "entertainment", "finance", "ai_tech", "niche", "health", "food")
-    public func filterByCategory(_ categoryKey: String, allReels: [ReelItem], weekID: String) {
+    /// - Returns: false when the category matched nothing, leaving the pool
+    ///   untouched — B14: an empty category must not silently play the full
+    ///   feed while the chip claims otherwise.
+    @discardableResult
+    public func filterByCategory(_ categoryKey: String, allReels: [ReelItem], weekID: String) -> Bool {
         let filtered: [ReelItem]
         if categoryKey == "all" {
             filtered = allReels
@@ -241,7 +249,9 @@ public final class AVPlayerPool: ObservableObject {
             }
         }
 
-        setReels(filtered.isEmpty ? allReels : filtered, weekID: weekID, startIndex: 0)
+        guard !filtered.isEmpty else { return false }
+        setReels(filtered, weekID: weekID, startIndex: 0)
+        return true
     }
 
     public func setCurrentIndex(_ newIndex: Int) {
@@ -250,6 +260,7 @@ public final class AVPlayerPool: ObservableObject {
             if !isPlaying, slotCurrent.player.currentItem != nil { play() }
             return
         }
+        wantsPlayback = true // navigation is an explicit "play this" gesture
 
         poolGeneration &+= 1
         let thisGeneration = poolGeneration
@@ -465,10 +476,14 @@ public final class AVPlayerPool: ObservableObject {
                     await slot.player.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
                 }
 
-                // Start playback and notify AudioSessionCoordinator
-                self.isPlaying = true
-                slot.player.rate = self.effectiveRate
-                AudioSessionCoordinator.shared.activateSession()
+                // Start playback and notify AudioSessionCoordinator.
+                // B2: honor intent — a pause/background/interruption that
+                // landed mid-load wins over the finished load.
+                if self.wantsPlayback {
+                    self.isPlaying = true
+                    slot.player.rate = self.effectiveRate
+                    AudioSessionCoordinator.shared.activateSession()
+                }
 
             } catch {
                 if error is CancellationError { return }
@@ -534,7 +549,10 @@ public final class AVPlayerPool: ObservableObject {
             // can resume at the end position and re-fire DidPlayToEnd in a tight loop.
             slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak slot] _ in
                 guard let self = self, let s = slot, self.slotCurrent === s else { return }
-                s.player.rate = self.effectiveRate
+                // B2: replaying the last item is playback — honor intent.
+                if self.wantsPlayback {
+                    s.player.rate = self.effectiveRate
+                }
             }
         }
     }
@@ -624,10 +642,12 @@ public final class AVPlayerPool: ObservableObject {
     }
 
     public func play() {
+        wantsPlayback = true
         playCurrentSlotRestartingIfNeeded()
     }
 
     public func pause() {
+        wantsPlayback = false
         isPlaying = false
         slotCurrent.player.pause()
         AudioSessionCoordinator.shared.deactivateSession()
@@ -705,9 +725,12 @@ public final class AVPlayerPool: ObservableObject {
                     self.slotCurrent.player.volume = 1.0
                     self.observePlayerItemStatus(for: self.slotCurrent, item: playerItem, reel: item, isLocal: false, generation: itemGen)
                     self.attachTimeObserver(to: self.slotCurrent, reel: item)
-                    self.isPlaying = true
-                    self.slotCurrent.player.rate = self.effectiveRate
-                    AudioSessionCoordinator.shared.activateSession()
+                    // B2: same intent guard as the primary load path.
+                    if self.wantsPlayback {
+                        self.isPlaying = true
+                        self.slotCurrent.player.rate = self.effectiveRate
+                        AudioSessionCoordinator.shared.activateSession()
+                    }
                 }
             }
         } else {

@@ -11,6 +11,27 @@ public actor MediaCacheManager {
     /// 1.5 GB cap for offline bookmarked videos
     public static let maxBookmarkStorageBytes: Int64 = 1_500_000_000
 
+    private static let tombstoneKey = "ig_digest_unbookmarked_ids"
+
+    /// B13: ids the user explicitly un-bookmarked. Remote deletes are
+    /// fire-and-forget; without tombstones a failed delete resurrects the
+    /// row on the next syncRemoteBookmarks.
+    public static var unbookmarkedTombstones: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: tombstoneKey) ?? [])
+    }
+
+    public static func addUnbookmarkedTombstone(_ reelID: String) {
+        var ids = unbookmarkedTombstones
+        ids.insert(reelID)
+        UserDefaults.standard.set(Array(ids), forKey: tombstoneKey)
+    }
+
+    public static func clearUnbookmarkedTombstone(_ reelID: String) {
+        var ids = unbookmarkedTombstones
+        ids.remove(reelID)
+        UserDefaults.standard.set(Array(ids), forKey: tombstoneKey)
+    }
+
     private let pathResolver: LibraryPathResolver
     private var modelContainer: ModelContainer?
 
@@ -99,9 +120,10 @@ public actor MediaCacheManager {
 
         guard let container = modelContainer else { return pinSet }
         let context = ModelContext(container)
-        let descriptor = FetchDescriptor<BookmarkItem>(
-            predicate: #Predicate { $0.localStatusRaw == "cached" }
-        )
+        // B3: pin every bookmarked reel, not just .cached ones — bookmarked
+        // bytes are user-pinned content and must survive rollover. Existence
+        // is still checked per file below.
+        let descriptor = FetchDescriptor<BookmarkItem>()
 
         if let cachedBookmarks = try? context.fetch(descriptor) {
             for bm in cachedBookmarks {
@@ -164,10 +186,10 @@ public actor MediaCacheManager {
 
     /// Serialized local file eviction for corrupted local feed files (called by failure ladder)
     public func evictLocalFeedFile(weekID: String, reelID: String) {
-        // IOS-P1-1: never evict a reel the pool is actively playing or
-        // preloading, and never evict when an isolated bookmark copy exists
-        // (delete only the corrupt feed copy, keep the bookmark intact).
-        guard !activeVideoPoolReelIDs.contains(reelID) else { return }
+        // B10: no active-pool guard here — the failure ladder fires for the
+        // reel in the pool, so the guard blocked the only eviction this
+        // method exists for. Only the corrupt feed copy is deleted; the
+        // isolated bookmark copy is untouched.
         let fileURL = pathResolver.localFileURL(for: weekID, reelID: reelID)
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try? FileManager.default.removeItem(at: fileURL)
@@ -192,7 +214,11 @@ public actor MediaCacheManager {
             return
         }
 
-        guard let container = modelContainer else { return }
+        guard let container = modelContainer else {
+            // B12: a missing container must fail loudly like keepBookmarkOffline
+            // does — returning success here skips the cap entirely.
+            throw CacheError.insufficientStorage("ModelContainer not configured")
+        }
         let context = ModelContext(container)
 
         let descriptor = FetchDescriptor<BookmarkItem>(
@@ -266,6 +292,10 @@ public actor MediaCacheManager {
 
         if fm.fileExists(atPath: bookmarkDestURL.path) {
             if item.localStatus != .cached {
+                // B12: the already-on-disk path must pass the cap like any
+                // admission — otherwise the ledger grows unbounded.
+                let size = Self.diskFileSize(atPath: bookmarkDestURL.path) ?? 0
+                try await ensureSpaceForBookmark(incomingBytes: size)
                 item.localStatus = .cached
                 if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
                     item.sizeBytes = size
@@ -357,6 +387,20 @@ public actor MediaCacheManager {
         }
     }
 
+    /// B16: playing a bookmarked reel counts as use — without this the LRU
+    /// is "least recently cached", evicting favorites that were saved long
+    /// ago but watched yesterday.
+    public func touchBookmarkAccess(reelID: String) async {
+        guard let container = modelContainer else { return }
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<BookmarkItem>(
+            predicate: #Predicate { $0.reelID == reelID }
+        )
+        guard let item = (try? context.fetch(descriptor))?.first else { return }
+        item.lastAccessedAt = Date()
+        try? context.save()
+    }
+
     /// Synchronizes remote bookmark manifests into SwiftData without downgrading localStatus
     public func syncRemoteBookmarks(dtos: [BookmarkRemoteDTO]) async {
         guard let container = modelContainer else { return }
@@ -380,6 +424,9 @@ public actor MediaCacheManager {
             }
 
             for dto in dtos {
+                // B13: locally un-bookmarked ids stay dead even if the remote
+                // delete never landed.
+                if Self.unbookmarkedTombstones.contains(dto.id) { continue }
                 let fileURL = pathResolver.bookmarkFileURL(for: dto.id)
                 let fileExists = fm.fileExists(atPath: fileURL.path)
 

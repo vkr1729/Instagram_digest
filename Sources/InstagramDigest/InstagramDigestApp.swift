@@ -287,14 +287,18 @@ struct FeedMainView: View {
                         totalCount: allReels.count,
                         selectedCategoryId: selectedCategoryId,
                         onSelectCategory: { newCat in
-                            selectedCategoryId = newCat
                             guard let m = manifest else { return }
-                            pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId)
-                            // The reset to 0 is a view-filter artifact, not a
-                            // watched position: suppress its resume persist so
-                            // it cannot overwrite the saved full-list position.
-                            suppressNextResumeSave = true
-                            activeIndex = 0
+                            // B14: only adopt the selection when it matched
+                            // something — otherwise the chip would claim a
+                            // category while the pool plays something else.
+                            if pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId) {
+                                selectedCategoryId = newCat
+                                // The reset to 0 is a view-filter artifact, not a
+                                // watched position: suppress its resume persist so
+                                // it cannot overwrite the saved full-list position.
+                                suppressNextResumeSave = true
+                                activeIndex = 0
+                            }
                         }
                     )
 
@@ -733,6 +737,10 @@ struct FeedMainView: View {
             } catch {
                 modelContext.rollback()
             }
+            // B13: tombstone the id — if the remote delete never lands (the
+            // call below is fire-and-forget), the next syncRemoteBookmarks
+            // would otherwise resurrect the row.
+            MediaCacheManager.addUnbookmarkedTombstone(reelID)
 
             activeBookmarkTasks[reelID]?.cancel()
             activeBookmarkTasks[reelID] = Task {
@@ -743,7 +751,8 @@ struct FeedMainView: View {
             }
             triggerBookmarkPopAnimation()
         } else {
-            let isLocal = LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: reel.id)
+            // B13: re-bookmarking lifts any earlier tombstone.
+            MediaCacheManager.clearUnbookmarkedTombstone(reel.id)
             let item = BookmarkItem(
                 reelID: reel.id,
                 weekID: weekID,
@@ -752,7 +761,10 @@ struct FeedMainView: View {
                 rank: reel.rank,
                 videoUrl: reel.videoUrl,
                 thumbnailUrl: reel.thumbnailUrl,
-                localStatus: isLocal ? .cached : .evicted,
+                // B3: keepBookmarkOffline flips the row to .cached after the
+                // isolated copy actually lands. Claiming .cached here from a
+                // transient check lies when the copy never happens.
+                localStatus: .evicted,
                 sizeBytes: reel.sizeBytes ?? 0
             )
             modelContext.insert(item)
@@ -767,12 +779,17 @@ struct FeedMainView: View {
             let sBytes = reel.sizeBytes ?? 0
             activeBookmarkTasks[rID]?.cancel()
             activeBookmarkTasks[rID] = Task {
-                if isLocal {
-                    _ = try? await MediaCacheManager.shared.keepBookmarkOffline(
+                // B3: always attempt the isolated copy — it has a remote
+                // download branch for reels with no local file. A failed
+                // copy (1.5 GB cap, disk full) honestly leaves .evicted.
+                do {
+                    try await MediaCacheManager.shared.keepBookmarkOffline(
                         weekID: wID,
                         reelID: rID,
                         fallbackSizeBytes: sBytes
                     )
+                } catch {
+                    // Copy failed: row honestly stays .evicted.
                 }
                 guard !Task.isCancelled else { return }
                 // Remote Cloudflare Worker sync -> Telegram forwarding

@@ -37,7 +37,8 @@ def test_pool_play_paths_use_restart_helper():
     # Every path that starts playback must go through the restart helper:
     # forward promotion, backward promotion, same-slot resume, play().
     assert src.count("playCurrentSlotRestartingIfNeeded()") >= 4
-    assert "public func play() {\n        playCurrentSlotRestartingIfNeeded()" in src
+    # B2: play() also arms user intent before delegating.
+    assert "public func play() {\n        wantsPlayback = true\n        playCurrentSlotRestartingIfNeeded()" in src
 
 
 def test_pool_time_observer_keeps_clock_live():

@@ -8,6 +8,9 @@ Type=oneshot
 # Runs resume_pending.sh once per login. The script itself is a quiet no-op
 # when no sync_progress_*.json / expand_checkpoint_*.json files are pending,
 # single-flights with flock, and never starts while another pipeline is alive.
+# B30: default checkout location made explicit; override with
+# `systemctl --user edit` + Environment= for a relocated checkout.
+Environment=INSTAGRAM_DIGEST_DIR=%h/Instagram_digest
 ExecStart=%h/Instagram_digest/resume_pending.sh
 
 [Install]

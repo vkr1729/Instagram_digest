@@ -6,9 +6,11 @@
 #   3. R2 reachable + quota headroom for an estimated batch
 #   4. Live digest fresh (< 10 days) with >= MIN_DEPLOY_ITEMS items
 #   5. GitHub Pages serving the current week
-set -u
+# B27: this is a fail-fast gate — no silent skips. (It is still unwired:
+# run_weekly.sh does not invoke it. Wire it before claiming "gate".)
+set -uo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 PY=.venv/bin/python
 
 fail() { echo "HEALTHCHECK FAIL: $1" >&2; exit 1; }
@@ -73,12 +75,14 @@ if age_days > 10:
 EOF
 
 PAGES_URL=$($PY -c "import sys; sys.path.insert(0,'.'); import config; print(config.PAGES_BASE_URL)" 2>/dev/null | tr -d ' ')
+# B27: a failing config import must fail loudly, never skip the Pages check.
+if [ -z "$PAGES_URL" ]; then
+  fail "PAGES_BASE_URL unreadable (config import failed); refusing to skip Pages check"
+fi
 if [ -n "$PAGES_URL" ]; then
   CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$PAGES_URL/" || echo "000")
   [ "$CODE" = "200" ] || fail "Pages $PAGES_URL returned HTTP $CODE"
   ok "Pages live at $PAGES_URL (HTTP 200)"
-else
-  echo "warn: PAGES_BASE_URL unset, skipping Pages check"
 fi
 
 echo "HEALTHCHECK PASS"

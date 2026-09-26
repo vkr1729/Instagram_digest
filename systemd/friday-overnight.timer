@@ -1,0 +1,12 @@
+[Unit]
+Description=Friday evening chain: Instagram Digest then TubeLM, then power off
+
+[Timer]
+OnCalendar=Fri *-*-* 18:00:00
+AccuracySec=1m
+# A Friday evening the machine is off/asleep fires on next login/boot
+# (weekend catch-up); the wrapper skips shutdown for those morning runs.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

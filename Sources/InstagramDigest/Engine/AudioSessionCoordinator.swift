@@ -45,10 +45,13 @@ public final class AudioSessionCoordinator: Sendable {
         guard isSessionActive else { return }
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            isSessionActive = false
         } catch {
-            // Audio deactivation failure
+            // B8: deactivation often throws mid-interruption while the
+            // session is effectively inactive either way. The flag must
+            // clear regardless, or the next activateSession() early-returns
+            // and video plays without audio.
         }
+        isSessionActive = false
     }
 
     // MARK: - Notifications & Observers

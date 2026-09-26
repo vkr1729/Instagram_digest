@@ -309,8 +309,8 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
     ranker.save_digest_batch(all_300, run_date=new_week_id)
     logger.info("Saved updated 300-reel digest to %s and data/digests/%s.json.", config.DIGEST_BATCH_FILE.name, new_week_id)
 
-    # 10. Update last_run.json to today
-    main.save_last_run_info(new_week_id, since_timestamp=int(time.time()))
+    # 10. Update last_run.json to today (a fresh week: anchorable).
+    main.save_last_run_info(new_week_id, since_timestamp=int(time.time()), kind="weekly")
     logger.info("Updated data/last_run.json to week %s.", new_week_id)
 
     # 11. Build and deploy static PWA
@@ -333,5 +333,13 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
 
 
 if __name__ == "__main__":
-    deploy_flag = "--no-deploy" not in sys.argv
-    sys.exit(topup_digest(watched_count=136, new_week_id="2026-09-14", deploy=deploy_flag))
+    # B32: no hardcoded re-runs — the constants below once rewrote the live
+    # digest and last_run.json with a stale week on every accidental run.
+    import argparse as _argparse
+    _p = _argparse.ArgumentParser(description="One-shot digest top-up (explicit args required).")
+    _p.add_argument("--watched-count", type=int, required=True)
+    _p.add_argument("--new-week-id", required=True, help="YYYY-MM-DD for the new digest week")
+    _p.add_argument("--no-deploy", action="store_true")
+    _a = _p.parse_args()
+    sys.exit(topup_digest(watched_count=_a.watched_count, new_week_id=_a.new_week_id,
+                          deploy=not _a.no_deploy))

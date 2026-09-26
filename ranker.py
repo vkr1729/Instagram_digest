@@ -84,13 +84,13 @@ def get_blacklisted_creators() -> set[str]:
             return set(h.lower().replace("@", "") for h in data.get("creators", []))
         except Exception as exc:
             # Quarantine for forensics; fail open rather than silently
-            # discarding bytes.
+            # discarding bytes. B22: rename, not copy.
             try:
                 from datetime import datetime as _dt, timezone as _tz
                 ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
                 backup = config.BLACKLIST_FILE.with_name(
                     f"{config.BLACKLIST_FILE.name}.corrupt-{ts}")
-                backup.write_bytes(config.BLACKLIST_FILE.read_bytes())
+                config.BLACKLIST_FILE.rename(backup)
             except Exception:
                 pass
     return set()
@@ -185,6 +185,10 @@ def rank_top_reels(
     # digest never exceeds top_n (guarantee is best-effort past capacity).
     _first_picks.sort(key=lambda t: t[1]["viral_score"], reverse=True)
     for handle, top_pick in _first_picks[:top_n]:
+        # B24: a reel attributed to two creators must not become two cards.
+        if top_pick["id"] in used_ids:
+            creator_queues[handle].insert(0, top_pick)
+            continue
         selected.append(top_pick)
         creator_counts[handle] += 1
         used_ids.add(top_pick["id"])

@@ -51,6 +51,18 @@ def get_chrome_secret_service_password() -> bytes:
     return b"peanuts"
 
 
+def netscape_cookie_expiry(expires_utc: int | None) -> int:
+    """Chrome expires_utc (µs since 1601-01-01) -> Netscape seconds (Unix).
+
+    B4: without the 11644473600 offset every persistent cookie lands in
+    ~year 2401 and dead cookies never expire for yt-dlp. Falsy input means
+    a session cookie -> far-future sentinel (never expires).
+    """
+    if not expires_utc:
+        return 2147483647
+    return int(expires_utc / 1000000) - 11644473600
+
+
 def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
     """Decrypt a v10/v11 Chrome cookie blob with the supplied Safe Storage key."""
     from cryptography.hazmat.backends import default_backend
@@ -168,7 +180,10 @@ def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
                 })
                 flag = "TRUE" if host.startswith(".") else "FALSE"
                 sec = "TRUE" if is_secure else "FALSE"
-                exp = str(int(expires / 1000000) if expires else 2147483647)
+                # B4: Chrome expires_utc is µs since 1601-01-01; Netscape wants
+                # Unix seconds. Without the offset every cookie lands in ~2401
+                # and dead cookies never expire for yt-dlp.
+                exp = str(netscape_cookie_expiry(expires))
                 netscape_lines.append(f"{host}\t{flag}\t{path}\t{sec}\t{exp}\t{name}\t{val}")
 
     json_path = output_dir / "cookies.json"

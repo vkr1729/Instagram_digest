@@ -17,6 +17,7 @@ def _files(tmp_path, monkeypatch):
     bl = tmp_path / "blacklist.json"
     monkeypatch.setattr(config, "SOURCES_FILE", src)
     monkeypatch.setattr(config, "BLACKLIST_FILE", bl)
+    monkeypatch.setattr(config, "FOLLOWING_CACHE_FILE", tmp_path / "following.json")
     src.write_text(json.dumps([
         {"handle": "kept_one", "name": "Kept", "category": "niche", "enabled": True},
         {"handle": "unfollowed_one", "name": "Unfollowed", "category": "finance", "enabled": True},
@@ -27,9 +28,12 @@ def _files(tmp_path, monkeypatch):
 
 
 def _mock_following(monkeypatch, accounts):
+    # B21: the audit reads FOLLOWING_CACHE_FILE directly and must never
+    # trigger a live scrape — stage the cache and forbid the scrape call.
+    config.FOLLOWING_CACHE_FILE.write_text(json.dumps({"timestamp": 0, "accounts": accounts}))
     monkeypatch.setattr(
         audit_channels.extractor, "sync_following_accounts",
-        lambda force=False: accounts,
+        lambda force=False: (_ for _ in ()).throw(AssertionError("audit must not scrape")),
     )
 
 
@@ -75,21 +79,24 @@ def test_import_missing_adds_to_sources(_files, monkeypatch):
 
 
 def test_audit_never_forces_scrape(_files, monkeypatch):
-    calls = []
+    # Reaching the assertions below proves no scrape: the mock raises.
+    config.FOLLOWING_CACHE_FILE.write_text(json.dumps({"timestamp": 0, "accounts": []}))
     monkeypatch.setattr(
         audit_channels.extractor, "sync_following_accounts",
-        lambda force=False: (calls.append(force), [])[1],
+        lambda force=False: (_ for _ in ()).throw(AssertionError("audit must not scrape")),
     )
-    audit_channels.audit()
-    assert calls == [False]
+    report = audit_channels.audit()
+    assert report["missing_from_digest"] == []
+    assert {e["handle"] for e in report["not_followed_on_ig"]} == {"kept_one", "unfollowed_one"}
 
 
 def test_audit_handles_broken_files(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SOURCES_FILE", tmp_path / "nope.json")
     monkeypatch.setattr(config, "BLACKLIST_FILE", tmp_path / "nope2.json")
+    monkeypatch.setattr(config, "FOLLOWING_CACHE_FILE", tmp_path / "nope3.json")
     monkeypatch.setattr(
         audit_channels.extractor, "sync_following_accounts",
-        lambda force=False: (_ for _ in ()).throw(RuntimeError("boom")),
+        lambda force=False: (_ for _ in ()).throw(AssertionError("audit must not scrape")),
     )
     report = audit_channels.audit()
     assert report["missing_from_digest"] == []
@@ -111,10 +118,8 @@ def test_inactive_creators_flags_stale(tmp_path, monkeypatch):
         "run_date": "2026-09-19",
         "items": [{"id": "x1", "creator_handle": "active_one"} for _ in range(100)],
     }))
-    monkeypatch.setattr(
-        audit_channels.extractor, "sync_following_accounts",
-        lambda force=False: [],
-    )
+    monkeypatch.setattr(config, "FOLLOWING_CACHE_FILE", tmp_path / "following.json")
+    (tmp_path / "following.json").write_text(json.dumps({"timestamp": 0, "accounts": []}))
     stale = audit_channels.inactive_creators(weeks=3)
     assert [e["handle"] for e in stale] == ["stale_one"]
 

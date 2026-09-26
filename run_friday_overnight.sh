@@ -22,6 +22,11 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$APP_DIR/logs/friday_overnight.log"
 mkdir -p "$APP_DIR/logs"
 
+# Quiet-ops hygiene: cap log growth (no logrotate dependency).
+if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE")" -gt 10485760 ]; then
+    tail -c 5242880 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+fi
+
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG_FILE"; }
 
 prompt_chrome_check() {
@@ -54,7 +59,11 @@ if { [ "$dow" = "5" ] && [ "$hr" -ge 18 ]; } || [ "$dow" = "6" ] || [ "$dow" = "
         log "Weekend catch-up run (day=$dow hour=$hr) — shutdown will be skipped."
     fi
 else
-    log "Stale trigger outside Fri-eve/weekend window (day=$dow hour=$hr) — exiting quietly."
+    # B25: a missed week must not vanish with only a log line — notify loudly
+    # (best-effort; never fails the script).
+    log "Stale trigger outside Fri-eve/weekend window (day=$dow hour=$hr) — alerting and exiting quietly."
+    notify-send "Instagram Digest" "Scheduled run skipped (stale trigger) — no digest this week unless run manually." 2>/dev/null || true
+    "$APP_DIR/.venv/bin/python" "$APP_DIR/notifier.py" --failure-alert --context "Friday chain skipped (stale trigger day=$dow hour=$hr)" --exit-code 0 >>"$LOG_FILE" 2>&1 || true
     exit 0
 fi
 

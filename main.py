@@ -40,11 +40,13 @@ MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)
 
 
 def _quarantine_corrupt(path: Path, exc: Exception) -> None:
-    """Preserve an unreadable state file alongside for forensics."""
+    """Move an unreadable state file alongside for forensics (B22: rename,
+    not copy — the corrupt original must not survive to fail the next
+    retry identically)."""
     try:
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = path.with_name(f"{path.name}.corrupt-{ts}")
-        backup.write_bytes(path.read_bytes())
+        path.rename(backup)
         logger.warning("Quarantined corrupt %s to %s: %s", path, backup, exc)
     except Exception:
         logger.warning("Unreadable %s; starting fresh: %s", path, exc)
@@ -159,7 +161,8 @@ def get_last_run_info() -> dict[str, Any] | None:
 
 
 def save_last_run_info(week_id: str, timestamp: float | None = None,
-                       since_timestamp: int | None = None) -> dict[str, Any]:
+                       since_timestamp: int | None = None,
+                       kind: str | None = None) -> dict[str, Any]:
     """Persist the timestamp and week_id of a successful sync run."""
     ts = timestamp if timestamp is not None else time.time()
     dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -168,8 +171,10 @@ def save_last_run_info(week_id: str, timestamp: float | None = None,
         "last_run_utc": dt_utc,
         "week_id": week_id,
         # Weekly runs cover the full window; ad-hoc runs are top-ups that must
-        # not shorten the next weekly anchor (F20).
-        "kind": "ad-hoc" if since_timestamp is not None else "weekly",
+        # not shorten the next weekly anchor (F20). B17: the kind is passed
+        # explicitly by callers — inferring it from since_timestamp mis-tags
+        # anchored weeklies (which carry a timestamp) as ad-hoc.
+        "kind": kind if kind in ("weekly", "ad-hoc") else ("ad-hoc" if since_timestamp is not None else "weekly"),
     }
     try:
         import atomic_io
@@ -212,6 +217,41 @@ def _persisted_digest_week() -> str:
         return week if isinstance(week, str) else ""
     except Exception:
         return ""
+
+
+def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
+                          since_timestamp: int | None, resume: bool,
+                          banked_age_days: int) -> bool:
+    """Resume gate: is this checkpoint this run's banked work?
+
+    B5: resume runs exist to finish banked work — a drifted anchor is still
+    the same operation, never a reason to retire hours of banked scraping.
+    """
+    return (
+        isinstance(loaded_sync, dict)
+        and loaded_sync.get("version") == 1
+        and loaded_sync.get("limit_per_creator") == limit_per_creator
+        and (resume or loaded_sync.get("since_timestamp") == since_timestamp)
+        and loaded_sync.get("stage") in RESUMABLE_SYNC_STAGES
+        and banked_age_days <= MAX_SYNC_RESUME_AGE_DAYS
+    )
+
+
+def _current_week_stray_keep_ids(week_id: str,
+                                 ranked_reels: list[dict[str, Any]]) -> set[str] | None:
+    """Id set the current-week stray purge must keep: the new ranked set plus,
+    on a same-day re-run, the live digest's ids (B1). None means the live
+    digest was unreadable — the caller must skip the purge, not risk it.
+    """
+    keep_ids = {str(r["id"]) for r in ranked_reels if r.get("id")}
+    if _persisted_digest_week() == week_id:
+        try:
+            _live = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8")).get("items") or []
+            keep_ids |= {str(i.get("id")) for i in _live if isinstance(i, dict) and i.get("id")}
+        except Exception:
+            logger.warning("Live digest unreadable; skipping current-week stray purge.")
+            return None
+    return keep_ids
 
 
 def _purge_current_week_stray_r2_keys(week_id: str, ranked_ids: set[str]) -> list[str]:
@@ -325,8 +365,8 @@ def _record_seen_reel_ids(reels: list[dict[str, Any]]) -> int:
     try:
         import atomic_io
         atomic_io.durable_write_json(SEEN_IDS_FILE, seen)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Seen-id ledger write failed (%d ids not recorded): %s", added, exc)
     return added
 
 
@@ -669,11 +709,12 @@ def run_full_sync(
     limit_per_creator: int = 15,
     since_timestamp: int | None = None,
     resume: bool = False,
+    kind: str | None = None,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     try:
         with _pipeline_file_lock():
-            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume)
+            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume, kind)
     except PipelineBusy as exc:
         logger.error("%s; refusing to start.", exc)
         return 3
@@ -686,6 +727,7 @@ def _run_full_sync(
     limit_per_creator: int = 15,
     since_timestamp: int | None = None,
     resume: bool = False,
+    kind: str | None = None,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -777,14 +819,8 @@ def _run_full_sync(
                 ).days
             except ValueError:
                 banked_age_days = 10**6
-            if (
-                isinstance(loaded_sync, dict)
-                and loaded_sync.get("version") == 1
-                and loaded_sync.get("limit_per_creator") == limit_per_creator
-                and loaded_sync.get("since_timestamp") == since_timestamp
-                and loaded_sync.get("stage") in RESUMABLE_SYNC_STAGES
-                and banked_age_days <= MAX_SYNC_RESUME_AGE_DAYS
-            ):
+            if _sync_progress_usable(loaded_sync, limit_per_creator, since_timestamp,
+                                       resume, banked_age_days):
                 sync_progress = loaded_sync
                 if loaded_sync.get("days_back") != days_back:
                     logger.info(
@@ -903,6 +939,15 @@ def _run_full_sync(
                 "Resuming weekly sync after ranking: %d reels banked, skipping to downloads.",
                 len(resume_ranked),
             )
+            # B6: the publishing checkpoint banks these maps on every upload;
+            # the full-set path needs them just as much as the shortfall path.
+            for rid, pstr in (sync_progress.get("downloaded_paths") or {}).items():
+                p = Path(pstr)
+                if p.exists():
+                    banked_paths_map[rid] = p
+            for rid, url in (sync_progress.get("uploaded_url_map") or {}).items():
+                if url:
+                    banked_urls_map[rid] = url
     if resume_ranked is not None:
         ranked_reels = resume_ranked
     else:
@@ -1790,8 +1835,11 @@ def _run_full_sync(
         if config.R2_ACCOUNT_ID:
             storage_r2.purge_previous_weeks_videos(
                 current_week_id=week_id, keep_week_ids=keep_weeks)
-            _purge_current_week_stray_r2_keys(
-                week_id, {str(r["id"]) for r in ranked_reels if r.get("id")})
+            # B1: on a same-day re-run the live digest references this very
+            # week, so its ids are never strays (None = unreadable = skip).
+            keep_ids = _current_week_stray_keep_ids(week_id, ranked_reels)
+            if keep_ids is not None:
+                _purge_current_week_stray_r2_keys(week_id, keep_ids)
             if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
                 logger.error("Pre-flight quota check failed after JIT purge. Aborting to protect Cloudflare free limits.")
                 _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
@@ -1892,12 +1940,14 @@ def _run_full_sync(
                 f"all {len(dropped)} uploads failed - outbox preserved for reconcile",
             )
             return 2
+        extra_manifest = {"budget_capped": True} if budget_capped else None
+        ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
+        # B20: ledger records what SHIPPED — a crash between ledger and save
+        # used to blacklist reels from the next 30 days of digests.
         try:
             _record_seen_reel_ids(ranked_reels)
         except Exception as dedup_err:
             logger.warning("Failed recording seen-reel ledger: %s", dedup_err)
-        extra_manifest = {"budget_capped": True} if budget_capped else None
-        ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
 
         if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
             logger.error(
@@ -1952,7 +2002,7 @@ def _run_full_sync(
         site_builder.deploy_to_gh_pages()
 
     if not dry_run:
-        save_last_run_info(week_id, since_timestamp=since_timestamp)
+        save_last_run_info(week_id, since_timestamp=since_timestamp, kind=kind)
         # 10. Send notification email confirming weekly refresh
         try:
             import notifier
@@ -2571,6 +2621,7 @@ def main() -> int:
         limit_per_creator=args.limit_per_creator,
         since_timestamp=since_ts,
         resume=args.resume,
+        kind="ad-hoc" if args.ad_hoc else "weekly",
     )
 
 

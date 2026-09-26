@@ -38,6 +38,11 @@ def test_uat_4_4_local_14day_purge(tmp_path, monkeypatch):
 
     stale_file.write_text("old")
     fresh_file.write_text("new")
+    # B23: purge requires date AND mtime agreement — backdate the stale file.
+    import os as _os
+    import time as _time
+    _old = _time.time() - (20 * 86400)
+    _os.utime(stale_file, (_old, _old))
 
     purged = storage_r2.purge_expired_local_videos(max_age_days=14)
 

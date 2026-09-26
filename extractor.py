@@ -212,12 +212,14 @@ def get_blacklisted_creators() -> set[str]:
         except Exception as exc:
             # Quarantine for forensics; fail open (muted creators reappear)
             # rather than failing closed, and never silently discard bytes.
+            # B22: MOVE (not copy) aside — a copy leaves the corrupt original
+            # in place so every retry fails identically.
             try:
                 from datetime import timezone as _tz, datetime as _dt
                 ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
                 backup = config.BLACKLIST_FILE.with_name(
                     f"{config.BLACKLIST_FILE.name}.corrupt-{ts}")
-                backup.write_bytes(config.BLACKLIST_FILE.read_bytes())
+                config.BLACKLIST_FILE.rename(backup)
                 logger.warning("Quarantined corrupt %s to %s: %s",
                                config.BLACKLIST_FILE, backup, exc)
             except Exception:
@@ -266,12 +268,14 @@ def load_sources() -> list[dict[str, Any]]:
 
 
 def _quarantine_sources_file(exc: Exception) -> None:
-    """Preserve corrupt sources.json bytes alongside for forensics."""
+    """Move corrupt sources.json bytes alongside for forensics (B22: rename,
+    not copy — the corrupt original must not survive to fail the next
+    retry identically)."""
     try:
         from datetime import datetime as _dt, timezone as _tz
         ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = config.SOURCES_FILE.with_name(f"{config.SOURCES_FILE.name}.corrupt-{ts}")
-        backup.write_bytes(config.SOURCES_FILE.read_bytes())
+        config.SOURCES_FILE.rename(backup)
         logger.warning("Quarantined corrupt %s to %s: %s", config.SOURCES_FILE, backup, exc)
     except Exception:
         logger.warning("Unreadable %s; treating sources as empty: %s", config.SOURCES_FILE, exc)
@@ -984,6 +988,7 @@ def fetch_media_info_batch(
     sess = _rq.Session()
     sess.cookies.set("sessionid", sessionid, domain=".instagram.com")
     out: dict[str, dict[str, Any]] = {}
+    consecutive_429 = 0
     for sc in shortcodes:
         try:
             mid = _shortcode_to_media_id(sc)
@@ -998,6 +1003,13 @@ def fetch_media_info_batch(
             logger.debug("media-info request failed for %s: %s", sc, exc)
             continue
         if resp.status_code == 429:
+            consecutive_429 += 1
+            if consecutive_429 >= 3:
+                # B19: a persistent limit would otherwise sleep 60s per
+                # remaining id (hours of pure sleeping). Callers already
+                # fall back to per-reel extraction for misses.
+                logger.warning("media-info rate-limited 3x in a row; stopping batch, keeping %d enriched.", len(out))
+                break
             wait = 60.0
             try:
                 wait = max(wait, float(resp.headers.get("Retry-After") or 0))
@@ -1006,6 +1018,7 @@ def fetch_media_info_batch(
             logger.warning("media-info rate-limited (429); backing off %.0fs.", wait)
             time.sleep(wait)
             continue
+        consecutive_429 = 0
         if _response_indicates_challenge(resp.status_code, resp.text[:500]):
             # Account is gated: stop the whole batch NOW. Callers convert
             # this to a fast abort; further requests only risk the account.

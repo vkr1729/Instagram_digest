@@ -150,6 +150,11 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
     }
 
     public func suspendQueue() {
+        // B15: a watchdog armed earlier must not fire mid-purge (or mid-user-
+        // pause) and resume behind our back — the purge invariant depends on
+        // suspension holding until explicitly resumed.
+        watchdogResumeTask?.cancel()
+        watchdogResumeTask = nil
         isSuspended = true
         for (_, entry) in inFlightTasks {
             entry.task.suspend()

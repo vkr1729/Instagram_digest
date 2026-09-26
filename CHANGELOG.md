@@ -1,3 +1,30 @@
+# Changelog — Frontier review fixes (2026-09-26)
+
+- Fixed P0: same-day re-run stray purge could delete the live digest's R2
+  videos (`main._current_week_stray_keep_ids` unions live ids, skips purge
+  when unreadable). Ghost audio: async slot loads now honor a
+  `wantsPlayback` intent flag. Bookmark pin claimed `.cached` before the
+  isolated copy existed; rows start `.evicted`, the copy always runs
+  (remote branch included), rollover pins all bookmarked rows.
+- Fixed P1: Chrome-epoch cookie expiry for yt-dlp; resume gate no longer
+  retires banked work on anchor drift; full-set resume reuses banked
+  download/upload maps; `run_weekly.sh` retries exit-3 lock collisions;
+  audio-deactivation flag clears on throw; Download sheet `.paused` gets
+  Resume/Cancel; corrupt-feed eviction no longer self-blocked.
+- Fixed P2 batch: explicit run-kind tagging, R2-unavailable fail-closed,
+  429 batch break, seen-ledger ordering, audit reads cache only, quarantine
+  renames (not copies), local-purge date+mtime agreement, ranker dedup,
+  stale-trigger alerts, resume_pending scoping, healthcheck strictness,
+  watched-API validation, retrigger/resume routing honesty, systemd unit
+  check-ins, launcher/top-up hazards. Dashboard: plain-language help per
+  card, `~AI-estimate` follower counts, "Free laptop videos" action
+  (`POST /api/storage/free-local`, pipeline-guarded, outbox-aware).
+- App P2: bookmark overlay route-change pause, cap-ledger holes closed,
+  un-bookmark tombstones, empty-category no longer plays full feed,
+  watchdog-vs-purge race, LRU access timestamps.
+- New `tests/test_frontier_fixes.py` (B1/B4/B5); updated audit, storage,
+  and replay expectations to the fixed semantics. Full suite green.
+
 # Changelog — Tap-intent race fix (2026-09-15)
 
 - Fixed: tap committed on a paused/loading video paused it the instant

@@ -187,7 +187,7 @@ public struct DownloadAllSheet: View {
                                 }
                             }
 
-                        case .completed, .paused:
+                        case .completed:
                             Button {
                                 dismiss()
                             } label: {
@@ -200,6 +200,36 @@ public struct DownloadAllSheet: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
                             .accessibilityIdentifier("DownloadDoneButton")
+
+                        case .paused:
+                            // B9: pause used to strand the sheet on Done with
+                            // no way back. Paused gets its own Resume + Cancel.
+                            VStack(spacing: 12) {
+                                Button {
+                                    coordinator.resumeQueue()
+                                } label: {
+                                    Text("Resume")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 14)
+                                        .background(Color.white.opacity(0.15))
+                                        .foregroundColor(.white)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .accessibilityIdentifier("DownloadResumeButton")
+
+                                Button {
+                                    coordinator.cancelAll()
+                                } label: {
+                                    Text("Cancel")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 14)
+                                        .background(Color.red.opacity(0.2))
+                                        .foregroundColor(.red)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                            }
 
                         case .failed:
                             VStack(spacing: 12) {

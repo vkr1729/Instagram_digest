@@ -137,9 +137,9 @@
       <div class="meta" id="syncMeta">Loading…</div>
       <div class="actions">
         <button id="adhocBtn">Run ad-hoc refresh</button>
-        <a class="btn" href="/retrigger">Retrigger full sync</a>
+        <a class="btn" href="/retrigger">Retrigger refresh</a>
       </div>
-      <div class="meta" style="margin-top: 8px;">Ad-hoc = quick top-up of new reels since the last run (minutes). Full sync = rebuilds the whole week from all channels (hours) — use it on Fridays or after a failure.</div>
+      <div class="meta" style="margin-top: 8px;">Ad-hoc = quick top-up of new reels since the last run (minutes). Retrigger opens the same top-up with live progress. A true full rebuild (hours) runs on Fridays, or via <b>bash run_weekly.sh</b> after a failure.</div>
     </div>
     <div class="card">
       <div class="row1"><h2>Expand digest</h2><span class="pill idle" id="expandPill">IDLE</span></div>
@@ -354,20 +354,28 @@
     });
     (resume.sync || []).forEach((s) => {
       const isShortfall = s.stage === "shortfall_paused";
+      // B29: banked work older than 3 days is retired on sight — offering
+      // Resume for it promises what the pipeline cannot keep.
+      let ageSecs = NaN;
+      try { ageSecs = (Date.now() - new Date(s.updated_at).getTime()) / 1000; } catch (e) {}
+      const expired = isFinite(ageSecs) && ageSecs > 3 * 86400;
       const what = isShortfall ? "<b>" + s.banked + " playable reels banked</b> (< 150 required threshold). Work preserved."
         : s.stage === "ranked" ? s.banked + " ranked reels"
         : s.stage === "enriched" ? s.banked + " enriched reels"
         : s.banked + " candidates" + (s.creators_visited ? ", " + s.creators_visited + " creators visited" : "");
-      const title = isShortfall ? "Shortfall Paused (Ready to Top-Up)" : "STUCK at stage " + esc(s.stage) + ", not running";
+      const title = expired ? "Too old to resume (> 3 days)"
+        : isShortfall ? "Shortfall Paused (Ready to Top-Up)" : "STUCK at stage " + esc(s.stage) + ", not running";
       const btnText = isShortfall ? "Resume Sync / Top-Up" : "Resume this job";
       const bannerCls = isShortfall ? "banner alert" : "banner";
+      const resumeBtn = expired
+        ? '<span class="meta">Banked work this old is retired automatically — run a fresh sync instead.</span>'
+        : '<button class="primary" data-resume-sync="1" data-resume-shortfall="' + (isShortfall ? "1" : "0") + '" data-resume-file="' + esc(s.file || "") + '">' + btnText + '</button>';
 
       items.push('<div class="' + bannerCls + '"><p><b>Job: weekly sync</b><br>' +
         "File: " + esc(s.file || "") + "<br>" +
         "Status: <b>" + title + "</b><br>" +
         "Progress: " + what + " · updated " + ago(s.updated_at) + ".</p>" +
-        '<div class="actions" style="margin:0">' +
-        '<button class="primary" data-resume-sync="1" data-resume-shortfall="' + (isShortfall ? "1" : "0") + '" data-resume-file="' + esc(s.file || "") + '">' + btnText + '</button>' +
+        '<div class="actions" style="margin:0">' + resumeBtn +
         '<button class="danger" data-discard-file="' + esc(s.file || "") + '">Discard</button></div></div>');
     });
     lane.innerHTML = items.join("");
@@ -375,13 +383,9 @@
       b.addEventListener("click", () => startExpand(parseInt(b.getAttribute("data-resume-expand"), 10) || 100, b));
     });
     lane.querySelectorAll("[data-resume-sync]").forEach((b) => {
-      b.addEventListener("click", () => {
-        if (b.getAttribute("data-resume-shortfall") === "1") {
-          startResumeSync(b);
-        } else {
-          startAdhoc(b);
-        }
-      });
+      // B5: every resume goes through the resume endpoint (resume=True) so
+      // banked work continues — never the ad-hoc path, which would rescope it.
+      b.addEventListener("click", () => { startResumeSync(b); });
     });
     lane.querySelectorAll("[data-discard-file]").forEach((b) => {
       b.addEventListener("click", () => discardJob(b.getAttribute("data-discard-file"), b));

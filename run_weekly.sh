@@ -12,6 +12,11 @@ LOG_FILE="$LOG_DIR/weekly_sync.log"
 
 mkdir -p "$LOG_DIR"
 
+# Quiet-ops hygiene: cap log growth (no logrotate dependency).
+if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE")" -gt 10485760 ]; then
+    tail -c 5242880 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+fi
+
 echo "=================================================================" >> "$LOG_FILE"
 echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Starting Weekly Friday Instagram Digest..." >> "$LOG_FILE"
 echo "=================================================================" >> "$LOG_FILE"
@@ -27,8 +32,16 @@ fi
 # 2. Run full sync and deployment
 echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running full pipeline (sync + deploy)..." >> "$LOG_FILE"
 set +e
-.venv/bin/python main.py --sync --deploy >> "$LOG_FILE" 2>&1
-EXIT_CODE=$?
+# B7: exit 3 means another pipeline holds the lock — retry for up to 3 hours
+# instead of skipping the week with a false failure alert.
+EXIT_CODE=3
+for attempt in 1 2 3 4 5 6; do
+    .venv/bin/python main.py --sync --deploy >> "$LOG_FILE" 2>&1
+    EXIT_CODE=$?
+    if [ "$EXIT_CODE" -ne 3 ]; then break; fi
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Pipeline busy (attempt $attempt/6); retrying in 30 min..." >> "$LOG_FILE"
+    sleep 1800
+done
 set -e
 
 if [ $EXIT_CODE -eq 0 ]; then

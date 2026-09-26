@@ -23,9 +23,17 @@ def test_purge_expired_local_videos(tmp_path, monkeypatch):
     old_date = today - timedelta(days=16)
     recent_date = today - timedelta(days=5)
 
-    # 1. Stale video file with old date in filename
+    # 1. Stale video file with old date in filename AND old mtime.
+    # B23: both signals must agree — a date-like name alone never purges.
     stale_file = tmp_path / f"01_creator_{old_date.strftime('%Y-%m-%d')}_abc.mp4"
     stale_file.write_text("dummy video")
+    old_epoch = time.time() - (20 * 86400)
+    os.utime(stale_file, (old_epoch, old_epoch))
+
+    # 1b. Old date in filename but FRESH mtime (e.g. a shortcode shaped like
+    # a date on a fresh download) must survive.
+    decoy_file = tmp_path / f"03_creator_{old_date.strftime('%Y-%m-%d')}_xyz.mp4"
+    decoy_file.write_text("dummy video")
 
     # 2. Fresh video file with recent date in filename
     fresh_file = tmp_path / f"02_creator_{recent_date.strftime('%Y-%m-%d')}_def.mp4"
@@ -34,7 +42,6 @@ def test_purge_expired_local_videos(tmp_path, monkeypatch):
     # 3. File without date in filename, but old mtime
     stale_mtime_file = tmp_path / "old_video.mp4"
     stale_mtime_file.write_text("dummy video")
-    old_epoch = time.time() - (20 * 86400)
     os.utime(stale_mtime_file, (old_epoch, old_epoch))
 
     purged = purge_expired_local_videos(max_age_days=14)
@@ -45,6 +52,8 @@ def test_purge_expired_local_videos(tmp_path, monkeypatch):
     assert not stale_mtime_file.exists()
     assert fresh_file.exists()
     assert fresh_file.name not in purged
+    assert decoy_file.exists()
+    assert decoy_file.name not in purged
 
 
 def test_check_preflight_quota_logic(monkeypatch):

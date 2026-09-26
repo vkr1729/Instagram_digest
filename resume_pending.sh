@@ -36,6 +36,11 @@ LOCK_FILE="$APP_DIR/data/.resume.lock"
 
 mkdir -p "$LOG_DIR" "$APP_DIR/data"
 
+# Quiet-ops hygiene: cap log growth (no logrotate dependency).
+if [ -f "$LOG_FILE" ] && [ "$(stat -c %s "$LOG_FILE")" -gt 10485760 ]; then
+    tail -c 5242880 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+fi
+
 log() {
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] $*" >>"$LOG_FILE"
 }
@@ -76,7 +81,9 @@ fi
 # guard silently always-false.)
 # pgrep scans full command lines, so exclude this script and its ancestors: a
 # wrapper's own command line may mention these words without running a pipeline.
-_pipeline_pids=$(pgrep -f "python.*main\.py --(sync|expand|ad-hoc)|run_weekly\.sh" 2>/dev/null || true)
+# B26: anchor the run_weekly match to actual executions (bash/sh …) so an
+# editor/grep mentioning the filename is not mistaken for a live pipeline.
+_pipeline_pids=$(pgrep -f "python.*main\.py --(sync|expand|ad-hoc)|(bash|sh) .*run_weekly\.sh" 2>/dev/null || true)
 _exclude=" $$ "
 _ppid="$PPID"
 while [ -n "$_ppid" ] && [ "$_ppid" != "0" ]; do
@@ -110,25 +117,49 @@ log "Auto-resume at login: ${#SYNC_PROGS[@]} sync progress file(s), ${#EXPAND_CK
 notify "Resuming interrupted Instagram Digest run in the background…"
 
 # Weekly sync first: it rebuilds the digest the expansion then appends to.
+# B26: if the sync resume fails, stop — running expands on top of the old
+# digest would "deploy" stale work and contradict the never-delete claim.
+SYNC_RC=0
 if [ "${#SYNC_PROGS[@]}" -gt 0 ]; then
     log "Resuming weekly sync (or shortfall top-up): main.py --sync --resume --deploy"
     "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --sync --resume --deploy >>"$LOG_FILE" 2>&1
-    log "Sync resume exited with code $?."
+    SYNC_RC=$?
+    log "Sync resume exited with code $SYNC_RC."
 fi
 
-# Then any pending +100 top-ups (each run prunes stale checkpoints itself).
-for ckpt in "${EXPAND_CKPTS[@]}"; do
-    [ -e "$ckpt" ] || continue
-    TARGET=$(/usr/bin/python3 -c \
-        "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('target_count', 100) if isinstance(d, dict) else 100)" \
-        "$ckpt" 2>/dev/null || echo 100)
-    case "$TARGET" in '' | *[!0-9]*) TARGET=100 ;; esac
-    [ "$TARGET" -gt 500 ] && TARGET=500
-    [ "$TARGET" -lt 1 ] && TARGET=1
-    log "Resuming expansion from $(basename "$ckpt"): main.py --expand $TARGET --deploy"
-    "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --expand "$TARGET" --deploy >>"$LOG_FILE" 2>&1
-    log "Expand resume exited with code $?."
-done
+if [ "$SYNC_RC" -ne 0 ]; then
+    log "Sync resume failed (exit $SYNC_RC); skipping expansions so nothing deploys on stale state."
+    log "Auto-resume finished."
+    notify "Instagram Digest resume: sync failed — expansions skipped."
+    exit 0
+fi
+
+# Then any pending +100 top-ups. B26: only the newest checkpoint is live —
+# main.py resumes from the newest and deletes the rest, so older files are
+# migrated leftovers, not separate jobs.
+if [ "${#EXPAND_CKPTS[@]}" -gt 0 ]; then
+    ckpt=""
+    newest=0
+    for c in "${EXPAND_CKPTS[@]}"; do
+        [ -e "$c" ] || continue
+        mt=$(stat -c %Y "$c" 2>/dev/null || echo 0)
+        if [ "$mt" -ge "$newest" ]; then
+            newest="$mt"
+            ckpt="$c"
+        fi
+    done
+    if [ -n "$ckpt" ]; then
+        TARGET=$(/usr/bin/python3 -c \
+            "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('target_count', 100) if isinstance(d, dict) else 100)" \
+            "$ckpt" 2>/dev/null || echo 100)
+        case "$TARGET" in '' | *[!0-9]*) TARGET=100 ;; esac
+        [ "$TARGET" -gt 500 ] && TARGET=500
+        [ "$TARGET" -lt 1 ] && TARGET=1
+        log "Resuming expansion from $(basename "$ckpt"): main.py --expand $TARGET --deploy"
+        "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --expand "$TARGET" --deploy >>"$LOG_FILE" 2>&1
+        log "Expand resume exited with code $?."
+    fi
+fi
 
 log "Auto-resume finished."
 notify "Instagram Digest resume finished — see logs/resume.log."

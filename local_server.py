@@ -148,17 +148,21 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
             since_ts = None
             days_back = 7
             if last_run and "timestamp" in last_run:
-                since_ts = int(last_run["timestamp"])
+                # B28: bound the anchor like the CLI (main.py) — an unbounded
+                # window turns a "quick top-up" into a multi-day scrape.
                 elapsed = time.time() - last_run["timestamp"]
-                days_back = max(1, int(round(elapsed / 86400.0)))
-                logger.info("Ad-hoc sync: fetching since %s (~%d days back)",
-                            last_run.get("last_run_utc"), days_back)
+                if 3600 <= elapsed <= 7 * 86400:
+                    since_ts = int(last_run["timestamp"])
+                    days_back = max(1, int(round(elapsed / 86400.0)))
+                    logger.info("Ad-hoc sync: fetching since %s (~%d days back)",
+                                last_run.get("last_run_utc"), days_back)
 
             ret = main_module.run_full_sync(
                 dry_run=False,
                 deploy=deploy,
                 days_back=days_back,
                 since_timestamp=since_ts,
+                kind="ad-hoc",
             )
             with _SYNC_LOCK:
                 _SYNC_STATE["is_running"] = False
@@ -243,6 +247,7 @@ def trigger_sync_resume_task(deploy: bool = True) -> dict[str, Any]:
                 dry_run=False,
                 deploy=deploy,
                 resume=True,
+                kind="weekly",
             )
             with _SYNC_LOCK:
                 _SYNC_STATE["is_running"] = False
@@ -944,7 +949,7 @@ def _load_json_tolerant(path: Path, default: Any) -> Any:
         try:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             backup = path.with_name(f"{path.name}.corrupt-{ts}")
-            shutil.copy2(path, backup)
+            path.rename(backup)
             logger.warning("Quarantined corrupt %s to %s: %s", path, backup, exc)
         except Exception:
             logger.warning("Unreadable %s; starting fresh: %s", path, exc)
@@ -1091,28 +1096,44 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     <div><a href="/" class="btn" id="homeBtn" style="display:none;">Return to Viewer</a></div>
   </div>
   <script>
-    fetch('/api/sync-adhoc', { method: 'POST' }).catch(() => {});
+    // B29: await the trigger and only declare completion for the run we
+    // watched start — a stale last_result from a previous run must never
+    // read as "Sync Complete!".
+    let seenRunning = false;
+    let startFailed = false;
+    fetch('/api/sync-adhoc', { method: 'POST' })
+      .then((res) => res.json())
+      .then((data) => { if (!data || data.success === false) startFailed = true; })
+      .catch(() => { startFailed = true; });
+    function showFinished(ok, detail) {
+      if (ok) {
+        document.getElementById('title').textContent = 'Sync Complete!';
+        document.getElementById('msg').textContent = 'Your digest has been refreshed. Redirecting to viewer...';
+        document.getElementById('badge').textContent = 'Completed';
+        document.getElementById('badge').style.color = '#4ade80';
+        document.getElementById('spinner').style.display = 'none';
+        setTimeout(() => { window.location.href = '/'; }, 1800);
+      } else {
+        document.getElementById('title').textContent = 'Sync Finished';
+        document.getElementById('msg').textContent = detail || 'Check logs for details.';
+        document.getElementById('badge').textContent = 'Done';
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('homeBtn').style.display = 'inline-block';
+      }
+    }
     async function checkStatus() {
       try {
         const res = await fetch('/api/sync-status');
         const data = await res.json();
-        if (!data.is_running) {
-          if (data.status === 'completed' || data.last_result === 0) {
-            document.getElementById('title').textContent = 'Sync Complete!';
-            document.getElementById('msg').textContent = 'Your digest has been refreshed. Redirecting to viewer...';
-            document.getElementById('badge').textContent = 'Completed';
-            document.getElementById('badge').style.color = '#4ade80';
-            document.getElementById('spinner').style.display = 'none';
-            setTimeout(() => { window.location.href = '/'; }, 1800);
-            return;
-          } else {
-            document.getElementById('title').textContent = 'Sync Finished';
-            document.getElementById('msg').textContent = data.last_error || 'Check logs for details.';
-            document.getElementById('badge').textContent = 'Done';
-            document.getElementById('spinner').style.display = 'none';
-            document.getElementById('homeBtn').style.display = 'inline-block';
-            return;
-          }
+        if (data.is_running) {
+          seenRunning = true;
+        } else if (seenRunning) {
+          showFinished(data.status === 'completed' || data.last_result === 0,
+            data.last_error);
+          return;
+        } else if (startFailed) {
+          showFinished(false, 'Could not start the sync.');
+          return;
         }
       } catch (e) {}
       setTimeout(checkStatus, 2000);
@@ -1882,13 +1903,23 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             action = payload.get("action", "add")
             reel_id = payload.get("reel_id")
 
+            # B28: week_id is a watched.json key — accept only the digest
+            # shape or "default", never arbitrary strings.
+            if not isinstance(week_id, str) or (week_id != "default"
+                    and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_id)):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid week_id")
+                return
+
             with _STATE_LOCK:
                 watched_data = _load_json_tolerant(config.WATCHED_FILE, {})
+                if not isinstance(watched_data, dict):
+                    watched_data = {}
 
                 if action == "reset":
                     watched_data[week_id] = []
                 elif reel_id:
-                    current_list = list(dict.fromkeys(watched_data.get(week_id, []) + [reel_id]))
+                    stored = watched_data.get(week_id, [])
+                    current_list = list(dict.fromkeys((stored if isinstance(stored, list) else []) + [str(reel_id)]))
                     watched_data[week_id] = current_list
 
                 try:
@@ -1915,13 +1946,26 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             week_id = payload.get("week_id", "default")
             watched_ids = payload.get("watched_ids", [])
 
+            # B28: watched_ids must be a list — a bare string would iterate
+            # per-character into the set below.
+            if not isinstance(week_id, str) or (week_id != "default"
+                    and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_id)):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid week_id")
+                return
+            if not isinstance(watched_ids, list):
+                self.send_error(HTTPStatus.BAD_REQUEST, "watched_ids must be a list")
+                return
+
             with _STATE_LOCK:
                 watched_data = _load_json_tolerant(config.WATCHED_FILE, {})
+                if not isinstance(watched_data, dict):
+                    watched_data = {}
 
-                current_set = set(watched_data.get(week_id, []))
+                stored = watched_data.get(week_id, [])
+                current_set = set(stored) if isinstance(stored, list) else set()
                 for wid in watched_ids:
                     if wid:
-                        current_set.add(wid)
+                        current_set.add(str(wid))
 
                 watched_data[week_id] = list(current_set)
                 try:
