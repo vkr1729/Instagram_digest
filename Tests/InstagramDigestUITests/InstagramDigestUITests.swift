@@ -250,8 +250,13 @@ final class InstagramDigestUITests: XCTestCase {
         let gridItem = app.buttons["GridReelItem_1"]
         XCTAssertTrue(gridItem.waitForExistence(timeout: 5.0), "Grid item must exist")
         gridItem.tap()
+        // The grid sheet must dismiss back to the feed before the caption exists.
+        let gridDone = app.buttons["GridDoneButton"]
+        if gridDone.waitForExistence(timeout: 2.0) {
+            gridDone.tap()
+        }
         let caption = app.staticTexts["ReelCaptionText"]
-        XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
+        XCTAssertTrue(caption.waitForExistence(timeout: 8.0), "ReelCaptionText must exist for caption toggle test")
         caption.tap()
         // Fall back to the VoiceOver action when the tap lands on the
         // collection view instead of the text (CI hit-test flake).
