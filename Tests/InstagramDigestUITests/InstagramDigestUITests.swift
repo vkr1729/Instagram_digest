@@ -304,14 +304,18 @@ final class InstagramDigestUITests: XCTestCase {
         let caption = captionQuery.element
         caption.tap()
         // Fall back to the VoiceOver action when the tap lands on the
-        // collection view instead of the text (CI hit-test flake).
-        let expandedExpectation = XCTNSPredicateExpectation(
+        // collection view instead of the text (CI hit-test flake). Each
+        // XCTExpectation is one-shot: never re-wait the same instance.
+        let expandedProbe = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == 'expanded'"),
             object: caption)
-        if XCTWaiter.wait(for: [expandedExpectation], timeout: 2.0) != .completed {
+        if XCTWaiter.wait(for: [expandedProbe], timeout: 2.0) != .completed {
             caption.buttons["Toggle caption"].tap()
         }
-        let expandedByValue = XCTWaiter.wait(for: [expandedExpectation], timeout: 3.0) == .completed
+        let expandedRecheck = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == 'expanded'"),
+            object: caption)
+        let expandedByValue = XCTWaiter.wait(for: [expandedRecheck], timeout: 3.0) == .completed
         if !expandedByValue {
             // Frame-based fallback: first tap must grow the caption.
             // Capture growth relative to pre-tap height via polling.
