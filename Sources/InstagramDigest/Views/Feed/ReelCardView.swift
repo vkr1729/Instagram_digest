@@ -238,6 +238,7 @@ public struct ReelCardOverlayView: View {
                         .multilineTextAlignment(.leading)
                         .padding(.horizontal, 14)
                         .padding(.bottom, 12)
+                        .contentShape(Rectangle())
                         .onTapGesture(perform: onToggleCaption)
                         .accessibilityIdentifier("ReelCaptionText")
                         .accessibilityValue(isCaptionExpanded ? "expanded" : "collapsed")
