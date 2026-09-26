@@ -35,6 +35,7 @@ def build_email_message(
     site_url: str | None = None,
     recommended: list[dict[str, Any]] | None = None,
     target: int | None = None,
+    storage_note: str | None = None,
 ) -> MIMEMultipart:
     """Build a rich, responsive multipart HTML and plain-text email message using UI Pro Max OLED Dark theme."""
     url = site_url or config.PAGES_BASE_URL
@@ -80,6 +81,9 @@ def build_email_message(
     shortfall = (target - count) if isinstance(target, int) and target > 0 else 0
     if shortfall > 0:
         text_lines.append(f"Shortfall: {count}/{target} reels — expand +{shortfall} from the dashboard if you want the full batch.")
+        text_lines.append("")
+    if storage_note:
+        text_lines.append(f"Storage: {storage_note}")
         text_lines.append("")
 
     text_lines.append(f"Open the PWA on mobile or desktop: {url}")
@@ -176,6 +180,13 @@ def build_email_message(
             f"expand +{shortfall} from the dashboard if you want the full batch.</div>"
         )
 
+    storage_html = ""
+    if storage_note:
+        storage_html = (
+            '<div style="margin-top: 12px; font-size: 12px; color: #71717a;">'
+            f"Storage: {html.escape(storage_note)}</div>"
+        )
+
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -236,6 +247,8 @@ def build_email_message(
                             {recs_html}
 
                             {shortfall_html}
+
+                            {storage_html}
                             
                             <!-- PWA & Desktop Info Box -->
                             <div style="margin-top: 28px; padding: 16px 18px; background-color: #141419; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); border-left: 4px solid #fd1d1d; font-size: 12px; color: #a1a1aa; line-height: 1.5;">
@@ -361,6 +374,7 @@ def send_digest_email(
     site_url: str | None = None,
     recommended: list[dict[str, Any]] | None = None,
     target: int | None = None,
+    storage_note: str | None = None,
 ) -> bool:
     """Send an email confirmation that the weekly feed refresh is complete."""
     if not is_email_configured():
@@ -378,6 +392,7 @@ def send_digest_email(
             site_url=site_url,
             recommended=recommended,
             target=target,
+            storage_note=storage_note,
         )
 
         with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=25) as server:

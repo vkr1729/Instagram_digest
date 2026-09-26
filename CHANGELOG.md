@@ -1,3 +1,16 @@
+# Changelog — Probe-session fix + recommendations batch (2026-09-26)
+
+- Fixed: step-0 session probe was never closed, so any run passing validation
+  crashed at extraction with "Playwright Sync API inside the asyncio loop"
+  (second start in one thread). `_probe_session_once()` always closes the
+  probe; regression tests pin it. This was the dashboard resync failure.
+- Added (rec #3): post-publish R2 key verification — missing keys are dropped
+  before deploy so a corrupt digest never ships.
+- Added (rec #4): session fast-fail now names the exact 5-minute fix plus the
+  desktop popup. Added (rec #6 slim): success email carries R2 used-vs-quota.
+  Added (rec #2): resume lane shows "banked work kept until" dates.
+- `tests/test_dashboard.py` attention-site count 10 → 11.
+
 # Changelog — Frontier review fixes (2026-09-26)
 
 - Fixed P0: same-day re-run stray purge could delete the live digest's R2

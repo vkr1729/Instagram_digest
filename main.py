@@ -254,6 +254,45 @@ def _current_week_stray_keep_ids(week_id: str,
     return keep_ids
 
 
+def _verify_digest_r2_keys(ranked_reels: list[dict[str, Any]]) -> list[str]:
+    """HEAD every digest reel's R2 key; return ids missing remotely.
+
+    Rec #3: post-publish integrity — a digest referencing deleted keys must
+    never deploy. Skipped when R2 is unconfigured. Never raises.
+    """
+    try:
+        s3 = storage_r2.get_s3_client()
+    except Exception:
+        return []
+    if s3 is None or not config.R2_PUBLIC_DOMAIN:
+        return []
+    prefix = config.R2_PUBLIC_DOMAIN.rstrip("/") + "/"
+    targets: list[tuple[str, str]] = []
+    for r in ranked_reels:
+        rid = str(r.get("id") or "")
+        url = str(r.get("r2_url") or r.get("video_url") or "")
+        if rid and url.startswith(prefix):
+            targets.append((rid, url[len(prefix):]))
+
+    def _head(item: tuple[str, str]) -> str | None:
+        rid, key = item
+        try:
+            s3.head_object(Bucket=config.R2_BUCKET_NAME, Key=key)
+            return None
+        except Exception:
+            return rid
+
+    missing: list[str] = []
+    try:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            for rid in executor.map(_head, targets):
+                if rid:
+                    missing.append(rid)
+    except Exception as exc:
+        logger.warning("R2 key verification interrupted: %s", exc)
+    return missing
+
+
 def _purge_current_week_stray_r2_keys(week_id: str, ranked_ids: set[str]) -> list[str]:
     """Delete current-week R2 keys not referenced by the final ranked list.
 
@@ -650,6 +689,24 @@ def _ensure_valid_session(session) -> bool:
         return False
 
 
+def _probe_session_once() -> bool:
+    """Step-0 gate: validate the login, then ALWAYS close the probe session.
+
+    A live Playwright sync session parks a running asyncio loop in this
+    thread; extraction opens its own session later in the same thread, and
+    any second start() while the probe is open dies with "Sync API inside
+    the asyncio loop". Never raises.
+    """
+    probe = extractor.InstagramSession()
+    try:
+        return _ensure_valid_session(probe)
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+
+
 def _trust_warming_active() -> bool:
     """True when pacing should be slowed for a young/low-trust account.
 
@@ -744,10 +801,26 @@ def _run_full_sync(
     # (banked work must always be allowed to complete; the resume path
     # revalidates before its own network phase).
     if not dry_run and not resume:
-        session_ok = _ensure_valid_session(extractor.InstagramSession())
+        # The probe session is closed inside _probe_session_once before
+        # extraction opens its own (a live probe's asyncio loop would kill
+        # the second start). The mid-extraction caller below passes its
+        # live session — never close that one.
+        session_ok = _probe_session_once()
         if not session_ok:
-            _alert_sync_abort("Instagram session invalid",
-                              "pre-run validation failed after one cookie refresh")
+            # Rec #4: fast fail with an actionable alert — the exact 5-minute
+            # chore, not a vague failure. Plus the desktop popup.
+            _alert_sync_abort(
+                "Instagram session expired",
+                "open Chrome, log in at instagram.com, leave it open, then run "
+                "python3 cookie_exporter.py (or press Refresh cookies on the "
+                "dashboard) and re-run the sync")
+            try:
+                local_server.raise_cookie_attention(
+                    pipeline="weekly-sync",
+                    reason="Session validation failed; press refresh to verify the login",
+                )
+            except Exception as popup_err:
+                logger.warning("Failed raising cookie attention popup: %s", popup_err)
             return 2
 
     # 1. R2 connectivity check (read-only). Owner-mandated order defers EVERY
@@ -1949,6 +2022,17 @@ def _run_full_sync(
         except Exception as dedup_err:
             logger.warning("Failed recording seen-reel ledger: %s", dedup_err)
 
+        # Rec #3: post-publish integrity — drop reels whose keys are missing
+        # on R2 so a corrupt digest never deploys. The deploy gate below
+        # then judges the honest count.
+        missing_ids = _verify_digest_r2_keys(ranked_reels)
+        if missing_ids:
+            gone = set(missing_ids)
+            logger.error("Post-publish R2 check: %d reels missing remotely; dropping: %s",
+                         len(gone), ", ".join(sorted(gone)[:10]))
+            ranked_reels = [r for r in ranked_reels if str(r.get("id")) not in gone]
+            ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
+
         if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
             logger.error(
                 "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
@@ -2008,6 +2092,16 @@ def _run_full_sync(
             import notifier
             ext_cnt = sum(1 for r in ranked_reels if r.get("is_external"))
             fol_cnt = len(ranked_reels) - ext_cnt
+            # Rec #6 (slim): one storage-vs-cap line so Saturday's email
+            # says what shipped and what it cost. Best-effort, never fatal.
+            storage_note = None
+            try:
+                cur_b, _ = storage_r2.get_bucket_storage_usage()
+                if cur_b >= 0:
+                    quota_gb = config.R2_STORAGE_QUOTA_BYTES / 1073741824
+                    storage_note = (f"R2 {cur_b / 1073741824:.2f} / {quota_gb:.0f} GB used")
+            except Exception:
+                pass
             notifier.send_digest_email(
                 week_id=week_id,
                 count=len(ranked_reels),
@@ -2017,6 +2111,7 @@ def _run_full_sync(
                 site_url=config.PAGES_BASE_URL if deploy else None,
                 recommended=recommended_creators,
                 target=config.TOP_DIGEST_COUNT,
+                storage_note=storage_note,
             )
         except Exception as exc:
             logger.warning("Failed to send refresh confirmation email: %s", exc)

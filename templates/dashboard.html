@@ -359,6 +359,14 @@
       let ageSecs = NaN;
       try { ageSecs = (Date.now() - new Date(s.updated_at).getTime()) / 1000; } catch (e) {}
       const expired = isFinite(ageSecs) && ageSecs > 3 * 86400;
+      // Rec #2: show the keep-promise explicitly while it still holds.
+      let keepUntil = "";
+      try {
+        if (isFinite(ageSecs)) {
+          keepUntil = " · banked work kept until <b>" +
+            new Date(new Date(s.updated_at).getTime() + 3 * 86400 * 1000).toISOString().slice(0, 10) + "</b>";
+        }
+      } catch (e) {}
       const what = isShortfall ? "<b>" + s.banked + " playable reels banked</b> (< 150 required threshold). Work preserved."
         : s.stage === "ranked" ? s.banked + " ranked reels"
         : s.stage === "enriched" ? s.banked + " enriched reels"
@@ -374,7 +382,7 @@
       items.push('<div class="' + bannerCls + '"><p><b>Job: weekly sync</b><br>' +
         "File: " + esc(s.file || "") + "<br>" +
         "Status: <b>" + title + "</b><br>" +
-        "Progress: " + what + " · updated " + ago(s.updated_at) + ".</p>" +
+        "Progress: " + what + " · updated " + ago(s.updated_at) + keepUntil + ".</p>" +
         '<div class="actions" style="margin:0">' + resumeBtn +
         '<button class="danger" data-discard-file="' + esc(s.file || "") + '">Discard</button></div></div>');
     });

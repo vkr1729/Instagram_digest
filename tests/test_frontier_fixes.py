@@ -10,6 +10,41 @@ import cookie_exporter
 import main
 
 
+class _ProbeFake:
+    """Mimics InstagramSession's lifecycle for the step-0 probe gate."""
+
+    def __init__(self, validations):
+        self._validations = list(validations)
+        self.validations = 0
+        self.closed = 0
+        self.started = 0
+
+    def validate(self):
+        self.validations += 1
+        return self._validations.pop(0)
+
+    def close(self):
+        self.closed += 1
+
+    def start(self):
+        self.started += 1
+
+
+def test_probe_session_closed_on_success(monkeypatch):
+    probe = _ProbeFake([True])
+    monkeypatch.setattr(main.extractor, "InstagramSession", lambda: probe)
+    assert main._probe_session_once() is True
+    assert probe.closed == 1
+
+
+def test_probe_session_closed_on_failure(monkeypatch):
+    probe = _ProbeFake([False])
+    monkeypatch.setattr(main.extractor, "InstagramSession", lambda: probe)
+    monkeypatch.setattr(main, "_ensure_valid_session", lambda session: False)
+    assert main._probe_session_once() is False
+    assert probe.closed == 1
+
+
 def _ckpt(**over):
     base = {"version": 1, "limit_per_creator": 15, "since_timestamp": 1000,
             "stage": "extracting", "week_id": "2026-09-25"}
