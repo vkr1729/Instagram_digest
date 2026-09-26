@@ -52,6 +52,7 @@ public struct BookmarksSheet: View {
 
                         // Progress Gauge Bar
                         let fraction = min(1.0, Double(totalBytes) / Double(MediaCacheManager.maxBookmarkStorageBytes))
+                        let pendingCount = MediaCacheManager.pendingRemoteBookmarks.count
                         ProgressView(value: fraction)
                             .tint(fraction > 0.9 ? .orange : .cyan)
 
@@ -60,9 +61,8 @@ public struct BookmarksSheet: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.5))
                                 .accessibilityIdentifier("BookmarksCountLabel")
-                            let pending = MediaCacheManager.pendingRemoteBookmarks.count
-                            if pending > 0 {
-                                Text("\(pending) not backed up")
+                            if pendingCount > 0 {
+                                Text("\(pendingCount) not backed up")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundColor(.orange)
                                     .accessibilityIdentifier("BookmarksPendingLabel")
@@ -128,9 +128,12 @@ public struct BookmarksSheet: View {
                             Spacer()
                         }
                     } else {
+                        let pendingIDs = MediaCacheManager.pendingRemoteBookmarks
                         ScrollView {
                             LazyVGrid(columns: columns, spacing: 2) {
                                 ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
+                                    let isPending = pendingIDs.contains(bookmark.reelID)
+                                    let isCached = bookmark.localStatus == .cached
                                     Button {
                                         activePlaybackIndex = index
                                     } label: {
@@ -149,12 +152,12 @@ public struct BookmarksSheet: View {
                                                 HStack {
                                                     Spacer()
 
-                                                    if MediaCacheManager.pendingRemoteBookmarks.contains(bookmark.reelID) {
+                                                    if isPending {
                                                         Image(systemName: "icloud.slash")
                                                             .font(.system(size: 12))
                                                             .foregroundColor(.orange)
                                                             .accessibilityIdentifier("BookmarkPendingBadge_\(index)")
-                                                    } else if bookmark.localStatus == .cached {
+                                                    } else if isCached {
                                                         Image(systemName: "checkmark.circle.fill")
                                                             .font(.system(size: 12))
                                                             .foregroundColor(.green)
@@ -246,6 +249,26 @@ public struct BookmarksSheet: View {
 
     private func refreshLedger() async {
         totalBytes = await MediaCacheManager.shared.totalBookmarkBytes
+    }
+
+    private func retryPendingRemoteBookmarks() async {
+        let pending = MediaCacheManager.pendingRemoteBookmarks
+        guard !pending.isEmpty else { return }
+        let key = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
+        guard !key.isEmpty else { return }
+        for reelID in pending {
+            guard let bm = bookmarks.first(where: { $0.reelID == reelID }) else {
+                MediaCacheManager.removePendingRemoteBookmark(reelID)
+                continue
+            }
+            let reel = ReelItem(id: bm.reelID, creatorHandle: bm.creatorHandle,
+                                caption: bm.caption, rank: bm.rank,
+                                videoUrl: bm.videoUrl ?? URL(string: "https://example.com/x.mp4")!,
+                                thumbnailUrl: bm.thumbnailUrl, category: nil)
+            if (try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)) == true {
+                MediaCacheManager.removePendingRemoteBookmark(reelID)
+            }
+        }
     }
 
     private func performFreeStorage() {
@@ -671,26 +694,6 @@ public struct BookmarkPlayerOverlay: View {
         hideChromeWorkItem = nil
         player?.pause()
         player = nil
-    }
-
-    private func retryPendingRemoteBookmarks() async {
-        let pending = MediaCacheManager.pendingRemoteBookmarks
-        guard !pending.isEmpty else { return }
-        let key = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
-        guard !key.isEmpty else { return }
-        for reelID in pending {
-            guard let bm = bookmarks.first(where: { $0.reelID == reelID }) else {
-                MediaCacheManager.removePendingRemoteBookmark(reelID)
-                continue
-            }
-            let reel = ReelItem(id: bm.reelID, creatorHandle: bm.creatorHandle,
-                                caption: bm.caption, rank: bm.rank,
-                                videoUrl: bm.videoUrl ?? URL(string: "https://example.com/x.mp4")!,
-                                thumbnailUrl: bm.thumbnailUrl, category: bm.category)
-            if (try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)) == true {
-                MediaCacheManager.removePendingRemoteBookmark(reelID)
-            }
-        }
     }
 }
 
