@@ -242,6 +242,8 @@ public struct ReelCardOverlayView: View {
                         .onTapGesture(perform: onToggleCaption)
                         .accessibilityIdentifier("ReelCaptionText")
                         .accessibilityValue(isCaptionExpanded ? "expanded" : "collapsed")
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction(named: "Toggle caption") { onToggleCaption() }
                 }
             }
             .opacity(isChromeVisible ? 1.0 : 0.0)

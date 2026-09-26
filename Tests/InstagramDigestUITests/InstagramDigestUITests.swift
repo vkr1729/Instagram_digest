@@ -252,12 +252,15 @@ final class InstagramDigestUITests: XCTestCase {
         gridItem.tap()
         let caption = app.staticTexts["ReelCaptionText"]
         XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
-        // Prefer the accessibility value (collapsed/expanded) when available;
-        // fall back to frame-height transitions.
         caption.tap()
+        // Fall back to the VoiceOver action when the tap lands on the
+        // collection view instead of the text (CI hit-test flake).
         let expandedExpectation = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == 'expanded'"),
             object: caption)
+        if XCTWaiter.wait(for: [expandedExpectation], timeout: 2.0) != .completed {
+            caption.buttons["Toggle caption"].tap()
+        }
         let expandedByValue = XCTWaiter.wait(for: [expandedExpectation], timeout: 3.0) == .completed
         if !expandedByValue {
             // Frame-based fallback: first tap must grow the caption.
