@@ -241,23 +241,17 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 8. Caption Expansion Toggle
 
     func testCaptionExpansionToggle() throws {
-        // Find a reel with a long, clamping caption: the first reel's
-        // caption may be one line (tap is a no-op there).
-        var caption = app.staticTexts["ReelCaptionText"]
-        var found = false
-        for _ in 0..<6 {
-            if caption.waitForExistence(timeout: 5.0),
-               (caption.value as? String) == "collapsed",
-               caption.frame.height > 30 {
-                found = true
-                break
-            }
-            let pager = app.collectionViews["FeedCollectionView"]
-            if !pager.exists { break }
-            pager.swipeUp()
-            caption = app.staticTexts["ReelCaptionText"]
-        }
-        XCTAssertTrue(found, "need a reel with a clamping caption to test expansion")
+        // Jump to a reel with a long caption (2nd fixture item, ~490 chars,
+        // always clamps to 2 lines). The first reel's one-line caption is a
+        // tap no-op, and swiping races the pager settle animation.
+        let gridButton = app.buttons["GridIconButton"]
+        XCTAssertTrue(gridButton.waitForExistence(timeout: 8.0))
+        gridButton.tap()
+        let gridItem = app.buttons["GridReelItem_1"]
+        XCTAssertTrue(gridItem.waitForExistence(timeout: 5.0), "Grid item must exist")
+        gridItem.tap()
+        let caption = app.staticTexts["ReelCaptionText"]
+        XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
         // Prefer the accessibility value (collapsed/expanded) when available;
         // fall back to frame-height transitions.
         caption.tap()
