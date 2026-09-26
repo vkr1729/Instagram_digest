@@ -198,6 +198,22 @@ public final class AVPlayerPool: ObservableObject {
     // MARK: - Navigation & Loading
 
     public func setReels(_ items: [ReelItem], weekID: String, startIndex: Int = 0) {
+        var items = items
+        // UI-test seam: the fixture's R2 media is purged, so every reel
+        // would fail and the skip cascade would move the pager mid-test.
+        // A bundled tone clip lets playback use the real local path.
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+           let clip = Bundle.main.url(forResource: "uitest_clip", withExtension: "mp4") {
+            let fm = FileManager.default
+            let resolver = LibraryPathResolver.shared
+            try? resolver.ensureDirectoriesExist(for: weekID)
+            for reel in items.prefix(5) {
+                let dest = resolver.localFileURL(for: weekID, reelID: reel.id)
+                if !fm.fileExists(atPath: dest.path) {
+                    try? fm.copyItem(at: clip, to: dest)
+                }
+            }
+        }
         self.currentItems = items
         self.currentWeekID = weekID
         self.watchedLatchedReelIDs.removeAll()

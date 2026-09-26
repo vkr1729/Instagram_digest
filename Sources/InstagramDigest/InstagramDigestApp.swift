@@ -16,6 +16,7 @@ struct InstagramDigestApp: App {
             if let bid = Bundle.main.bundleIdentifier {
                 UserDefaults.standard.removePersistentDomain(forName: bid)
             }
+            UserDefaults.standard.set(true, forKey: "owner_key_prompted")
             try? FileManager.default.removeItem(at: LibraryPathResolver.shared.mediaCacheBaseURL)
             try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.mediaCacheBaseURL)
         }
