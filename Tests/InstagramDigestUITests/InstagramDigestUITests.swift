@@ -241,22 +241,25 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 8. Caption Expansion Toggle
 
     func testCaptionExpansionToggle() throws {
-        // Jump to a reel with a long caption (2nd fixture item, ~490 chars,
-        // always clamps to 2 lines). The first reel's one-line caption is a
-        // tap no-op, and swiping races the pager settle animation.
-        let gridButton = app.buttons["GridIconButton"]
-        XCTAssertTrue(gridButton.waitForExistence(timeout: 8.0))
-        gridButton.tap()
-        let gridItem = app.buttons["GridReelItem_1"]
-        XCTAssertTrue(gridItem.waitForExistence(timeout: 5.0), "Grid item must exist")
-        gridItem.tap()
-        // The grid sheet must dismiss back to the feed before the caption exists.
-        let gridDone = app.buttons["GridDoneButton"]
-        if gridDone.waitForExistence(timeout: 2.0) {
-            gridDone.tap()
+        // Assert on the reel the app launches on: no navigation, no sheet,
+        // no settle race. The caption element exists only when the reel's
+        // caption is non-empty; reel 0's caption is one line and never
+        // expands, so page forward until a clamping caption appears.
+        var caption = app.staticTexts["ReelCaptionText"]
+        let pager = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(pager.waitForExistence(timeout: 8.0))
+        var navigated = false
+        for _ in 0..<8 {
+            if caption.waitForExistence(timeout: 4.0),
+               (caption.value as? String) == "collapsed",
+               caption.frame.height > 30 {
+                navigated = true
+                break
+            }
+            pager.swipeUp()
+            caption = app.staticTexts["ReelCaptionText"]
         }
-        let caption = app.staticTexts["ReelCaptionText"]
-        XCTAssertTrue(caption.waitForExistence(timeout: 8.0), "ReelCaptionText must exist for caption toggle test")
+        XCTAssertTrue(navigated, "need a reel with a clamping caption")
         caption.tap()
         // Fall back to the VoiceOver action when the tap lands on the
         // collection view instead of the text (CI hit-test flake).
