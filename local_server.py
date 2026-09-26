@@ -382,9 +382,10 @@ def _read_json_body(handler) -> dict:
     if content_len > _MAX_JSON_BODY:
         raise ValueError(f"body too large: {content_len}")
     try:
-        return json.loads(handler.rfile.read(content_len).decode("utf-8"))
+        data = json.loads(handler.rfile.read(content_len).decode("utf-8"))
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]:
@@ -840,6 +841,8 @@ def discard_pending_job(file_name: Any) -> dict[str, Any]:
     Returns a {"success": bool, ...} payload for the dashboard toast.
     """
     name = str(file_name or "").strip()
+    if _pipeline_busy():
+        return {"success": False, "error": "A sync or expand is running — discard when it finishes."}
     if (not name or "/" in name or "\\" in name or ".." in name
             or not name.endswith(".json")
             or not name.startswith(_DISCARDABLE_PREFIXES)):
@@ -967,6 +970,11 @@ def _exp_count(exposures: Any, handle: str) -> int:
 class LocalDigestHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler supporting partial video range streaming and on-demand sync API."""
     protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        # Silence per-request BaseHTTPRequestHandler logging: the dashboard
+        # polls every 5-60s for weeks, which otherwise grows launch.log unbounded.
+        pass
 
     def do_HEAD(self):
         parsed = urlparse(self.path)
@@ -1771,44 +1779,59 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             cat = str(payload.get("category") or "entertainment").strip()
 
             with _STATE_LOCK:
-                sources = _load_json_tolerant(config.SOURCES_FILE, []) if config.SOURCES_FILE.exists() else []
-                b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
-                blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
-                if handle in blacklist:
-                    blacklist.remove(handle)
-                    b_data["creators"] = sorted(list(blacklist))
+                # Refuse to overwrite when sources.json is corrupt (quarantined to
+                # default) — otherwise the 65-channel list becomes a 1-entry file.
+                if config.SOURCES_FILE.exists():
                     try:
-                        _atomic_write_json(config.BLACKLIST_FILE, b_data)
-                    except Exception as e:
-                        logger.error("Error updating blacklist: %s", e)
-
-                # Adding overrides a prior do-not-recommend: the user changed
-                # their mind, so the stale rejection must not steer the scout.
-                try:
-                    import recommendations
-                    recommendations.clear_do_not_recommend(handle)
-                except Exception as e:
-                    logger.debug("Could not clear do-not-recommend for @%s: %s", handle, e)
-
-                existing = {s.get("handle", "").lower().replace("@", ""): s for s in sources if s.get("handle")}
-                if handle not in existing:
-                    sources.append({
-                        "handle": handle,
-                        "name": name,
-                        "category": cat,
-                        "enabled": True,
-                    })
-                    try:
-                        _atomic_write_json(config.SOURCES_FILE, sources)
-                        logger.info("Added recommended creator @%s to sources.json", handle)
-                    except Exception as e:
-                        logger.error("Error writing sources.json: %s", e)
-                else:
-                    existing[handle]["enabled"] = True
-                    try:
-                        _atomic_write_json(config.SOURCES_FILE, sources)
+                        raw_sources = json.loads(config.SOURCES_FILE.read_text(encoding="utf-8"))
+                        if not isinstance(raw_sources, list):
+                            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "sources.json unreadable — restore it before editing channels")
+                            return
                     except Exception:
-                        pass
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "sources.json unreadable — restore it before editing channels")
+                        return
+                with atomic_io.sources_file_lock():
+                    sources = _load_json_tolerant(config.SOURCES_FILE, []) if config.SOURCES_FILE.exists() else []
+                    if not isinstance(sources, list):
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "sources.json unreadable — restore it before editing channels")
+                        return
+                    b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
+                    blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
+                    if handle in blacklist:
+                        blacklist.remove(handle)
+                        b_data["creators"] = sorted(list(blacklist))
+                        try:
+                            _atomic_write_json(config.BLACKLIST_FILE, b_data)
+                        except Exception as e:
+                            logger.error("Error updating blacklist: %s", e)
+
+                    # Adding overrides a prior do-not-recommend: the user changed
+                    # their mind, so the stale rejection must not steer the scout.
+                    try:
+                        import recommendations
+                        recommendations.clear_do_not_recommend(handle)
+                    except Exception as e:
+                        logger.debug("Could not clear do-not-recommend for @%s: %s", handle, e)
+
+                    existing = {s.get("handle", "").lower().replace("@", ""): s for s in sources if s.get("handle")}
+                    if handle not in existing:
+                        sources.append({
+                            "handle": handle,
+                            "name": name,
+                            "category": cat,
+                            "enabled": True,
+                        })
+                        try:
+                            _atomic_write_json(config.SOURCES_FILE, sources)
+                            logger.info("Added recommended creator @%s to sources.json", handle)
+                        except Exception as e:
+                            logger.error("Error writing sources.json: %s", e)
+                    else:
+                        existing[handle]["enabled"] = True
+                        try:
+                            _atomic_write_json(config.SOURCES_FILE, sources)
+                        except Exception:
+                            pass
 
             resp = {"success": True, "handle": handle, "message": f"Added @{handle} to channels list", "total_sources": len(sources), "ig_follow": "pending"}
             body = json.dumps(resp).encode("utf-8")
@@ -1926,6 +1949,8 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     _atomic_write_json(config.WATCHED_FILE, watched_data)
                 except Exception as e:
                     logger.error("Failed writing watched.json: %s", e)
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not save state")
+                    return
 
             resp = {"success": True, "watched": watched_data.get(week_id, [])}
             body = json.dumps(resp).encode("utf-8")
@@ -1972,6 +1997,8 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     _atomic_write_json(config.WATCHED_FILE, watched_data)
                 except Exception as e:
                     logger.error("Failed bulk writing watched.json: %s", e)
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not save state")
+                    return
 
             resp = {"success": True, "watched": watched_data.get(week_id, [])}
             body = json.dumps(resp).encode("utf-8")
@@ -1989,7 +2016,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
                 return
 
-            handle = payload.get("creator_handle", "").strip().lower().replace("@", "")
+            handle = str(payload.get("creator_handle") or "").strip().lower().replace("@", "")
             action = payload.get("action", "add")
 
             with _STATE_LOCK:
@@ -2007,14 +2034,21 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     logger.info("Updated blacklist.json with %d creators.", len(data["creators"]))
                 except Exception as e:
                     logger.error("Failed saving blacklist.json: %s", e)
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not save state")
+                    return
 
                 # Also remove creator from sources.json so it never syncs or extracts again
+                # (skipped when the blacklist save above failed).
                 if handle and action == "add" and config.SOURCES_FILE.exists():
                     try:
-                        sources = _load_json_tolerant(config.SOURCES_FILE, [])
-                        new_sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") != handle]
-                        _atomic_write_json(config.SOURCES_FILE, new_sources)
-                        logger.info("Removed @%s from sources.json permanently.", handle)
+                        with atomic_io.sources_file_lock():
+                            sources = _load_json_tolerant(config.SOURCES_FILE, [])
+                            if isinstance(sources, list):
+                                new_sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") != handle]
+                                _atomic_write_json(config.SOURCES_FILE, new_sources)
+                                logger.info("Removed @%s from sources.json permanently.", handle)
+                            else:
+                                logger.warning("sources.json unreadable; refusing to prune (restore it first).")
                     except Exception as e:
                         logger.warning("Could not prune sources.json: %s", e)
 
@@ -2035,8 +2069,9 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 return
 
             handles_in = payload.get("creator_handles", [])
+            handles_in = handles_in if isinstance(handles_in, list) else []
             action = payload.get("action", "add")  # "add" to mute, "remove" to restore
-            clean_handles = set(h.lower().replace("@", "").strip() for h in handles_in if h)
+            clean_handles = set(str(h).lower().replace("@", "").strip() for h in handles_in if h)
 
             with _STATE_LOCK:
                 b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})

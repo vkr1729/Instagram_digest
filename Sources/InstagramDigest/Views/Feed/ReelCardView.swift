@@ -235,6 +235,7 @@ public struct ReelCardOverlayView: View {
                         .padding(.bottom, 12)
                         .onTapGesture(perform: onToggleCaption)
                         .accessibilityIdentifier("ReelCaptionText")
+                        .accessibilityValue(isCaptionExpanded ? "expanded" : "collapsed")
                 }
             }
             .opacity(isChromeVisible ? 1.0 : 0.0)
@@ -317,13 +318,29 @@ public final class PlayerContainerView: UIView {
 /// Simple cached async image thumbnail view
 public struct AsyncThumbnailView: View {
     public let url: URL?
+    private let reelID: String?
+    private let weekID: String?
 
-    public init(url: URL?) {
+    public init(url: URL?, reelID: String? = nil, weekID: String? = nil) {
         self.url = url
+        self.reelID = reelID
+        self.weekID = weekID
+    }
+
+    /// Prefers the offline cache from Download All; falls back to remote.
+    /// `AsyncImage` loads file URLs too, so one path covers both.
+    private var displayURL: URL? {
+        if let reelID, let weekID, !reelID.isEmpty, !weekID.isEmpty {
+            let local = LibraryPathResolver.shared.thumbnailFileURL(for: weekID, reelID: reelID)
+            if FileManager.default.fileExists(atPath: local.path) {
+                return local
+            }
+        }
+        return url
     }
 
     public var body: some View {
-        if let imageURL = url {
+        if let imageURL = displayURL {
             AsyncImage(url: imageURL) { phase in
                 switch phase {
                 case .success(let image):

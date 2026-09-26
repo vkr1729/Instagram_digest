@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import UIKit
 
 /// Coordinates system audio session, interruptions, route changes, and hardware resets.
 @MainActor
@@ -114,7 +115,10 @@ public final class AudioSessionCoordinator: Sendable {
 
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                if options.contains(.shouldResume) {
+                // Never restart audio from the background (ghost audio); the
+                // pool's foreground handler restores playback on return.
+                if options.contains(.shouldResume),
+                   UIApplication.shared.applicationState == .active {
                     AVPlayerPool.shared.play()
                 }
             }

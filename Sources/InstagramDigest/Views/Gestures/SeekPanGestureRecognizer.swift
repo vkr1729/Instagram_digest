@@ -33,13 +33,11 @@ public final class SeekPanGestureRecognizer: UIPanGestureRecognizer {
 
         // If vertical dominance is detected before horizontal lock (|Δy| * 1.4 >= |Δx| before |Δx| crosses 18pt),
         // fail immediately so collection view vertical paging handles the touch.
-        if deltaX < 18.0 {
-            if deltaY * 1.4 >= deltaX {
-                state = .failed
-                isDisambiguated = true
-                return
-            }
-        } else {
+        if Self.shouldFailSeekForVerticalDominance(deltaX: deltaX, deltaY: deltaY) {
+            state = .failed
+            isDisambiguated = true
+            return
+        } else if deltaX >= 18.0 {
             // Horizontal dominance established: lock horizontal gesture
             isDisambiguated = true
         }
@@ -58,5 +56,21 @@ public final class SeekPanGestureRecognizer: UIPanGestureRecognizer {
     public override func reset() {
         super.reset()
         isDisambiguated = false
+    }
+
+    /// Testable vertical-dominance rule: fail when |Δy|*1.4 >= |Δx| before |Δx| crosses 18pt.
+    public static func shouldFailSeekForVerticalDominance(deltaX: CGFloat, deltaY: CGFloat) -> Bool {
+        let ax = abs(deltaX)
+        let ay = abs(deltaY)
+        if ax < 18.0 {
+            return ay * 1.4 >= ax
+        }
+        return false
+    }
+
+    /// Testable seek-fraction math: clamp(initial + dx/width) to [0,1].
+    public static func seekFraction(initialFraction: Double, deltaX: CGFloat, viewWidth: CGFloat) -> Double {
+        guard viewWidth > 0 else { return initialFraction }
+        return max(0.0, min(1.0, initialFraction + Double(deltaX / viewWidth)))
     }
 }

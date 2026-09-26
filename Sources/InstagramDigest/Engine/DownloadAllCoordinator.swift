@@ -95,8 +95,9 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     // MARK: - Queue Management
 
-    public func startDownloadAll(reels: [ReelItem], weekID: String) {
-        let (sufficient, required, available) = preflightStorage(reels: reels, weekID: weekID)
+    public func startDownloadAll(reels: [ReelItem], weekID: String, excludeWatchedIDs: Set<String> = []) {
+        let batch = excludeWatchedIDs.isEmpty ? reels : reels.filter { !excludeWatchedIDs.contains($0.id) }
+        let (sufficient, required, available) = preflightStorage(reels: batch, weekID: weekID)
         guard sufficient else {
             let reqMB = required / 1_000_000
             let availMB = available / 1_000_000
@@ -108,7 +109,8 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         self.watchdogResumeTask?.cancel()
         self.watchdogResumeTask = nil
         self.isSuspended = false
-        let pending = reels.filter {
+        self.suspensionSource = .none   // a prior user pause must not stick to the new batch
+        let pending = batch.filter {
             !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id)
         }
 
@@ -127,13 +129,46 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         self.overallProgress = 0.0
 
         UIApplication.shared.isIdleTimerDisabled = true
+        // Rec #4: thumbnails ride along best-effort (~20–50 KB each) so the
+        // grid/bookmarks browse offline too. Never fails the video batch.
+        let thumbReels = batch
+        Task { @MainActor [weak self] in
+            await self?.prefetchThumbnails(reels: thumbReels, weekID: weekID)
+        }
         drainQueue()
+    }
+
+    /// Best-effort thumbnail prefetch into the week's MediaCache dir.
+    /// One small file per reel, same LivePinSet/rollover treatment as video.
+    private func prefetchThumbnails(reels: [ReelItem], weekID: String) async {
+        let resolver = LibraryPathResolver.shared
+        try? resolver.ensureDirectoriesExist(for: weekID)
+        for reel in reels {
+            guard let remote = reel.thumbnailUrl else { continue }
+            let dest = resolver.thumbnailFileURL(for: weekID, reelID: reel.id)
+            if FileManager.default.fileExists(atPath: dest.path) { continue }
+            do {
+                let (tmpURL, _) = try await URLSession.shared.download(from: remote)
+                try? FileManager.default.createDirectory(
+                    at: dest.deletingLastPathComponent(),
+                    withIntermediateDirectories: true)
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try? FileManager.default.removeItem(at: tmpURL)
+                    continue
+                }
+                try FileManager.default.moveItem(at: tmpURL, to: dest)
+                try? resolver.applyProtectionAndBackupExclusion(to: dest)
+            } catch {
+                continue
+            }
+        }
     }
 
     public func cancelAll() {
         watchdogResumeTask?.cancel()
         watchdogResumeTask = nil
         isSuspended = false
+        suspensionSource = .none        // otherwise the sticky-user branch misfires forever
         for (_, entry) in inFlightTasks {
             entry.task.cancel()
         }
@@ -149,12 +184,30 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         UIApplication.shared.isIdleTimerDisabled = false
     }
 
+    private enum SuspensionSource { case none, user, watchdog, background }
+
+    private var suspensionSource: SuspensionSource = .none
+
     public func suspendQueue() {
+        suspendQueue(source: .user)
+    }
+
+    private func suspendQueue(source: SuspensionSource) {
         // B15: a watchdog armed earlier must not fire mid-purge (or mid-user-
         // pause) and resume behind our back — the purge invariant depends on
         // suspension holding until explicitly resumed.
+        // A user pause is sticky: later system suspensions must not
+        // downgrade it, or the watchdog/foreground would resume behind the
+        // user's back.
+        if suspensionSource == .user && source != .user {
+            watchdogResumeTask?.cancel()
+            watchdogResumeTask = nil
+            isSuspended = true
+            return
+        }
         watchdogResumeTask?.cancel()
         watchdogResumeTask = nil
+        suspensionSource = source
         isSuspended = true
         for (_, entry) in inFlightTasks {
             entry.task.suspend()
@@ -168,6 +221,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
     }
 
     public func resumeQueue() {
+        suspensionSource = .none
         isSuspended = false
         for (_, entry) in inFlightTasks {
             entry.task.resume()
@@ -182,14 +236,31 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         drainQueue()
     }
 
+    // MARK: - Purge-linked suspension (must never lift an explicit user pause)
+    private var suspendedForPurge = false
+
+    public func suspendQueueForPurge() {
+        guard suspensionSource != .user else { suspendedForPurge = false; return }
+        suspendedForPurge = true
+        suspendQueue(source: .background)
+    }
+
+    public func resumeQueueAfterPurge() {
+        guard suspendedForPurge else { return }
+        suspendedForPurge = false
+        resumeQueue()
+    }
+
     /// Suspends downloads for 10s during local-file stall watchdog precedence
     public func suspendForWatchdog(durationSeconds: Double = 10.0) {
-        suspendQueue()
+        suspendQueue(source: .watchdog)
         watchdogResumeTask?.cancel()
         watchdogResumeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(durationSeconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             guard let self = self, self.isSuspended else { return }
+            // Never resume behind an explicit user pause.
+            guard self.suspensionSource == .watchdog else { return }
             // Only resume if still in foreground
             if UIApplication.shared.applicationState != .background {
                 self.resumeQueue()
@@ -239,8 +310,10 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                 overallProgress = 0.0
                 return
             }
-            if failedInBatch > 0 && completedInBatch == 0 {
-                state = .failed("All downloads failed in this batch.")
+            if failedInBatch > 0 {
+                state = failedInBatch >= totalInBatch
+                    ? .failed("All downloads failed in this batch.")
+                    : .failed("\(failedInBatch) of \(totalInBatch) downloads failed — tap Retry.")
             } else {
                 state = .completed
                 overallProgress = 1.0
@@ -259,7 +332,8 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         let task: URLSessionDownloadTask
         if let resumeData = loadPersistedResumeData(for: item.id) {
             task = urlSession.downloadTask(withResumeData: resumeData)
-            removePersistedResumeData(for: item.id)
+            // Keep the .dat until promotion succeeds (IOS-P1-8): a crash
+            // mid-download must be resumable from the persisted bytes.
         } else {
             task = urlSession.downloadTask(with: item.reel.videoUrl)
         }
@@ -435,7 +509,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.suspendQueue()
+                    self?.suspendQueue(source: .background)
                 }
             }
         )
@@ -448,6 +522,8 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
+                    // Never resume behind an explicit user pause.
+                    guard self.suspensionSource != .user else { return }
                     if self.hasActiveDownloads {
                         self.resumeQueue()
                     }

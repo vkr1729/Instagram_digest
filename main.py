@@ -221,7 +221,7 @@ def _persisted_digest_week() -> str:
 
 def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
                           since_timestamp: int | None, resume: bool,
-                          banked_age_days: int) -> bool:
+                          banked_age_days: int, kind: str | None = None) -> bool:
     """Resume gate: is this checkpoint this run's banked work?
 
     B5: resume runs exist to finish banked work — a drifted anchor is still
@@ -232,6 +232,9 @@ def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
         and loaded_sync.get("version") == 1
         and loaded_sync.get("limit_per_creator") == limit_per_creator
         and (resume or loaded_sync.get("since_timestamp") == since_timestamp)
+        # Checkpoints from a different run kind are a different operation
+        # (ad-hoc delta vs full weekly window) — never adopt them.
+        and (kind is None or loaded_sync.get("kind") in (None, kind))
         and loaded_sync.get("stage") in RESUMABLE_SYNC_STAGES
         and banked_age_days <= MAX_SYNC_RESUME_AGE_DAYS
     )
@@ -514,6 +517,20 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
                                            existing_keys=existing_keys)
         return rid, url
 
+    if config.R2_ACCOUNT_ID and config.R2_PUBLIC_DOMAIN:
+        reconcile_bytes = 0
+        for r in reels:
+            rid = str(r.get("id") or "")
+            local = paths.get(rid)
+            try:
+                if local and local.exists():
+                    reconcile_bytes += local.stat().st_size
+            except OSError:
+                pass
+        if reconcile_bytes and not storage_r2.check_preflight_quota(estimated_new_bytes=reconcile_bytes):
+            logger.error("Reconcile aborted: batch would breach the R2 safety quota.")
+            return 1
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         futs = {executor.submit(_up, r): str(r["id"]) for r in reels}
         for f in as_completed(futs):
@@ -588,7 +605,9 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
                          len(items), MIN_DEPLOY_ITEMS)
             return 2
         site_builder.deploy_to_gh_pages()
-    save_last_run_info(week_id)
+    # Reconcile uploads media but never scrapes: kind="weekly" would move the
+    # next weekly's anchor here and shrink its window to "since the reconcile".
+    save_last_run_info(week_id, kind="ad-hoc")
     return 0
 
 
@@ -853,6 +872,9 @@ def _run_full_sync(
 
     ordered_sources: list[dict[str, Any]] = []
     cats = ["entertainment", "finance", "ai_tech", "niche", "health", "food"]
+    # Never silently drop sources whose category is outside the canonical 6
+    # (legacy aliases, dashboard typos) — interleave them last instead.
+    cats += sorted(c for c in by_cat if c not in cats)
     max_len = max((len(by_cat.get(c, [])) for c in cats), default=0)
     for i in range(max_len):
         for c in cats:
@@ -893,8 +915,17 @@ def _run_full_sync(
             except ValueError:
                 banked_age_days = 10**6
             if _sync_progress_usable(loaded_sync, limit_per_creator, since_timestamp,
-                                       resume, banked_age_days):
+                                       resume, banked_age_days, kind=kind):
                 sync_progress = loaded_sync
+                # Week-drift (same class as the run_expand fix): resumed work
+                # keeps the week it started in — its local files, uploaded URLs
+                # and R2 keys all live under that week_id. Adopt it, or the JIT
+                # purge deletes the banked keys as "previous weeks".
+                if banked_week and banked_week != week_id:
+                    logger.info("Resuming across midnight: keeping banked week %s (not %s).",
+                                banked_week, week_id)
+                    week_id = banked_week
+                    sync_checkpoint = config.DATA_DIR / f"sync_progress_{week_id}.json"
                 if loaded_sync.get("days_back") != days_back:
                     logger.info(
                         "Sync progress window drifted (banked days_back=%s, now %d); resuming anyway.",
@@ -920,7 +951,7 @@ def _run_full_sync(
         payload = {
             "version": 1, "week_id": week_id,
             "days_back": days_back, "limit_per_creator": limit_per_creator,
-            "since_timestamp": since_timestamp, "stage": stage,
+            "since_timestamp": since_timestamp, "stage": stage, "kind": kind,
         }
         if extra:
             payload.update(extra)
@@ -1031,7 +1062,11 @@ def _run_full_sync(
                 already_external = sum(1 for r in ranked_reels if r.get("is_external"))
                 max_external = int(config.TOP_DIGEST_COUNT * config.MAX_EXTERNAL_SHARE)
                 tier3_room = max(0, max_external - already_external)
-                tier3_target = min(deficit, tier3_room)
+                # The share cap must never make MIN_DEPLOY_ITEMS unreachable:
+                # banked < MIN_DEPLOY_ITEMS - max_external would otherwise
+                # re-park shortfall_paused forever.
+                floor_room = max(0, MIN_DEPLOY_ITEMS - len(ranked_reels))
+                tier3_target = min(deficit, max(tier3_room, floor_room))
                 if tier3_target < deficit:
                     logger.info(
                         "Tier 3 share cap on resume: topping up %d of %d deficit "
@@ -1042,7 +1077,7 @@ def _run_full_sync(
                     logger.info("Tier 3 Top-up: discovering up to %d external reels from feed (max %d evaluations)...",
                                 tier3_target, config.MAX_FEED_EVALUATIONS)
                     try:
-                        existing_ids = {r["id"] for r in ranked_reels}
+                        existing_ids = {r["id"] for r in ranked_reels} | set(_load_seen_reel_ids())
                         external_reels = []
                         for feed_attempt in (1, 2):
                             try:
@@ -1074,12 +1109,30 @@ def _run_full_sync(
                                 return 2
                             except extractor.CookieExpiredException as exc:
                                 if "/accounts/login" in str(exc) or "login_required" in str(exc):
+                                    # Mirror the main Tier-3 path: salvage partials, alert loudly.
+                                    partial = getattr(exc, "partial", None) or []
+                                    salvaged = [r for r in partial if isinstance(r, dict) and r.get("id") not in existing_ids]
+                                    if salvaged:
+                                        external_reels = salvaged
+                                        logger.info("Salvaged %d external finds from interrupted shortfall top-up.", len(salvaged))
+                                    try:
+                                        import notifier
+                                        notifier.send_cookie_alert_email()
+                                    except Exception as alert_err:
+                                        logger.warning("Failed to send cookie alert email: %s", alert_err)
+                                    try:
+                                        local_server.raise_cookie_attention(
+                                            pipeline="weekly-sync",
+                                            reason="Instagram session expired during shortfall top-up",
+                                        )
+                                    except Exception as popup_err:
+                                        logger.warning("Failed raising cookie attention popup: %s", popup_err)
                                     break
                                 if feed_attempt == 1:
                                     logger.warning("Rate limit during feed top-up; sleeping %d min...", FEED_RETRY_WAIT_MIN)
                                     time.sleep(FEED_RETRY_WAIT_MIN * 60)
                         if external_reels:
-                            logger.info("Discovered %d external reels from feed for top-up.", len(external_reels))
+                            # Re-rank combined list so salvaged partials join cleanly.
                             combined = ranked_reels + external_reels
                             for idx, r in enumerate(combined, 1):
                                 r["rank"] = idx
@@ -1385,9 +1438,10 @@ def _run_full_sync(
                         c = rec.get("category", "entertainment")
                         rec_by_cat.setdefault(c, []).append(rec)
                     ordered_recs: list[dict[str, Any]] = []
-                    rec_max_len = max((len(rec_by_cat.get(c, [])) for c in cats), default=0)
+                    rec_cats = cats + sorted(c for c in rec_by_cat if c not in cats)
+                    rec_max_len = max((len(rec_by_cat.get(c, [])) for c in rec_cats), default=0)
                     for i in range(rec_max_len):
-                        for c in cats:
+                        for c in rec_cats:
                             if i < len(rec_by_cat.get(c, [])):
                                 ordered_recs.append(rec_by_cat[c][i])
 
@@ -1548,7 +1602,10 @@ def _run_full_sync(
                 for r in api_prefiltered:
                     if r.get("id") and (r.get("timestamp") or enriched_by_id.get(r.get("id"), {}).get("timestamp")):
                         enriched_by_id[r["id"]] = r
-                still_missing = [r for r in todo if not enriched_by_id.get(r.get("id"), {}).get("timestamp")]
+                # Only what the pre-filter kept: reels it dropped as stale
+                # must not burn a per-reel Playwright visit.
+                still_missing = [r for r in api_prefiltered
+                                 if not enriched_by_id.get(r.get("id"), {}).get("timestamp")]
 
                 newly_enriched = 0
                 if still_missing:
@@ -1649,7 +1706,8 @@ def _run_full_sync(
                 # shortfall_paused + resume instead of a grind.
                 deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
                 max_external = int(config.TOP_DIGEST_COUNT * config.MAX_EXTERNAL_SHARE)
-                tier3_target = min(deficit, max_external)
+                tier3_target = min(deficit, max(max_external,
+                                                MIN_DEPLOY_ITEMS - len(ranked_reels)))
                 if tier3_target < deficit:
                     logger.info(
                         "Tier 3 share cap: filling %d of %d deficit (max %.0f%% externals); "
@@ -1663,7 +1721,7 @@ def _run_full_sync(
                         tier3_target, config.MAX_FEED_EVALUATIONS,
                     )
                     try:
-                        existing_ids = {r["id"] for r in ranked_reels}
+                        existing_ids = {r["id"] for r in ranked_reels} | set(_load_seen_reel_ids())
                         external_reels = []
                         feed_blocked = None
                         for feed_attempt in (1, 2):
@@ -1732,6 +1790,15 @@ def _run_full_sync(
                                 r["rank_display"] = f"#{idx:02d}"
                             ranked_reels = combined
                     except extractor.CookieExpiredException as exc:
+                        partial = getattr(exc, "partial", None) or []
+                        salvaged = [r for r in partial if isinstance(r, dict) and r.get("id") not in existing_ids]
+                        if salvaged:
+                            combined = ranked_reels + salvaged
+                            for idx, r in enumerate(combined, 1):
+                                r["rank"] = idx
+                                r["rank_display"] = f"#{idx:02d}"
+                            ranked_reels = combined
+                            logger.info("Salvaged %d external finds from interrupted discovery.", len(salvaged))
                         if "/accounts/login" in str(exc) or "login_required" in str(exc):
                             logger.warning("Cookie expired during external discovery: %s", exc)
                             try:
@@ -1905,9 +1972,14 @@ def _run_full_sync(
         # which no saved digest references yet).
         live_week = _persisted_digest_week()
         keep_weeks = {live_week} if live_week and live_week != week_id else set()
+        live_digest_unreadable = config.DIGEST_BATCH_FILE.exists() and not live_week
         if config.R2_ACCOUNT_ID:
-            storage_r2.purge_previous_weeks_videos(
-                current_week_id=week_id, keep_week_ids=keep_weeks)
+            if live_digest_unreadable:
+                logger.warning("Live digest unreadable; skipping previous-week purge "
+                               "so its videos survive (recover digest first).")
+            else:
+                storage_r2.purge_previous_weeks_videos(
+                    current_week_id=week_id, keep_week_ids=keep_weeks)
             # B1: on a same-day re-run the live digest references this very
             # week, so its ids are never strays (None = unreadable = skip).
             keep_ids = _current_week_stray_keep_ids(week_id, ranked_reels)
@@ -2015,12 +2087,6 @@ def _run_full_sync(
             return 2
         extra_manifest = {"budget_capped": True} if budget_capped else None
         ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
-        # B20: ledger records what SHIPPED — a crash between ledger and save
-        # used to blacklist reels from the next 30 days of digests.
-        try:
-            _record_seen_reel_ids(ranked_reels)
-        except Exception as dedup_err:
-            logger.warning("Failed recording seen-reel ledger: %s", dedup_err)
 
         # Rec #3: post-publish integrity — drop reels whose keys are missing
         # on R2 so a corrupt digest never deploys. The deploy gate below
@@ -2032,6 +2098,22 @@ def _run_full_sync(
                          len(gone), ", ".join(sorted(gone)[:10]))
             ranked_reels = [r for r in ranked_reels if str(r.get("id")) not in gone]
             ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
+            # Un-trust the dead URLs so the next resume re-uploads instead of
+            # re-failing identically.
+            for _rid in gone:
+                uploaded_url_map.pop(_rid, None)
+            _write_sync_progress("publishing", {
+                "ranked": ranked_reels,
+                "recommended_creators": recommended_creators,
+                "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                "uploaded_url_map": uploaded_url_map,
+            })
+
+        # B20: ledger records what SHIPPED — after the verify drop above.
+        try:
+            _record_seen_reel_ids(ranked_reels)
+        except Exception as dedup_err:
+            logger.warning("Failed recording seen-reel ledger: %s", dedup_err)
 
         if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
             logger.error(
@@ -2162,7 +2244,7 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     week_id = digest_data.get("run_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     logger.info("Starting +%d reel expansion for week %s (deploy=%s)...", target_count, week_id, deploy)
 
-    existing_ids = {item["id"] for item in existing_items if "id" in item}
+    existing_ids = {item["id"] for item in existing_items if "id" in item} | set(_load_seen_reel_ids())
     logger.info("Preserving %d existing reels from active digest without deletion.", len(existing_items))
 
     # Resume support: discoveries from a run killed mid-scroll (cookie death,
@@ -2475,6 +2557,17 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
         )
         return (reel["id"], public_url, reel)
 
+    if config.R2_ACCOUNT_ID and config.R2_PUBLIC_DOMAIN:
+        new_bytes = 0
+        for r in downloadable:
+            try:
+                new_bytes += (week_videos_dir / _final_name(r, r["rank"])).stat().st_size
+            except OSError:
+                pass
+        if new_bytes and not storage_r2.check_preflight_quota(estimated_new_bytes=new_bytes):
+            logger.error("Expand aborted: batch would breach the R2 safety quota.")
+            return 1
+
     new_ranked: list[dict[str, Any]] = []
     _write_expand_progress("uploading", 0, max(1, len(downloadable)))
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -2516,9 +2609,9 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             len(leftover),
         )
     else:
-        # Everything integrated: drop the current file and any older file we
-        # resumed from, so the next run cannot re-integrate banked reels.
-        for done_file in {checkpoint_file, read_path}:
+        # Everything integrated: drop every expand checkpoint so a stranded
+        # older file cannot present as a live STUCK job at the next login.
+        for done_file in config.DATA_DIR.glob("expand_checkpoint_*.json"):
             try:
                 done_file.unlink(missing_ok=True)
             except OSError:
@@ -2703,6 +2796,9 @@ def main() -> int:
     # bursts unless --force overrides it. Resumes are exempt: banked work
     # must always be allowed to complete.
     if not args.resume and not _check_follow_cooldown(force=args.force):
+        _alert_sync_abort(
+            "follow cooldown active",
+            "recent mass-follow burst; refusing scrape. Re-run with --force to override.")
         return 2
     if _trust_warming_active():
         logger.info("Trust warming active: doubling creator/enrich pacing for the young account.")

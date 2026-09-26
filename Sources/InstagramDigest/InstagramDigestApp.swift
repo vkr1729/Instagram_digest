@@ -37,9 +37,9 @@ struct InstagramDigestApp: App {
                 await MediaCacheManager.shared.setDownloadSuspensionHandler { suspend in
                     await MainActor.run {
                         if suspend {
-                            DownloadAllCoordinator.shared.suspendQueue()
+                            DownloadAllCoordinator.shared.suspendQueueForPurge()
                         } else {
-                            DownloadAllCoordinator.shared.resumeQueue()
+                            DownloadAllCoordinator.shared.resumeQueueAfterPurge()
                         }
                     }
                 }
@@ -119,7 +119,6 @@ struct FeedMainView: View {
     @State private var wasPlayingBeforeSheet: Bool = false
     @State private var showOwnerKeyAlert: Bool = false
     @State private var ownerKeyInput: String = ""
-    @State private var activeBookmarkTasks: [String: Task<Void, Never>] = [:]
 
     // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
@@ -307,6 +306,23 @@ struct FeedMainView: View {
                 .opacity(isChromeVisible ? 1.0 : 0.0)
                 .allowsHitTesting(isChromeVisible)
                 .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
+            } else {
+                // Empty digest must never be a dead black screen.
+                VStack(spacing: 16) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 40))
+                        .foregroundColor(.white.opacity(0.5))
+                    Text("No reels in this week's digest yet.")
+                        .font(.system(size: 15))
+                        .foregroundColor(.white.opacity(0.8))
+                    Button("Retry") { loadManifest() }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                        .background(Color.white)
+                        .foregroundColor(.black)
+                        .clipShape(Capsule())
+                }
+                .accessibilityIdentifier("EmptyDigestView")
             }
 
             // Mindful 50-reels Modal Overlay (Presented at top ZStack level)
@@ -334,6 +350,7 @@ struct FeedMainView: View {
                 reels: pool.currentItems,
                 currentIndex: activeIndex,
                 watchedReelIDs: watchedReelIDs,
+                weekID: manifest?.weekId ?? "default_week",
                 onSelectReel: { targetIndex in
                     jumpToReel(at: targetIndex)
                 }
@@ -399,8 +416,10 @@ struct FeedMainView: View {
                     UserDefaults.standard.set(trimmed, forKey: "digest_owner_key")
                     if !pool.currentItems.isEmpty, activeIndex >= 0, activeIndex < pool.currentItems.count {
                         let reel = pool.currentItems[activeIndex]
-                        Task {
-                            _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
+                        if bookmarkedReelIDs.contains(reel.id) {
+                            Task {
+                                _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
+                            }
                         }
                     }
                 }
@@ -728,73 +747,12 @@ struct FeedMainView: View {
         let descriptor = FetchDescriptor<BookmarkItem>(
             predicate: #Predicate { $0.reelID == reel.id }
         )
-
-        if let existing = try? modelContext.fetch(descriptor), let item = existing.first {
-            let reelID = item.reelID
-            modelContext.delete(item)
-            do {
-                try modelContext.save()
-            } catch {
-                modelContext.rollback()
-            }
-            // B13: tombstone the id — if the remote delete never lands (the
-            // call below is fire-and-forget), the next syncRemoteBookmarks
-            // would otherwise resurrect the row.
-            MediaCacheManager.addUnbookmarkedTombstone(reelID)
-
-            activeBookmarkTasks[reelID]?.cancel()
-            activeBookmarkTasks[reelID] = Task {
-                await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
-                await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
-                guard !Task.isCancelled else { return }
-                _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
-            }
+        let isBookmarked = (try? modelContext.fetch(descriptor))?.first != nil
+        if isBookmarked {
+            BookmarkController.remove(reelID: reel.id, context: modelContext)
             triggerBookmarkPopAnimation()
         } else {
-            // B13: re-bookmarking lifts any earlier tombstone.
-            MediaCacheManager.clearUnbookmarkedTombstone(reel.id)
-            let item = BookmarkItem(
-                reelID: reel.id,
-                weekID: weekID,
-                creatorHandle: reel.creatorHandle,
-                caption: reel.caption,
-                rank: reel.rank,
-                videoUrl: reel.videoUrl,
-                thumbnailUrl: reel.thumbnailUrl,
-                // B3: keepBookmarkOffline flips the row to .cached after the
-                // isolated copy actually lands. Claiming .cached here from a
-                // transient check lies when the copy never happens.
-                localStatus: .evicted,
-                sizeBytes: reel.sizeBytes ?? 0
-            )
-            modelContext.insert(item)
-            do {
-                try modelContext.save()
-            } catch {
-                modelContext.rollback()
-            }
-
-            let rID = reel.id
-            let wID = weekID
-            let sBytes = reel.sizeBytes ?? 0
-            activeBookmarkTasks[rID]?.cancel()
-            activeBookmarkTasks[rID] = Task {
-                // B3: always attempt the isolated copy — it has a remote
-                // download branch for reels with no local file. A failed
-                // copy (1.5 GB cap, disk full) honestly leaves .evicted.
-                do {
-                    try await MediaCacheManager.shared.keepBookmarkOffline(
-                        weekID: wID,
-                        reelID: rID,
-                        fallbackSizeBytes: sBytes
-                    )
-                } catch {
-                    // Copy failed: row honestly stays .evicted.
-                }
-                guard !Task.isCancelled else { return }
-                // Remote Cloudflare Worker sync -> Telegram forwarding
-                _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
-            }
+            BookmarkController.add(reel: reel, weekID: weekID, context: modelContext)
             triggerBookmarkPopAnimation()
 
             // Prompt user if owner key is not yet configured on this device

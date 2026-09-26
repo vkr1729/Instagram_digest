@@ -114,6 +114,10 @@ fi
 
 # Capture server output (bind failures included) — the desktop icon hides it.
 mkdir -p "$SCRIPT_DIR/logs"
+# Cap log growth (same 10 MB policy as the other scripts; bounds growth across restarts).
+if [ -f "$SCRIPT_DIR/logs/launch.log" ] && [ "$(stat -c %s "$SCRIPT_DIR/logs/launch.log")" -gt 10485760 ]; then
+    tail -c 5242880 "$SCRIPT_DIR/logs/launch.log" > "$SCRIPT_DIR/logs/launch.log.tmp" && mv "$SCRIPT_DIR/logs/launch.log.tmp" "$SCRIPT_DIR/logs/launch.log"
+fi
 exec >>"$SCRIPT_DIR/logs/launch.log" 2>&1
 
 # Run local dashboard server (inherits fd 9, so the lock is held until it exits).

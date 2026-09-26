@@ -45,6 +45,15 @@ public enum WatchedRules {
         storedFingerprint != freshFingerprint
     }
 
+    /// Rec 5: unwatched-only batch filter for Download All. A reel counts as
+    /// watched when its id is in `alreadyWatched`; unseen ids pass through.
+    public static func unwatchedItems(
+        items: [ReelItem],
+        alreadyWatched: Set<String>
+    ) -> [ReelItem] {
+        items.filter { !alreadyWatched.contains($0.id) }
+    }
+
     /// Pure rule for resolving startup resume index given week IDs, saved reel ID, saved index, and items.
     /// Resets to 0 if weekID differs from previous week (weekly rollover rule).
     /// Otherwise prioritizes savedReelID match, followed by savedIndex fallback, clamped to [0, items.count - 1].

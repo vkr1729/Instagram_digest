@@ -6,11 +6,14 @@ on:
       - feat/ios-app
       - main
   workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
   build-and-test:
     name: Build, Test & Package IPA
     runs-on: macos-15
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -27,19 +30,28 @@ jobs:
       - name: Discover and Boot iOS Simulator
         id: simulator
         run: |
-          DEVICE_NAME=$(xcrun simctl list devices available -j | jq -r '[.devices[] | map(select(.isAvailable and (.name | contains("iPhone"))))] | flatten | .[0].name // "iPhone 16"')
-          echo "Discovered simulator: $DEVICE_NAME"
-          xcrun simctl boot "$DEVICE_NAME" || true
-          echo "device_name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+          # Select one simulator by UDID on the newest available runtime (deterministic).
+          DEVICE_JSON=$(xcrun simctl list devices available -j)
+          DEVICE_ID=$(echo "$DEVICE_JSON" | jq -r '[.devices | to_entries[] | {runtime: .key, devices: [.value[] | select(.isAvailable and (.name | contains("iPhone")))]} | select(.devices | length > 0)] | sort_by(.runtime) | last | .devices | sort_by(.name) | last | .udid // empty')
+          if [ -z "$DEVICE_ID" ]; then
+            echo "No available iPhone simulator found"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Discovered simulator UDID: $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Run Unit Tests
         run: |
           xcodebuild test \
             -project InstagramDigest.xcodeproj \
             -scheme InstagramDigest \
-            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
             -derivedDataPath build/DerivedData \
             -only-testing:InstagramDigestTests \
+            -resultBundlePath UnitResults.xcresult \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -50,7 +62,7 @@ jobs:
           xcodebuild test \
             -project InstagramDigest.xcodeproj \
             -scheme InstagramDigest \
-            -destination "platform=iOS Simulator,name=${{ steps.simulator.outputs.device_name }}" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.device_id }}" \
             -derivedDataPath build/DerivedData \
             -only-testing:InstagramDigestUITests \
             -resultBundlePath UATResults.xcresult \
@@ -58,6 +70,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload Unit Results on Failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: unit-results
+          path: UnitResults.xcresult
+          if-no-files-found: ignore
 
       - name: Upload UAT Results on Failure
         if: failure()
@@ -85,6 +105,10 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/InstagramDigest.app Payload/
           zip -qr InstagramDigest.ipa Payload
           echo "IPA Size: $(ls -lh InstagramDigest.ipa | awk '{print $5}')"
+          echo "NOTE: this IPA is UNSIGNED and will not install directly."
+          echo "Re-sign before installing, e.g.:"
+          echo "  AltStore / Sideloadly / TrollStore, or:"
+          echo "  codesign -f -s 'Apple Development' Payload/InstagramDigest.app"
 
       - name: Inspect Package Structure
         run: |

@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 _UMASK = os.umask(0); os.umask(_UMASK)  # read once at import; os.umask is process-global
 
@@ -58,3 +60,56 @@ def durable_write_json(path: str | Path, data: Any) -> None:
 def durable_write_text(path: str | Path, text: str, encoding: str = "utf-8") -> None:
     """Atomically write text to *path* with fsync durability."""
     durable_write_bytes(path, text.encode(encoding))
+
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    _fcntl = None
+
+_SOURCES_LOCK = threading.Lock()
+_sources_depth = threading.local()
+
+
+@contextmanager
+def sources_file_lock(lock_dir: str | Path | None = None) -> Iterator[None]:
+    """Cross-process guard for sources.json read-modify-writes.
+
+    Mirrors recommendations._feedback_file_lock: flock on data/.sources.lock
+    with a thread-local depth counter for reentrancy. Every critical section
+    is milliseconds of local JSON I/O so blocking is fine.
+    """
+    with _SOURCES_LOCK:
+        depth = getattr(_sources_depth, "value", 0)
+        if _fcntl is None or depth > 0:
+            _sources_depth.value = depth + 1
+            try:
+                yield
+            finally:
+                _sources_depth.value = depth
+            return
+        base = Path(lock_dir) if lock_dir is not None else None
+        if base is None:
+            try:
+                import config as _config
+                base = _config.DATA_DIR
+            except Exception:
+                base = Path("data")
+        lock_path = base / ".sources.lock"
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            yield
+            return
+        _sources_depth.value = depth + 1
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            yield
+        finally:
+            _sources_depth.value = depth
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+            except Exception:
+                pass
+            os.close(fd)

@@ -341,7 +341,9 @@ def test_deficit_ranked_checkpoint_resumes_via_feed_topup(tmp_path):
         config.TOP_DIGEST_COUNT - 52,
         int(config.TOP_DIGEST_COUNT * config.MAX_EXTERNAL_SHARE),
     )
-    assert feed_calls[0]["existing_count"] == 52
+    assert feed_calls[0]["existing_count"] >= 52
+    # P2-13: the cross-week seen-id ledger joins the exclusion set, so any
+    # ids already published in prior digests are also excluded up front.
 
     digest = json.loads((tmp_path / "top100_digest.json").read_text(encoding="utf-8"))
     assert len(digest["items"]) == 52 + 198

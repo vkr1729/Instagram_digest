@@ -6,6 +6,7 @@ public struct GridView: View {
     public let currentIndex: Int
     public let watchedReelIDs: Set<String>
     public var onSelectReel: (Int) -> Void
+    public var weekID: String = "default_week"
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [
@@ -18,11 +19,13 @@ public struct GridView: View {
         reels: [ReelItem],
         currentIndex: Int,
         watchedReelIDs: Set<String>,
+        weekID: String = "default_week",
         onSelectReel: @escaping (Int) -> Void
     ) {
         self.reels = reels
         self.currentIndex = currentIndex
         self.watchedReelIDs = watchedReelIDs
+        self.weekID = weekID
         self.onSelectReel = onSelectReel
     }
 
@@ -42,8 +45,8 @@ public struct GridView: View {
                                 dismiss()
                             } label: {
                                 ZStack(alignment: .bottomLeading) {
-                                    // Thumbnail
-                                    AsyncThumbnailView(url: reel.thumbnailUrl)
+                                    // Thumbnail (prefers offline cache from Download All)
+                                    AsyncThumbnailView(url: reel.thumbnailUrl, reelID: reel.id, weekID: weekID)
                                         .frame(height: 170)
                                         .clipped()
                                         .opacity(isWatched ? 0.6 : 1.0)

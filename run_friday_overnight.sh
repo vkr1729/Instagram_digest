@@ -29,6 +29,13 @@ fi
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG_FILE"; }
 
+# network-online.target does not exist in the *user* manager — the unit's
+# Wants=/After= gate nothing. Wait here (bounded, ~5 min) for real connectivity.
+for _ in $(seq 1 60); do
+    ping -c1 -W2 -q 1.1.1.1 >/dev/null 2>&1 && break
+    sleep 5
+done
+
 prompt_chrome_check() {
     log "Chrome login check: open Chrome, verify instagram.com is logged in, leave browser open."
     notify-send "Instagram Digest" "Friday run starting: open Chrome, check instagram.com is logged in, then press OK." 2>/dev/null || true
@@ -79,13 +86,28 @@ log "Instagram Digest finished with exit code $DIGEST_RC"
 TUBELM_RC=$?
 set -e
 log "TubeLM finished with exit code $TUBELM_RC"
+if [ "$TUBELM_RC" -ne 0 ]; then
+    "$APP_DIR/.venv/bin/python" "$APP_DIR/notifier.py" --failure-alert \
+        --context "Friday chain: TubeLM weekly sync failed (rc=$TUBELM_RC)" \
+        --exit-code "$TUBELM_RC" >>"$LOG_FILE" 2>&1 || true
+fi
 log "Chain summary: tubelm=$TUBELM_RC digest=$DIGEST_RC"
+
+# Rec #5: weekly self-audit finally executes when it matters — right after
+# the run, before the poweroff decision. Best-effort, never fails the chain.
+if [ -x "$APP_DIR/healthcheck.sh" ]; then
+    log "Running weekly healthcheck..."
+    "$APP_DIR/healthcheck.sh" >>"$LOG_FILE" 2>&1 || log "Healthcheck reported issues (see above)."
+else
+    log "healthcheck.sh missing/not executable — skipping self-audit."
+fi
 
 # Shutdown only for genuine overnight finishes (before 06:00). A chain that
 # runs into the morning — weekend catch-up, or a slow Friday night — leaves
 # the machine on so the user finds it awake with results waiting.
 now_hr=$((10#$(date +%H)))
-if [ "$now_hr" -ge 6 ]; then
+now_dow=$(date +%u)
+if [ "$now_hr" -ge 6 ] && [ "$now_dow" != "5" ]; then
     log "Finished at hour=$now_hr (>= 06:00) — leaving machine ON by design."
     if [ "$TUBELM_RC" -eq 0 ] && [ "$DIGEST_RC" -eq 0 ]; then
         exit 0

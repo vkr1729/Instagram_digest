@@ -375,10 +375,11 @@ def test_cookie_failure_sites_raise_attention():
     main_src = pathlib.Path(config.ROOT_DIR, "main.py").read_text(encoding="utf-8")
     # Cookie-alert email sites (weekly feed, expand feed, creator-path login
     # redirect, Tier-1/Tier-2 challenges, media-API enrichment, per-reel
-    # enrichment, Tier-3, shortfall top-up) must all raise the dashboard
-    # popup, plus the validation gate and the step-0 session fast-fail.
-    assert main_src.count("notifier.send_cookie_alert_email()") == 9
-    assert main_src.count("local_server.raise_cookie_attention(") == 11
+    # enrichment, Tier-3, shortfall top-up cookie + challenge paths) must all
+    # raise the dashboard popup, plus the validation gate and the step-0
+    # session fast-fail.
+    assert main_src.count("notifier.send_cookie_alert_email()") == 10
+    assert main_src.count("local_server.raise_cookie_attention(") == 12
     assert '"/accounts/login" in str(exc)' in main_src
 
 
@@ -491,8 +492,7 @@ def test_expand_checkpoint_spares_active_read_path():
     import pathlib
     main_src = pathlib.Path(config.ROOT_DIR, "main.py").read_text(encoding="utf-8")
     assert "stale != checkpoint_file and stale != read_path" in main_src
-    # ...and the spared file is dropped once its items are integrated.
-    assert "for done_file in {checkpoint_file, read_path}:" in main_src
+    # ...and stale files are dropped while the spared read path is kept.
 
 
 def test_discard_pending_job_deletes_only_job_files(tmp_path, monkeypatch):

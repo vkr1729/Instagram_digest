@@ -110,6 +110,7 @@ public struct StoryCategoryBarView: View {
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("Category_\(cat.id)")
+                .accessibilityValue(isSelected ? "selected" : "unselected")
             }
         }
         .padding(.horizontal, 8)

@@ -49,10 +49,12 @@ public actor DigestDataService {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
-                // Cache to disk
-                try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
-                try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
-                try? data.write(to: cacheFileURL, options: .atomic)
+                // Never cache an empty manifest — it would brick offline launch.
+                if !manifest.items.isEmpty {
+                    try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
+                    try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
+                    try? data.write(to: cacheFileURL, options: .atomic)
+                }
                 return manifest
             }
         } catch {

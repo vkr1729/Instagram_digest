@@ -74,6 +74,89 @@ def test_sync_abort_alerts_on_all_exit2_sites(monkeypatch):
     assert src.count("return 2") <= src.count("_alert_sync_abort(")
 
 
+def test_weekly_exit2_sites_always_alert_ast():
+    """AST invariant: every `return 2` in the weekly path must be preceded
+    in its branch by _alert_sync_abort (covers main() sites like the
+    follow-cooldown abort that the source-count test above cannot see)."""
+    import ast
+    src_path = ROOT_DIR / "main.py"
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for fname in ("_run_full_sync", "main"):
+        func = funcs.get(fname)
+        assert func is not None, f"{fname} missing"
+
+        def _check_block(stmts):
+            # Walk a statement list; a `return 2` is covered when an
+            # _alert_sync_abort call appears earlier in the same block or
+            # in an enclosing block already visited.
+            seen_alert = False
+            for stmt in stmts:
+                # Direct alert call in this block?
+                for node in ast.walk(stmt):
+                    if isinstance(node, ast.Call):
+                        f = node.func
+                        name = ""
+                        if isinstance(f, ast.Name):
+                            name = f.id
+                        elif isinstance(f, ast.Attribute):
+                            name = f.attr
+                        if name == "_alert_sync_abort":
+                            # Only counts if it precedes the return within the walk;
+                            # simplified: mark and let block-order check below decide.
+                            pass
+                # Recurse into branches first so nested returns are checked.
+                for child in ast.iter_child_nodes(stmt):
+                    if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+                        _check_block(getattr(child, "body", []) or [])
+                        for handler in getattr(child, "handlers", []) or []:
+                            _check_block(getattr(handler, "body", []) or [])
+                        _check_block(getattr(child, "orelse", []) or [])
+                        _check_block(getattr(child, "finalbody", []) or [])
+            return seen_alert
+
+        # Collect all `return 2` nodes with their enclosing block alert coverage.
+        violations = []
+
+        def _visit(stmts, alert_before=False):
+            alert_seen = alert_before
+            for stmt in stmts:
+                # Does this statement itself contain an alert call before any return?
+                has_alert = any(
+                    isinstance(n, ast.Call) and (
+                        (isinstance(n.func, ast.Name) and n.func.id == "_alert_sync_abort")
+                        or (isinstance(n.func, ast.Attribute) and n.func.attr == "_alert_sync_abort")
+                    )
+                    for n in ast.walk(stmt)
+                    if not isinstance(n, ast.Return)
+                )
+                if isinstance(stmt, ast.Return):
+                    val = stmt.value
+                    is_two = isinstance(val, ast.Constant) and val.value == 2
+                    if is_two and not (alert_seen or has_alert):
+                        violations.append(f"{fname}:{stmt.lineno}")
+                # Recurse into compound statements, carrying alert Seen state.
+                if isinstance(stmt, ast.If):
+                    _visit(stmt.body, alert_seen or has_alert)
+                    _visit(stmt.orelse, alert_seen or has_alert)
+                elif isinstance(stmt, (ast.For, ast.While)):
+                    _visit(stmt.body, alert_seen or has_alert)
+                    _visit(stmt.orelse, alert_seen or has_alert)
+                elif isinstance(stmt, ast.With):
+                    _visit(stmt.body, alert_seen or has_alert)
+                elif isinstance(stmt, ast.Try):
+                    _visit(stmt.body, alert_seen or has_alert)
+                    for h in stmt.handlers:
+                        _visit(h.body, alert_seen or has_alert)
+                    _visit(stmt.orelse, alert_seen or has_alert)
+                    _visit(stmt.finalbody, alert_seen or has_alert)
+                if has_alert:
+                    alert_seen = True
+
+        _visit(func.body)
+        assert not violations, f"silent exit-2 without _alert_sync_abort: {violations}"
+
+
 def test_alert_sync_abort_delegates_and_never_raises(monkeypatch):
     calls = []
     monkeypatch.setattr(

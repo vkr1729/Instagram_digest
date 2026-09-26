@@ -492,24 +492,26 @@ def sync_following_accounts(force: bool = False) -> list[dict[str, Any]]:
                     logger.warning("Failed parsing export file %s: %s", export_file, e)
 
     # Merge discovered accounts non-destructively with existing sources.json
-    current_sources = load_sources()
-    current_by_handle = {s["handle"].lower(): s for s in current_sources if "handle" in s}
-    blacklist = get_blacklisted_creators()
+    import atomic_io
+    with atomic_io.sources_file_lock():
+        current_sources = load_sources()
+        current_by_handle = {s["handle"].lower(): s for s in current_sources if "handle" in s}
+        blacklist = get_blacklisted_creators()
 
-    for acc in discovered_accounts:
-        handle = acc["handle"].lower()
-        if handle in blacklist:
-            continue
-        if handle not in current_by_handle:
-            current_sources.append(acc)
-            current_by_handle[handle] = acc
-        else:
-            # Preserve user-customized category / enabled status if already set
-            existing = current_by_handle[handle]
-            if "category" not in existing or not existing["category"]:
-                existing["category"] = acc["category"]
+        for acc in discovered_accounts:
+            handle = acc["handle"].lower()
+            if handle in blacklist:
+                continue
+            if handle not in current_by_handle:
+                current_sources.append(acc)
+                current_by_handle[handle] = acc
+            else:
+                # Preserve user-customized category / enabled status if already set
+                existing = current_by_handle[handle]
+                if "category" not in existing or not existing["category"]:
+                    existing["category"] = acc["category"]
 
-    save_sources(current_sources)
+        save_sources(current_sources)
 
     cache_payload = {
         "timestamp": time.time(),

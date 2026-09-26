@@ -171,9 +171,21 @@ def build_site(
     thumb_dir.mkdir(parents=True, exist_ok=True)
     week_video_dir = config.VIDEOS_DIR / week_id
 
-    # Prune stale assets (C6)
+    # Prune stale assets (C6) — keep thumbnails/share pages for every
+    # retained week archive, not just the current week.
     current_ids = {i["id"] for i in r2_items if i.get("id")}
-    _prune_site_assets(current_ids=current_ids, keep_week_ids=set(sorted_weeks))
+    prune_ids = set(current_ids)
+    try:
+        for w in set(sorted_weeks):
+            wf = config.DIGESTS_DIR / f"{w}.json"
+            if wf.exists():
+                wdata = json.loads(wf.read_text(encoding="utf-8"))
+                for it in wdata.get("items", []) or []:
+                    if isinstance(it, dict) and it.get("id"):
+                        prune_ids.add(str(it["id"]))
+    except Exception as exc:
+        logger.warning("Could not union kept-week ids for prune: %s", exc)
+    _prune_site_assets(current_ids=prune_ids, keep_week_ids=set(sorted_weeks))
 
     # Multi-threaded thumbnail generation with -q:v 5 (B4, P3).
     # Each reel gets two images in one ffmpeg pass: a 1200x630 landscape
@@ -412,6 +424,48 @@ def build_site(
         atomic_io.durable_write_text(archive_dir / _name, _html)
 
     # 4. Write data.json API payload (pruned to playable reels when a URL map was provided)
+    # Rec #3: emit real per-reel file sizes so the app's preflight
+    # (DownloadAllCoordinator) and promotion integrity check
+    # (MediaCacheManager.promotePartFile) work on real bytes instead of
+    # the 7.5 MB average. No app changes needed — both already decode
+    # size_bytes/sizeBytes and skip gracefully when absent.
+    try:
+        from urllib.parse import quote as _quote
+        _week_video_dir = config.VIDEOS_DIR / week_id
+        _size_cache: dict[str, int] = {}
+        if _week_video_dir.exists():
+            for _item in raw_items:
+                _rid = str(_item.get("id") or "")
+                if not _rid or _rid in _size_cache:
+                    continue
+                _size: int | None = None
+                for _pat in (f"*_{_rid}.mp4", f"*_{_quote(_rid, safe='')}.mp4"):
+                    try:
+                        _matches = list(_week_video_dir.glob(_pat))
+                    except Exception:
+                        _matches = []
+                    if len(_matches) > 1:
+                        try:
+                            _matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                        except OSError:
+                            pass
+                    if _matches:
+                        try:
+                            _size = int(_matches[0].stat().st_size)
+                        except OSError:
+                            _size = None
+                        if _size:
+                            break
+                if _size:
+                    _size_cache[_rid] = _size
+        if _size_cache:
+            for _lst in (raw_items, r2_items, local_items):
+                for _it in _lst:
+                    _s = _size_cache.get(str(_it.get("id") or ""))
+                    if _s:
+                        _it["size_bytes"] = _s
+    except Exception as exc:
+        logger.warning("size_bytes injection skipped: %s", exc)
     data_payload = dict(digest_data)
     data_payload["run_date"] = week_id
     if r2_uploaded_urls is not None:

@@ -39,8 +39,10 @@ for attempt in 1 2 3 4 5 6; do
     .venv/bin/python main.py --sync --deploy >> "$LOG_FILE" 2>&1
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 3 ]; then break; fi
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Pipeline busy (attempt $attempt/6); retrying in 30 min..." >> "$LOG_FILE"
-    sleep 1800
+    if [ "$attempt" -lt 6 ]; then
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Pipeline busy (attempt $attempt/6); retrying in 30 min..." >> "$LOG_FILE"
+        sleep 1800
+    fi
 done
 set -e
 

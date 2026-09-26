@@ -72,6 +72,29 @@ public struct FeedPagerView: UIViewControllerRepresentable {
         uiViewController.updateCurrentIndex(currentIndex)
     }
 
+    public enum SpatialZone: Equatable {
+        case upperRightSpeed
+        case lowerRightShare
+        case lowerMiddleBookmark
+        case deadZone
+    }
+
+    /// Testable spatial-zone routing (window-relative, viewport-clamped).
+    public static func resolveSpatialZone(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> SpatialZone {
+        guard width > 0, height > 0 else { return .deadZone }
+        let normX = min(max(x / width, 0.0), 1.0)
+        let normY = min(max(y / height, 0.0), 1.0)
+        if normX > 0.65 && normY <= 0.65 {
+            return .upperRightSpeed
+        } else if normX > 0.65 && normY > 0.65 {
+            return .lowerRightShare
+        } else if normX >= 0.30 && normX <= 0.65 && normY > 0.65 {
+            return .lowerMiddleBookmark
+        } else {
+            return .deadZone
+        }
+    }
+
     // MARK: - Coordinator
 
     @MainActor
@@ -131,28 +154,25 @@ public struct FeedPagerView: UIViewControllerRepresentable {
             let height = targetView.bounds.height
             guard width > 0, height > 0 else { return }
 
-            // Clamp to the visible viewport so rounding/safe-area overshoot
-            // can never push a 2x touch into the Share zone (or vice versa).
-            let normX = min(max(location.x / width, 0.0), 1.0)
-            let normY = min(max(location.y / height, 0.0), 1.0)
+            let zone = FeedPagerView.resolveSpatialZone(x: location.x, y: location.y, width: width, height: height)
 
             switch sender.state {
             case .began:
-                if normX > 0.65 && normY <= 0.65 {
+                if zone == .upperRightSpeed {
                     // Mid & upper right for 2x
                     suppressNextTap = true
                     hapticGenerator.impactOccurred()
                     hapticGenerator.prepare()
                     parent.onToggleLatched2x()
 
-                } else if normX > 0.65 && normY > 0.65 {
+                } else if zone == .lowerRightShare {
                     // Lower right for Share
                     suppressNextTap = true
                     hapticGenerator.impactOccurred()
                     hapticGenerator.prepare()
                     parent.onTriggerShare()
 
-                } else if normX >= 0.30 && normX <= 0.65 && normY > 0.65 {
+                } else if zone == .lowerMiddleBookmark {
                     // Lower middle for Bookmark
                     suppressNextTap = true
                     hapticGenerator.impactOccurred()

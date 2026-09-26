@@ -221,19 +221,18 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(pool.currentIndex, 0)
         XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "r0")
 
-        // Wait brief moment for async load of next slot
-        try await Task.sleep(nanoseconds: 50_000_000)
+        for _ in 0..<50 where pool.slotNext.slotItem?.reel.id != "r1" {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(pool.slotNext.slotItem?.reel.id, "r1", "slotNext must preload the next reel")
 
         // Advance to 1
         let prevNextSlot = pool.slotNext
         pool.setCurrentIndex(1)
 
         XCTAssertEqual(pool.currentIndex, 1)
-        // If slotNext was populated, it rotated into slotCurrent
-        if prevNextSlot.slotItem?.reel.id == "r1" {
-            XCTAssertTrue(pool.slotCurrent === prevNextSlot, "slotNext must be promoted to slotCurrent without teardown")
-            XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "r1")
-        }
+        XCTAssertTrue(pool.slotCurrent === prevNextSlot, "slotNext must be promoted to slotCurrent without teardown")
+        XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "r1")
     }
 
     func testRemoteBookmarkPayloadEncoding() throws {
@@ -309,15 +308,16 @@ final class EngineTests: XCTestCase {
         pool.setReels(reels, weekID: "test_week_back", startIndex: 1)
         XCTAssertEqual(pool.currentIndex, 1)
 
-        try await Task.sleep(nanoseconds: 50_000_000)
+        for _ in 0..<50 where pool.slotPrev.slotItem?.reel.id != "b0" {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(pool.slotPrev.slotItem?.reel.id, "b0", "slotPrev must preload the previous reel")
 
         let prevSlot = pool.slotPrev
         pool.setCurrentIndex(0)
         XCTAssertEqual(pool.currentIndex, 0)
 
-        if prevSlot.slotItem?.reel.id == "b0" {
-            XCTAssertTrue(pool.slotCurrent === prevSlot, "slotPrev must be promoted to slotCurrent without teardown")
-            XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "b0")
-        }
+        XCTAssertTrue(pool.slotCurrent === prevSlot, "slotPrev must be promoted to slotCurrent without teardown")
+        XCTAssertEqual(pool.slotCurrent.slotItem?.reel.id, "b0")
     }
 }

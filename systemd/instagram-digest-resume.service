@@ -1,7 +1,6 @@
 [Unit]
 Description=Instagram Digest: resume interrupted sync/expand pipelines at login
 Documentation=file:%h/Instagram_digest/resume_pending.sh
-After=default.target
 
 [Service]
 Type=oneshot

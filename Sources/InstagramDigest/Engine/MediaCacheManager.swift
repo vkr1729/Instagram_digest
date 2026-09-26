@@ -37,9 +37,13 @@ public actor MediaCacheManager {
 
     /// In-memory ledger reflecting cached bookmark MP4 bytes only
     public private(set) var totalBookmarkBytes: Int64 = 0
+    /// Bytes admitted but not yet committed (copy/download in flight).
+    /// Included in every cap check so concurrent admissions cannot overshoot.
+    private var reservedBookmarkBytes: Int64 = 0
 
     /// Bound reel IDs currently active or preloaded in the video pool
     private var activeVideoPoolReelIDs: Set<String> = []
+    private var pendingDeletions: Set<String> = []
     private var latestLivePinSetGeneration: UInt64 = 0
 
     /// Flag indicating if a purge operation is in progress (for UI disabling)
@@ -69,6 +73,11 @@ public actor MediaCacheManager {
             latestLivePinSetGeneration = generation
         }
         self.activeVideoPoolReelIDs = ids
+        // Deferred unlinks: run once the reel is no longer bound to a slot.
+        for reelID in pendingDeletions where !ids.contains(reelID) {
+            pendingDeletions.remove(reelID)
+            deleteBookmarkFile(reelID: reelID)
+        }
     }
 
     // MARK: - Reconcile Ledger
@@ -93,8 +102,10 @@ public actor MediaCacheManager {
                         // Only count and keep cached if it was intentionally cached
                         if bookmark.localStatus == .cached {
                             bookmark.sizeBytes = size
-                            computedBytes += size
                         }
+                        // Orphaned copies still consume disk and stay pinned;
+                        // the ledger must see them or the cap drifts upward.
+                        computedBytes += size
                     } else {
                         bookmark.localStatus = .evicted
                     }
@@ -149,12 +160,15 @@ public actor MediaCacheManager {
         guard let contents = try? fm.contentsOfDirectory(at: weekDir, includingPropertiesForKeys: nil) else { return }
 
         for fileURL in contents {
-            // Robust filename parsing: strip .part and .mp4 suffixes only
+            // Robust filename parsing: strip .part and .mp4 suffixes, plus
+            // cached thumbnails ({reel}.thumb.jpg) which share the reel's pin.
             var baseName = fileURL.lastPathComponent
             if baseName.hasSuffix(".part") {
                 baseName = (baseName as NSString).deletingPathExtension
             }
-            if baseName.hasSuffix(".mp4") {
+            if baseName.hasSuffix(".thumb.jpg") {
+                baseName = String(baseName.dropLast(".thumb.jpg".count))
+            } else if baseName.hasSuffix(".mp4") {
                 baseName = (baseName as NSString).deletingPathExtension
             }
 
@@ -210,7 +224,8 @@ public actor MediaCacheManager {
             throw CacheError.insufficientStorage("Bookmark storage purge in progress; retry shortly.")
         }
 
-        if totalBookmarkBytes + incomingBytes <= Self.maxBookmarkStorageBytes {
+        if totalBookmarkBytes + reservedBookmarkBytes + incomingBytes <= Self.maxBookmarkStorageBytes {
+            reservedBookmarkBytes += incomingBytes
             return
         }
 
@@ -230,7 +245,7 @@ public actor MediaCacheManager {
         let fm = FileManager.default
 
         for candidate in cachedBookmarks {
-            if totalBookmarkBytes + incomingBytes <= Self.maxBookmarkStorageBytes {
+            if totalBookmarkBytes + reservedBookmarkBytes + incomingBytes <= Self.maxBookmarkStorageBytes {
                 break
             }
 
@@ -264,9 +279,10 @@ public actor MediaCacheManager {
 
         try? context.save()
 
-        if totalBookmarkBytes + incomingBytes > Self.maxBookmarkStorageBytes {
+        if totalBookmarkBytes + reservedBookmarkBytes + incomingBytes > Self.maxBookmarkStorageBytes {
             throw CacheError.insufficientStorage("Cannot evict enough storage: active reels are currently bound.")
         }
+        reservedBookmarkBytes += incomingBytes
     }
 
     /// Keep Offline action for a bookmark by ID: ensures space and copies media file to Bookmarks directory.
@@ -292,22 +308,11 @@ public actor MediaCacheManager {
 
         if fm.fileExists(atPath: bookmarkDestURL.path) {
             if item.localStatus != .cached {
-                // B12: the already-on-disk path must pass the cap like any
-                // admission — otherwise the ledger grows unbounded.
-                let size = Self.diskFileSize(atPath: bookmarkDestURL.path) ?? 0
-                try await ensureSpaceForBookmark(incomingBytes: size)
-                item.localStatus = .cached
-                if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
-                    item.sizeBytes = size
-                    do {
-                        try context.save()
-                        self.totalBookmarkBytes += size
-                    } catch {
-                        context.rollback()
-                    }
-                } else {
-                    try? context.save()
-                }
+                item.sizeBytes = Self.diskFileSize(atPath: bookmarkDestURL.path) ?? item.sizeBytes
+                try? context.save()
+                // Bytes already occupy disk (and reconcile counts them):
+                // re-derive the ledger instead of adding them a second time.
+                await reconcileBookmarkStorageLedger()
             }
             return
         }
@@ -315,25 +320,29 @@ public actor MediaCacheManager {
         // Locate existing media file from feed, or fallback to remote download directly
         let feedURL = pathResolver.localFileURL(for: weekID, reelID: reelID)
         if fm.fileExists(atPath: feedURL.path) {
-            let attrs = try fm.attributesOfItem(atPath: feedURL.path)
             let fileSize = Self.diskFileSize(atPath: feedURL.path) ?? (item.sizeBytes > 0 ? item.sizeBytes : fallbackSizeBytes)
 
-            // Ensure space under 1.5 GB cap
+            // Ensure space under 1.5 GB cap (reserves bytes for concurrent admissions)
             try await ensureSpaceForBookmark(incomingBytes: fileSize)
 
             // Perform disk copy off-actor to avoid blocking actor during large file I/O
             let dest = bookmarkDestURL
             let src = feedURL
             let resolver = self.pathResolver
-            try await Task.detached {
-                let fileMgr = FileManager.default
-                try resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
-                if fileMgr.fileExists(atPath: dest.path) {
-                    try? fileMgr.removeItem(at: dest)
-                }
-                try fileMgr.copyItem(at: src, to: dest)
-                try resolver.applyProtectionAndBackupExclusion(to: dest)
-            }.value
+            do {
+                try await Task.detached {
+                    let fileMgr = FileManager.default
+                    try resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
+                    if fileMgr.fileExists(atPath: dest.path) {
+                        try? fileMgr.removeItem(at: dest)
+                    }
+                    try fileMgr.copyItem(at: src, to: dest)
+                    try resolver.applyProtectionAndBackupExclusion(to: dest)
+                }.value
+            } catch {
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - fileSize)
+                throw error
+            }
 
             item.localStatus = .cached
             item.sizeBytes = fileSize
@@ -342,9 +351,11 @@ public actor MediaCacheManager {
                 try context.save()
                 // IOS-P1-2: ledger moves only after the DB save succeeds;
                 // a rollback must not leave phantom bytes counted.
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - fileSize)
                 self.totalBookmarkBytes += fileSize
             } catch {
                 context.rollback()
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - fileSize)
             }
         } else if let remoteURL = item.videoUrl {
             // Direct download from remote URL (e.g. Cloudflare R2 worker)
@@ -360,17 +371,31 @@ public actor MediaCacheManager {
             let (tempURL, _) = try await boundedSession.download(from: remoteURL)
             let dest = bookmarkDestURL
             let actualBytes: Int64 = Self.diskFileSize(atPath: tempURL.path) ?? estimatedBytes
+            // Manifest sizes are estimates — enforce the cap on the real bytes.
+            if actualBytes > estimatedBytes {
+                do {
+                    try await ensureSpaceForBookmark(incomingBytes: actualBytes - estimatedBytes)
+                } catch {
+                    reservedBookmarkBytes = max(0, reservedBookmarkBytes - estimatedBytes)
+                    throw error
+                }
+            }
             let resolver = self.pathResolver
 
-            try await Task.detached {
-                let fileMgr = FileManager.default
-                try resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
-                if fileMgr.fileExists(atPath: dest.path) {
-                    try? fileMgr.removeItem(at: dest)
-                }
-                try fileMgr.moveItem(at: tempURL, to: dest)
-                try resolver.applyProtectionAndBackupExclusion(to: dest)
-            }.value
+            do {
+                try await Task.detached {
+                    let fileMgr = FileManager.default
+                    try resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
+                    if fileMgr.fileExists(atPath: dest.path) {
+                        try? fileMgr.removeItem(at: dest)
+                    }
+                    try fileMgr.moveItem(at: tempURL, to: dest)
+                    try resolver.applyProtectionAndBackupExclusion(to: dest)
+                }.value
+            } catch {
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - actualBytes)
+                throw error
+            }
 
             item.localStatus = .cached
             item.sizeBytes = actualBytes
@@ -378,9 +403,11 @@ public actor MediaCacheManager {
             do {
                 try context.save()
                 // IOS-P1-2: ledger moves only after the DB save succeeds.
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - actualBytes)
                 self.totalBookmarkBytes += actualBytes
             } catch {
                 context.rollback()
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - actualBytes)
             }
         } else {
             throw CacheError.fileNotFound("No local or remote media available to store offline.")
@@ -470,7 +497,10 @@ public actor MediaCacheManager {
     public func deleteBookmarkFile(reelID: String) {
         let bookmarkDestURL = pathResolver.bookmarkFileURL(for: reelID)
         let fm = FileManager.default
-        if fm.fileExists(atPath: bookmarkDestURL.path) {
+        if activeVideoPoolReelIDs.contains(reelID) {
+            // Never unlink a file the pool is streaming right now.
+            pendingDeletions.insert(reelID)
+        } else if fm.fileExists(atPath: bookmarkDestURL.path) {
             if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
                 self.totalBookmarkBytes = max(0, self.totalBookmarkBytes - size)
             }

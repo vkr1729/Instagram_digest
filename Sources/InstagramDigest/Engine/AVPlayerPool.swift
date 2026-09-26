@@ -422,6 +422,13 @@ public final class AVPlayerPool: ObservableObject {
             // Reconnect the layer: it may have been detached by cell reuse or backgrounding.
             slot.playerLayer?.player = slot.player
             slot.playerLayer?.videoGravity = .resizeAspect
+            // The status publisher emits the current value on subscribe, but
+            // this early-return path attaches no new observer: an already-
+            // failed item would otherwise sit on a black frame forever.
+            if slot.player.currentItem?.status == .failed {
+                self.handlePlaybackError(for: item, isLocal: slot.slotItem?.isLocal ?? false)
+                return
+            }
             playCurrentSlotRestartingIfNeeded()
             return
         }
@@ -737,11 +744,17 @@ public final class AVPlayerPool: ObservableObject {
             // Remote stream error: apply two-strike rule
             let strikes = (reelStrikes[item.id] ?? 0) + 1
             reelStrikes[item.id] = strikes
-            if strikes >= 2 {
-                // Skip dead reel and advance
-                if currentIndex + 1 < currentItems.count {
-                    setCurrentIndex(currentIndex + 1)
+            if strikes == 1 {
+                // First strike: retry once with a fresh asset, like the local
+                // ladder does — a transient error must not strand the reel.
+                let gen = poolGeneration
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.poolGeneration == gen else { return }
+                    self.configureCurrentSlot(with: item, generation: gen, forceRebuild: true)
                 }
+            } else if currentIndex + 1 < currentItems.count {
+                // Second strike: skip dead reel and advance
+                setCurrentIndex(currentIndex + 1)
             }
         }
     }

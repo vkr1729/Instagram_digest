@@ -135,19 +135,13 @@ if [ "$SYNC_RC" -ne 0 ]; then
 fi
 
 # Then any pending +100 top-ups. B26: only the newest checkpoint is live —
-# main.py resumes from the newest and deletes the rest, so older files are
-# migrated leftovers, not separate jobs.
+# main.py resumes from sorted-by-name last, so use the same ordering here
+# (filenames carry the week-date; mtime diverges under clock skew/copies).
 if [ "${#EXPAND_CKPTS[@]}" -gt 0 ]; then
     ckpt=""
-    newest=0
-    for c in "${EXPAND_CKPTS[@]}"; do
-        [ -e "$c" ] || continue
-        mt=$(stat -c %Y "$c" 2>/dev/null || echo 0)
-        if [ "$mt" -ge "$newest" ]; then
-            newest="$mt"
-            ckpt="$c"
-        fi
-    done
+    # shellcheck disable=SC2012
+    ckpt=$(printf '%s\n' "${EXPAND_CKPTS[@]}" | sort | tail -n 1)
+    [ -e "$ckpt" ] || ckpt=""
     if [ -n "$ckpt" ]; then
         TARGET=$(/usr/bin/python3 -c \
             "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('target_count', 100) if isinstance(d, dict) else 100)" \
@@ -157,7 +151,11 @@ if [ "${#EXPAND_CKPTS[@]}" -gt 0 ]; then
         [ "$TARGET" -lt 1 ] && TARGET=1
         log "Resuming expansion from $(basename "$ckpt"): main.py --expand $TARGET --deploy"
         "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --expand "$TARGET" --deploy >>"$LOG_FILE" 2>&1
-        log "Expand resume exited with code $?."
+        EXPAND_RC=$?
+        log "Expand resume exited with code $EXPAND_RC."
+        if [ "$EXPAND_RC" -ne 0 ]; then
+            notify "Instagram Digest expand top-up failed (rc=$EXPAND_RC) — checkpoint kept for next login."
+        fi
     fi
 fi
 

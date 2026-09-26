@@ -346,7 +346,7 @@
       const left = Math.max(0, (c.target_count || 0) - (c.banked || 0));
       items.push('<div class="banner"><p>Job: expand digest<br>' +
         "File: " + esc(c.file || "") + "<br>" +
-        "Status: STUCK, not running<br>" +
+        "Status: STUCK (discard blocked while a pipeline is running)<br>" +
         "Progress: <b>" + c.banked + " of " + c.target_count + "</b> banked, " + left + " left · updated " + ago(c.updated_at) + ".</p>" +
         '<div class="actions" style="margin:0">' +
         '<button class="primary" data-resume-expand="' + c.target_count + '" data-resume-file="' + esc(c.file || "") + '">Resume this job</button>' +
@@ -372,7 +372,7 @@
         : s.stage === "enriched" ? s.banked + " enriched reels"
         : s.banked + " candidates" + (s.creators_visited ? ", " + s.creators_visited + " creators visited" : "");
       const title = expired ? "Too old to resume (> 3 days)"
-        : isShortfall ? "Shortfall Paused (Ready to Top-Up)" : "STUCK at stage " + esc(s.stage) + ", not running";
+        : isShortfall ? "Shortfall Paused (Ready to Top-Up)" : "STUCK at stage " + esc(s.stage) + " (discard blocked while running)";
       const btnText = isShortfall ? "Resume Sync / Top-Up" : "Resume this job";
       const bannerCls = isShortfall ? "banner alert" : "banner";
       const resumeBtn = expired
@@ -453,7 +453,7 @@
     toast("Starting +" + count + " expansion…");
     try {
       const res = await fetch("/api/expand?count=" + count, { method: "POST" });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ success: false, error: "HTTP " + res.status }));
       toast(data.message || (data.success ? "Expansion started." : "Expansion refused."));
     } catch (e) { toast("Failed starting expansion."); }
     if (btn) { btn.disabled = false; }
@@ -624,7 +624,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ handle, name, category }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ success: false, error: "HTTP " + res.status }));
       if (data.success) {
         toast("Added @" + handle + " to channel list!");
         addedNow.add(String(handle || "").trim().replace(/^@/, "").toLowerCase());
@@ -647,7 +647,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ handle }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ success: false, error: "HTTP " + res.status }));
       if (data.success) {
         toast("Won't recommend @" + handle + " again.");
         allRecs = allRecs.filter((r) => (r.handle || "").toLowerCase() !== String(handle || "").toLowerCase());

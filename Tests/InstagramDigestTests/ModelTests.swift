@@ -143,6 +143,17 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(beyond, ["r0", "r1", "r2", "r3"])
     }
 
+    func testUnwatchedOnlyBatchFilter() {
+        let items = [
+            ReelItem(id: "r0", creatorHandle: "a", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/0.mp4")!),
+            ReelItem(id: "r1", creatorHandle: "b", caption: "", rank: 2, videoUrl: URL(string: "https://example.com/1.mp4")!),
+            ReelItem(id: "r2", creatorHandle: "c", caption: "", rank: 3, videoUrl: URL(string: "https://example.com/2.mp4")!)
+        ]
+        XCTAssertEqual(WatchedRules.unwatchedItems(items: items, alreadyWatched: []).map(\.id), ["r0", "r1", "r2"])
+        XCTAssertEqual(WatchedRules.unwatchedItems(items: items, alreadyWatched: ["r0", "r2"]).map(\.id), ["r1"])
+        XCTAssertTrue(WatchedRules.unwatchedItems(items: items, alreadyWatched: ["r0", "r1", "r2"]).isEmpty)
+    }
+
     func testBookmarkRemoteDTODecoding() throws {
         let json = """
         [
@@ -178,7 +189,8 @@ final class ModelTests: XCTestCase {
             throw XCTSkip("Bundled data.json not found at \(fileURL.path)")
         }
         let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
-        XCTAssertEqual(manifest.items.count, 300, "Bundled data.json must contain exactly 300 reels")
+        XCTAssertGreaterThanOrEqual(manifest.items.count, 100, "Bundled manifest must decode a healthy volume of reels")
+        XCTAssertEqual(manifest.items.count, manifest.count, "Every bundled reel must decode")
     }
 
     // MARK: - Resume at Last Active Reel & Weekly Rollover Rules

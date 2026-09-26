@@ -205,30 +205,31 @@ def fix_hygiene(report: dict[str, Any] | None = None) -> int:
     """Normalize handles in place and drop post-normalization dupes (keep
     first). Invalid and empty handles are NEVER auto-deleted — preserved
     as-is and reported only. Returns number of entries changed/removed."""
-    sources = _load_sources()
-    if not isinstance(report, dict):
-        report = hygiene_report()
-    invalid_raw = {e["handle"] for e in report.get("invalid", []) if isinstance(e, dict)}
-    fixed: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    changed = 0
-    for s in sources:
-        raw = str(s.get("handle", ""))
-        norm = raw.strip().lstrip("@").lower()
-        if not norm or raw in invalid_raw:
+    with atomic_io.sources_file_lock():
+        sources = _load_sources()
+        if not isinstance(report, dict):
+            report = hygiene_report()
+        invalid_raw = {e["handle"] for e in report.get("invalid", []) if isinstance(e, dict)}
+        fixed: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        changed = 0
+        for s in sources:
+            raw = str(s.get("handle", ""))
+            norm = raw.strip().lstrip("@").lower()
+            if not norm or raw in invalid_raw:
+                fixed.append(s)
+                continue
+            if norm in seen:
+                changed += 1
+                continue
+            seen.add(norm)
+            if raw != norm:
+                s["handle"] = norm
+                changed += 1
             fixed.append(s)
-            continue
-        if norm in seen:
-            changed += 1
-            continue
-        seen.add(norm)
-        if raw != norm:
-            s["handle"] = norm
-            changed += 1
-        fixed.append(s)
-    if changed:
-        atomic_io.durable_write_json(config.SOURCES_FILE, fixed)
-    return changed
+        if changed:
+            atomic_io.durable_write_json(config.SOURCES_FILE, fixed)
+        return changed
 
 
 def import_missing(report: dict[str, Any]) -> int:
@@ -236,23 +237,24 @@ def import_missing(report: dict[str, Any]) -> int:
     missing = report.get("missing_from_digest", [])
     if not missing:
         return 0
-    sources = _load_sources()
-    have = {str(s.get("handle", "")).lower().replace("@", "") for s in sources}
-    added = 0
-    for entry in missing:
-        h = str(entry.get("handle", "")).lower().replace("@", "")
-        if h and h not in have:
-            sources.append({
-                "handle": h,
-                "name": entry.get("name") or h,
-                "category": entry.get("category") or "entertainment",
-                "enabled": True,
-            })
-            have.add(h)
-            added += 1
-    if added:
-        atomic_io.durable_write_json(config.SOURCES_FILE, sources)
-    return added
+    with atomic_io.sources_file_lock():
+        sources = _load_sources()
+        have = {str(s.get("handle", "")).lower().replace("@", "") for s in sources}
+        added = 0
+        for entry in missing:
+            h = str(entry.get("handle", "")).lower().replace("@", "")
+            if h and h not in have:
+                sources.append({
+                    "handle": h,
+                    "name": entry.get("name") or h,
+                    "category": entry.get("category") or "entertainment",
+                    "enabled": True,
+                })
+                have.add(h)
+                added += 1
+        if added:
+            atomic_io.durable_write_json(config.SOURCES_FILE, sources)
+        return added
 
 
 def main() -> int:

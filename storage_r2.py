@@ -164,7 +164,11 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
                     except ValueError:
                         pass
 
-                if not is_stale and last_modified < cutoff_dt:
+                # B23 semantics, same as purge_expired_local_videos: when a
+                # date signal exists BOTH must agree.
+                if key_match:
+                    is_stale = is_stale and last_modified < cutoff_dt
+                elif last_modified < cutoff_dt:
                     is_stale = True
 
                 if is_stale:

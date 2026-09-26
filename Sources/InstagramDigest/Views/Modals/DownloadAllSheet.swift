@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// Dismissible bulk download manager sheet with device storage preflight and adaptive concurrency status.
 public struct DownloadAllSheet: View {
@@ -6,8 +7,11 @@ public struct DownloadAllSheet: View {
     public let reels: [ReelItem]
     public let weekID: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @State private var preflightResult: (isSufficient: Bool, requiredBytes: Int64, availableBytes: Int64)?
+    @State private var unwatchedOnly: Bool = true
+    @State private var watchedIDs: Set<String> = []
 
     public init(reels: [ReelItem], weekID: String) {
         self.reels = reels
@@ -75,10 +79,25 @@ public struct DownloadAllSheet: View {
                     }
 
                     // Download Progress Section
+                    // Rec 5: skip already-watched reels (default on). Cuts the
+                    // batch roughly in half on typical weeks with one toggle.
+                    if coordinator.state == .idle, !watchedIDs.isEmpty {
+                        Toggle(isOn: $unwatchedOnly) {
+                            Text("Download unwatched only (\(effectiveReels.count) of \(reels.count))")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.85))
+                        }
+                        .tint(.cyan)
+                        .padding(.horizontal, 20)
+                        .accessibilityIdentifier("UnwatchedOnlyToggle")
+                        .onChange(of: unwatchedOnly) { _, _ in
+                            preflightResult = coordinator.preflightStorage(reels: effectiveReels, weekID: weekID)
+                        }
+                    }
                     VStack(spacing: 12) {
                         switch coordinator.state {
                         case .idle:
-                            Text("\(reels.count) reels ready to download")
+                            Text("\(effectiveReels.count) reels ready to download")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundColor(.white.opacity(0.8))
 
@@ -144,7 +163,9 @@ public struct DownloadAllSheet: View {
                         switch coordinator.state {
                         case .idle:
                             Button {
-                                coordinator.startDownloadAll(reels: reels, weekID: weekID)
+                                coordinator.startDownloadAll(
+                                    reels: effectiveReels, weekID: weekID,
+                                    excludeWatchedIDs: unwatchedOnly ? watchedIDs : [])
                             } label: {
                                 Text("Start Download")
                                     .font(.system(size: 16, weight: .bold))
@@ -234,7 +255,9 @@ public struct DownloadAllSheet: View {
                         case .failed:
                             VStack(spacing: 12) {
                                 Button {
-                                    coordinator.startDownloadAll(reels: reels, weekID: weekID)
+                                    coordinator.startDownloadAll(
+                                        reels: effectiveReels, weekID: weekID,
+                                        excludeWatchedIDs: unwatchedOnly ? watchedIDs : [])
                                 } label: {
                                     Text("Retry")
                                         .font(.system(size: 16, weight: .bold))
@@ -277,12 +300,19 @@ public struct DownloadAllSheet: View {
                 }
             }
             .onAppear {
-                preflightResult = coordinator.preflightStorage(reels: reels, weekID: weekID)
+                if let list = try? modelContext.fetch(FetchDescriptor<WatchedEvent>()) {
+                    watchedIDs = Set(list.filter { $0.weekID == weekID }.map { $0.reelID })
+                }
+                preflightResult = coordinator.preflightStorage(reels: effectiveReels, weekID: weekID)
             }
         }
     }
 
     private func formatMB(_ bytes: Int64) -> String {
         String(format: "%.1f MB", Double(bytes) / 1_000_000)
+    }
+
+    private var effectiveReels: [ReelItem] {
+        unwatchedOnly ? WatchedRules.unwatchedItems(items: reels, alreadyWatched: watchedIDs) : reels
     }
 }

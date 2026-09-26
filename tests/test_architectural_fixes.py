@@ -481,13 +481,15 @@ def test_c7_do_head_returns_zero_body_bytes(tmp_path, monkeypatch):
 
 def test_b2_batched_r2_purge(monkeypatch):
     """Verify purge_expired_r2_objects uses batch delete_objects instead of serial deletes."""
+    from datetime import datetime, timedelta, timezone
+    _old = datetime.now(timezone.utc) - timedelta(days=30)
     mock_s3 = mock.MagicMock()
     mock_paginator = mock.MagicMock()
     mock_paginator.paginate.return_value = [
         {
             "Contents": [
-                {"Key": "videos/2025-01-01/01_test.mp4"},
-                {"Key": "videos/2025-01-01/02_test.mp4"}
+                {"Key": "videos/2025-01-01/01_test.mp4", "LastModified": _old},
+                {"Key": "videos/2025-01-01/02_test.mp4", "LastModified": _old}
             ]
         }
     ]

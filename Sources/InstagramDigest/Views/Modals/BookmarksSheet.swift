@@ -128,7 +128,7 @@ public struct BookmarksSheet: View {
                                         activePlaybackIndex = index
                                     } label: {
                                         ZStack(alignment: .bottomLeading) {
-                                            AsyncThumbnailView(url: bookmark.thumbnailUrl)
+                                            AsyncThumbnailView(url: bookmark.thumbnailUrl, reelID: bookmark.reelID, weekID: bookmark.weekID)
                                                 .frame(height: 170)
                                                 .clipped()
 
@@ -245,17 +245,7 @@ public struct BookmarksSheet: View {
     }
 
     private func deleteBookmark(_ item: BookmarkItem) {
-        let reelID = item.reelID
-        Task {
-            await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
-            _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
-        }
-        modelContext.delete(item)
-        do {
-            try modelContext.save()
-        } catch {
-            modelContext.rollback()
-        }
+        BookmarkController.remove(reelID: item.reelID, context: modelContext)
         Task {
             await refreshLedger()
         }

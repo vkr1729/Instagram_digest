@@ -67,18 +67,26 @@ final class InstagramDigestUITests: XCTestCase {
         let entertainCat = app.buttons["Category_entertainment"]
         XCTAssertTrue(entertainCat.waitForExistence(timeout: 8.0))
 
-        // Tap Entertainment category
+        // Tap Entertainment category — chip must become selected.
         entertainCat.tap()
-        Thread.sleep(forTimeInterval: 0.5)
+        let selectedExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == 'selected'"),
+            object: entertainCat)
+        XCTAssertEqual(XCTWaiter.wait(for: [selectedExpectation], timeout: 5.0), .completed,
+                       "Entertainment chip must become selected after tap")
 
-        // Return to Top 300 (All)
+        // Return to Top 300 (All) — All must become selected, Entertainment unselected.
         let allCat = app.buttons["Category_all"]
         XCTAssertTrue(allCat.exists)
         allCat.tap()
-        Thread.sleep(forTimeInterval: 0.5)
+        let allSelected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == 'selected'"),
+            object: allCat)
+        XCTAssertEqual(XCTWaiter.wait(for: [allSelected], timeout: 5.0), .completed,
+                       "All chip must become selected after tap")
 
         let creatorHandle = app.staticTexts["ReelCreatorHandle"]
-        XCTAssertTrue(creatorHandle.exists)
+        XCTAssertTrue(creatorHandle.waitForExistence(timeout: 5.0))
     }
 
     // MARK: - 3. Grid Navigation (replaces retired Jump-to-Reel Modal)
@@ -93,15 +101,23 @@ final class InstagramDigestUITests: XCTestCase {
         let gridDoneButton = app.buttons["GridDoneButton"]
         XCTAssertTrue(gridDoneButton.waitForExistence(timeout: 5.0), "Grid sheet should be presented")
 
+        let rankBadgeBefore = app.staticTexts["ReelRankBadge"]
+        XCTAssertTrue(rankBadgeBefore.waitForExistence(timeout: 5.0))
+        let labelBefore = rankBadgeBefore.label
+
         // Navigate to the second reel via the grid
         let secondItem = app.buttons["GridReelItem_1"]
         XCTAssertTrue(secondItem.waitForExistence(timeout: 5.0), "Grid item must exist")
         secondItem.tap()
 
-        // Verify sheet dismissed and feed jumped to the selected reel
+        // Verify sheet dismissed and feed jumped to the selected reel (rank must change)
         let rankBadge = app.staticTexts["ReelRankBadge"]
         XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
-    }
+        let changed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", labelBefore),
+            object: rankBadge)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5.0), .completed,
+                       "Rank badge must change after grid jump (was \(labelBefore))")
 
     // MARK: - 4. Bottom HUD: WhatsApp Share & Bookmark Toggle
 
@@ -112,8 +128,16 @@ final class InstagramDigestUITests: XCTestCase {
         // Save bookmark via bottom HUD button
         saveButton.tap()
 
+        // The first bookmark prompts for the Cloudflare owner key; dismiss it
+        // so it cannot swallow the chip tap below (clean-run hit-test failure).
+        let ownerKeyAlert = app.alerts["Link Cloudflare Owner Key"]
+        if ownerKeyAlert.waitForExistence(timeout: 2.0) {
+            ownerKeyAlert.buttons["Later"].tap()
+        }
+
         let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
-        _ = bookmarkIndicator.waitForExistence(timeout: 2.0)
+        XCTAssertTrue(bookmarkIndicator.waitForExistence(timeout: 2.0), "Bookmark pop indicator must appear after saving")
+        XCTAssertTrue(saveButton.label.contains("Saved"), "Save button must flip to 'Saved' after bookmarking")
 
         // Open Bookmarks sheet from header chip
         let bookmarksChip = app.buttons["BookmarksChipButton"]
@@ -162,21 +186,29 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 7. Vertical Paging
 
     func testVerticalFeedPaging() throws {
-        let creatorHandle = app.staticTexts["ReelCreatorHandle"]
-        XCTAssertTrue(creatorHandle.waitForExistence(timeout: 8.0))
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 8.0))
+        let labelBefore = rankBadge.label
 
         let collectionView = app.collectionViews["FeedCollectionView"]
         XCTAssertTrue(collectionView.waitForExistence(timeout: 5.0))
 
-        // Swipe up to advance
+        // Swipe up to advance — rank must change.
         collectionView.swipeUp(velocity: .fast)
-        Thread.sleep(forTimeInterval: 0.5)
+        let advanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", labelBefore),
+            object: rankBadge)
+        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 5.0), .completed,
+                       "Rank badge must advance after swipe up")
+        let labelAfterUp = rankBadge.label
 
-        // Swipe down to return
+        // Swipe down to return — rank must change again (back toward start).
         collectionView.swipeDown(velocity: .fast)
-        Thread.sleep(forTimeInterval: 0.5)
-
-        XCTAssertTrue(creatorHandle.exists)
+        let returned = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", labelAfterUp),
+            object: rankBadge)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 5.0), .completed,
+                       "Rank badge must change after swipe down")
     }
 
     // MARK: - 9. Watch Timer Pill Format
@@ -200,13 +232,98 @@ final class InstagramDigestUITests: XCTestCase {
 
     func testCaptionExpansionToggle() throws {
         let caption = app.staticTexts["ReelCaptionText"]
-        if caption.waitForExistence(timeout: 5.0) {
-            let initialHeight = caption.frame.height
-            caption.tap()
-            Thread.sleep(forTimeInterval: 0.4)
-            caption.tap()
-            Thread.sleep(forTimeInterval: 0.4)
-            XCTAssertLessThanOrEqual(abs(caption.frame.height - initialHeight), 10.0)
+        XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
+        // Prefer the accessibility value (collapsed/expanded) when available;
+        // fall back to frame-height transitions.
+        let initialValue = caption.value as? String ?? ""
+        caption.tap()
+        let expandedExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == 'expanded'"),
+            object: caption)
+        let expandedByValue = XCTWaiter.wait(for: [expandedExpectation], timeout: 3.0) == .completed
+        if !expandedByValue {
+            // Frame-based fallback: first tap must grow the caption.
+            // Capture growth relative to pre-tap height via polling.
+            let beforeHeight = caption.frame.height
+            var grewHeight = false
+            for _ in 0..<30 {
+                if caption.frame.height > beforeHeight + 2.0 { grewHeight = true; break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            XCTAssertTrue(grewHeight, "Caption must expand on first tap (value=\(initialValue))")
         }
+        caption.tap()
+        let collapsedExpectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == 'collapsed'"),
+            object: caption)
+        let collapsedByValue = XCTWaiter.wait(for: [collapsedExpectation], timeout: 3.0) == .completed
+        if !collapsedByValue {
+            var shrankBack = false
+            let expandedHeight = caption.frame.height
+            for _ in 0..<30 {
+                if abs(caption.frame.height - expandedHeight) > 1.0 { shrankBack = true; break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            // If the seeded caption is too short to clamp, heights may be equal;
+            // the value-based path above is then authoritative. Only assert when
+            // the value hook is absent and heights differ.
+            XCTAssertTrue(shrankBack || initialValue.isEmpty, "Caption must collapse on second tap")
+        }
+    }
+
+    // MARK: - 10. Bookmark round-trip: save -> sheet -> player -> unsave
+
+    func testBookmarkPersistsIntoBookmarksSheet() throws {
+        let saveButton = app.buttons["SaveBookmarkButton"]
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 8.0))
+        saveButton.tap()
+        let ownerKeyAlert = app.alerts["Link Cloudflare Owner Key"]
+        if ownerKeyAlert.waitForExistence(timeout: 2.0) {
+            ownerKeyAlert.buttons["Later"].tap()
+        }
+        let bookmarksChip = app.buttons["BookmarksChipButton"]
+        XCTAssertTrue(bookmarksChip.waitForExistence(timeout: 5.0))
+        bookmarksChip.tap()
+        XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
+        // First saved bookmark must appear in the grid.
+        XCTAssertTrue(app.buttons["BookmarkGridItem_0"].waitForExistence(timeout: 5.0),
+                      "Saved bookmark must persist into the Bookmarks sheet")
+        app.buttons["BookmarksDoneButton"].tap()
+    }
+
+    func testBookmarkPlayerUnsaveClosesWhenLastBookmarkRemoved() throws {
+        let saveButton = app.buttons["SaveBookmarkButton"]
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 8.0))
+        saveButton.tap()
+        let ownerKeyAlert = app.alerts["Link Cloudflare Owner Key"]
+        if ownerKeyAlert.waitForExistence(timeout: 2.0) {
+            ownerKeyAlert.buttons["Later"].tap()
+        }
+        let bookmarksChip = app.buttons["BookmarksChipButton"]
+        bookmarksChip.tap()
+        XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
+        let firstItem = app.buttons["BookmarkGridItem_0"]
+        if firstItem.waitForExistence(timeout: 5.0) {
+            firstItem.tap()
+            let unsaveButton = app.buttons["BookmarkPlayerUnsaveButton"]
+            if unsaveButton.waitForExistence(timeout: 5.0) {
+                unsaveButton.tap()
+            }
+            // After removing the last bookmark the player must close (no crash, sheet visible).
+            XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
+        }
+        app.buttons["BookmarksDoneButton"].tap()
+    }
+
+    func testTapToPauseResume() throws {
+        let collectionView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(collectionView.waitForExistence(timeout: 8.0))
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
+        // Tap toggles play/pause; feed must remain on the same reel without crashing.
+        collectionView.tap()
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 3.0))
+        collectionView.tap()
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 3.0))
     }
 }

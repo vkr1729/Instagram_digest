@@ -485,8 +485,9 @@ def build_health_report_message(report: dict[str, Any]) -> MIMEMultipart:
 <p style="color:#a1a1aa;font-size:13px;margin-top:16px;">{notes}</p>
 </div></body></html>"""
     text_lines = [f"Weekly Health Report — {week} (exit {report.get('exit_code', '?')})", ""]
-    for key in ("digest", "r2", "pages", "session", "outbox", "resume", "recs"):
+    for key in ("digest", "r2", "pages", "session", "outbox", "recs"):
         text_lines.append(f"- {key}: {report.get(key + '_status', report.get(key, '?'))}")
+    text_lines.append(f"- resume: {report.get('resume_pending', '?')}")
     text_lines += [""] + [str(n) for n in report.get("notes", [])]
     msg.attach(MIMEText("\n".join(text_lines), "plain", "utf-8"))
     msg.attach(MIMEText(html_content, "html", "utf-8"))
