@@ -126,6 +126,17 @@ final class InstagramDigestUITests: XCTestCase {
         let saveButton = app.buttons["SaveBookmarkButton"]
         XCTAssertTrue(saveButton.waitForExistence(timeout: 8.0))
 
+        // Toggle to a known state first: if a previous test in this run
+        // already saved this reel, the first tap unsaves (no pop, label
+        // flips back to Save). Then save fresh for a deterministic assert.
+        if saveButton.label.contains("Saved") {
+            saveButton.tap()
+            let unsaved = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label CONTAINS 'Save' AND NOT label CONTAINS 'Saved'"),
+                object: saveButton)
+            _ = XCTWaiter.wait(for: [unsaved], timeout: 3.0)
+        }
+
         // Save bookmark via bottom HUD button (owner-key prompt is
         // pre-suppressed under -ui-testing; tolerate it either way).
         saveButton.tap()
@@ -137,16 +148,14 @@ final class InstagramDigestUITests: XCTestCase {
             ownerKeyAlert.buttons["Later"].tap()
         }
 
-        // The reel may already be saved from a previous test in this run
-        // (shared in-memory store per test process): either the pop or the
-        // Saved label proves the toggle worked.
+        // Either the pop or the Saved label proves the toggle worked.
         let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
         let popAppeared = bookmarkIndicator.waitForExistence(timeout: 5.0)
-        XCTAssertTrue(popAppeared || saveButton.label.contains("Saved"),
-                      "Save must acknowledge (pop or Saved label)")
-        if !saveButton.label.contains("Saved") {
-            saveButton.tap()
-        }
+        let savedExpect = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS 'Saved'"),
+            object: saveButton)
+        let savedLabeled = XCTWaiter.wait(for: [savedExpect], timeout: 5.0) == .completed
+        XCTAssertTrue(popAppeared || savedLabeled, "Save must acknowledge (pop or Saved label)")
         XCTAssertTrue(saveButton.label.contains("Saved"), "Save button must flip to 'Saved' after bookmarking")
 
         // Open Bookmarks sheet from header chip
@@ -241,25 +250,30 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 8. Caption Expansion Toggle
 
     func testCaptionExpansionToggle() throws {
-        // Assert on the reel the app launches on: no navigation, no sheet,
-        // no settle race. The caption element exists only when the reel's
-        // caption is non-empty; reel 0's caption is one line and never
-        // expands, so page forward until a clamping caption appears.
-        var caption = app.staticTexts["ReelCaptionText"]
-        let pager = app.collectionViews["FeedCollectionView"]
-        XCTAssertTrue(pager.waitForExistence(timeout: 8.0))
-        var navigated = false
-        for _ in 0..<8 {
-            if caption.waitForExistence(timeout: 4.0),
-               (caption.value as? String) == "collapsed",
-               caption.frame.height > 30 {
-                navigated = true
-                break
-            }
-            pager.swipeUp()
-            caption = app.staticTexts["ReelCaptionText"]
+        // Jump to a long-caption reel via the grid (deterministic, no swipe
+        // settle race): grid item 1 is the ~490-char caption that clamps.
+        let gridButton = app.buttons["GridIconButton"]
+        XCTAssertTrue(gridButton.waitForExistence(timeout: 8.0))
+        gridButton.tap()
+        let gridDone = app.buttons["GridDoneButton"]
+        XCTAssertTrue(gridDone.waitForExistence(timeout: 5.0), "Grid sheet should be presented")
+        let gridItem = app.buttons["GridReelItem_1"]
+        XCTAssertTrue(gridItem.waitForExistence(timeout: 5.0), "Grid item must exist")
+        gridItem.tap()
+        // Sheet must be gone before asserting on feed elements; if the tap
+        // missed, Done returns to the feed deterministically.
+        if gridDone.waitForExistence(timeout: 3.0) {
+            gridDone.tap()
         }
-        XCTAssertTrue(navigated, "need a reel with a clamping caption")
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
+        let jumped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == '#02'"),
+            object: rankBadge)
+        XCTAssertEqual(XCTWaiter.wait(for: [jumped], timeout: 5.0), .completed,
+                       "grid jump must land on reel #02")
+        let caption = app.staticTexts["ReelCaptionText"]
+        XCTAssertTrue(caption.waitForExistence(timeout: 5.0), "ReelCaptionText must exist for caption toggle test")
         caption.tap()
         // Fall back to the VoiceOver action when the tap lands on the
         // collection view instead of the text (CI hit-test flake).
