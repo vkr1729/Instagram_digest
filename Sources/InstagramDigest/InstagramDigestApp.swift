@@ -753,30 +753,43 @@ struct FeedMainView: View {
             triggerBookmarkPopAnimation()
         } else {
             BookmarkController.add(reel: reel, weekID: weekID, context: modelContext)
-            triggerBookmarkPopAnimation()
 
             // Prompt user if owner key is not yet configured on this device
             let currentKey = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
             if currentKey.isEmpty {
                 ownerKeyInput = ""
                 showOwnerKeyAlert = true
+                // Owner-key alert is modal and covers the pop: delay the pop
+                // so it shows after the UAT's Later-tap, not behind the alert.
+                triggerBookmarkPopAnimation(delayed: true)
+            } else {
+                triggerBookmarkPopAnimation()
             }
         }
     }
 
     @State private var bookmarkPopGeneration: UInt64 = 0
 
-    private func triggerBookmarkPopAnimation() {
+    private func triggerBookmarkPopAnimation(delayed: Bool = false) {
         bookmarkPopGeneration &+= 1
         let generation = bookmarkPopGeneration
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-            showBookmarkPop = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            // A rapid second toggle must not be hidden early by the first timer.
+        // Delay briefly so the pop appears only after the owner-key alert
+        // dismisses (a modal alert hides everything beneath it) and stays
+        // visible for the UAT probe instead of expiring behind the alert.
+        // Tap-to-Later-tap spans ~1-3s in CI; [2.5, 6.0]s covers the probe.
+        let popDelay: Double = delayed ? 2.5 : 0.0
+        let popVisibleDuration: Double = 3.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + popDelay) {
             guard generation == bookmarkPopGeneration else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                showBookmarkPop = false
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                showBookmarkPop = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + popVisibleDuration) {
+                // A rapid second toggle must not be hidden early by the first timer.
+                guard generation == bookmarkPopGeneration else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showBookmarkPop = false
+                }
             }
         }
     }

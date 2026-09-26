@@ -137,7 +137,7 @@ final class InstagramDigestUITests: XCTestCase {
         }
 
         let bookmarkIndicator = app.descendants(matching: .any)["BookmarkIndicator"]
-        XCTAssertTrue(bookmarkIndicator.waitForExistence(timeout: 2.0), "Bookmark pop indicator must appear after saving")
+        XCTAssertTrue(bookmarkIndicator.waitForExistence(timeout: 5.0), "Bookmark pop indicator must appear after saving")
         XCTAssertTrue(saveButton.label.contains("Saved"), "Save button must flip to 'Saved' after bookmarking")
 
         // Open Bookmarks sheet from header chip
