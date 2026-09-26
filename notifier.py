@@ -569,10 +569,21 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
     try:
         import config as _cfg6
         boxes = sorted(_Path(_cfg6.DATA_DIR).glob("upload_outbox_*.json"))
+        try:
+            live_week = (_json.loads(_cfg6.DIGEST_BATCH_FILE.read_text(encoding="utf-8")) or {}).get("run_date") or ""
+        except Exception:
+            live_week = ""
         pending = 0
         for b in boxes:
             try:
-                pending += len((_json.loads(b.read_text(encoding="utf-8")) or {}).get("reels", []))
+                payload = (_json.loads(b.read_text(encoding="utf-8")) or {})
+                # Hardening: an old-week outbox must not keep the report
+                # unhealthy forever — count only the live week's outbox.
+                import re as _re
+                m = _re.search(r"upload_outbox_(.+)\.json$", b.name)
+                if live_week and m and m.group(1) != live_week:
+                    continue
+                pending += len(payload.get("reels", []))
             except Exception:
                 pass
         report["outbox_pending"] = pending

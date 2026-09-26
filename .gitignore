@@ -17,6 +17,8 @@ venv/
 build/
 develop-eggs/
 dist/
+!dist/ipa/
+!dist/ipa/*.ipa
 downloads/
 eggs/
 .eggs/

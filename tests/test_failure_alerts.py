@@ -250,6 +250,8 @@ def test_session_validate_never_raises():
     sess._page = _mock_page(fail_nav=True)
     assert sess.validate() is False
     sess._page = None
+    # P1-8: validate() starts a fresh session — stub start() so no browser launches.
+    sess.start = lambda: (_ for _ in ()).throw(RuntimeError("no browser"))
     assert sess.validate() is False
 
 

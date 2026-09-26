@@ -300,6 +300,7 @@ public struct DownloadAllSheet: View {
                 }
             }
             .onAppear {
+                coordinator.resetIfFinished()
                 if let list = try? modelContext.fetch(FetchDescriptor<WatchedEvent>()) {
                     watchedIDs = Set(list.filter { $0.weekID == weekID }.map { $0.reelID })
                 }

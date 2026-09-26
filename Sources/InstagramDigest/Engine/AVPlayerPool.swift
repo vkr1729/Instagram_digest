@@ -261,6 +261,9 @@ public final class AVPlayerPool: ObservableObject {
             return
         }
         wantsPlayback = true // navigation is an explicit "play this" gesture
+        // Failure ladder counts per visit: a fresh navigation gets a clean slate.
+        reelStrikes[currentItems[newIndex].id] = nil
+        localStallCount[currentItems[newIndex].id] = nil
 
         poolGeneration &+= 1
         let thisGeneration = poolGeneration
@@ -546,6 +549,9 @@ public final class AVPlayerPool: ObservableObject {
     // MARK: - Status & Failure Observation
 
     public var onAutoAdvanceToNext: (@MainActor () -> Void)?
+    /// Dead-reel skip must move the pager too; otherwise the visible card,
+    /// HUD and Save/Share stay on the dead reel while the next one plays.
+    public var onSkipDeadReel: (@MainActor (Int) -> Void)?
 
     private func handlePlaybackEnded(for reel: ReelItem, slot: Slot) {
         guard slot === slotCurrent else { return }
@@ -577,11 +583,7 @@ public final class AVPlayerPool: ObservableObject {
                 guard let self = self, let s = slot, s.currentItem === playerItem else { return }
                 guard self.poolGeneration == generation else { return }
 
-                if status == .readyToPlay {
-                    // Reset failure strikes on successful load
-                    self.reelStrikes[reel.id] = 0
-                    self.localStallCount[reel.id] = 0
-                } else if status == .failed {
+                if status == .failed {
                     self.handlePlaybackError(for: reel, isLocal: isLocal)
                 }
             }
@@ -754,7 +756,11 @@ public final class AVPlayerPool: ObservableObject {
                 }
             } else if currentIndex + 1 < currentItems.count {
                 // Second strike: skip dead reel and advance
-                setCurrentIndex(currentIndex + 1)
+                if let skip = onSkipDeadReel {
+                    skip(currentIndex + 1)
+                } else {
+                    setCurrentIndex(currentIndex + 1)
+                }
             }
         }
     }
@@ -767,6 +773,11 @@ public final class AVPlayerPool: ObservableObject {
         poolGeneration &+= 1
         let gen = poolGeneration
         cancelAllInFlightTasks()
+        // Players are zombies after a media-services reset: recreate all slots.
+        for slot in slots { slot.teardown(detachingLayer: true) }
+        slotPrev = Slot(index: 0); slotCurrent = Slot(index: 1); slotNext = Slot(index: 2)
+        // FeedCollectionViewController re-binds cell layers on this notification.
+        NotificationCenter.default.post(name: Self.didEnterForegroundNotification, object: self)
         let item = currentItems[currentIndex]
         configureCurrentSlot(with: item, generation: gen, restoringTo: position)
     }

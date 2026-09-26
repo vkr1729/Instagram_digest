@@ -27,6 +27,36 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 _YTDLP_SEMAPHORE = threading.Semaphore(2)
 
+# Rec #5: one account-safety circuit breaker — every detector trips it,
+# every request path checks it, and the dashboard reset clears it per run.
+_GATE = threading.Event()
+
+
+def trip_gate(reason: str) -> None:
+    """Latch the account-safety gate: all further Instagram traffic refuses."""
+    if not _GATE.is_set():
+        logger.error("Account-safety gate tripped: %s", reason)
+    _GATE.set()
+
+
+def check_gate() -> None:
+    """Raise if a previous detector already tripped the gate this run."""
+    if _GATE.is_set():
+        raise InstagramChallenged("account-safety gate tripped; refusing further Instagram traffic")
+
+
+def reset_gate() -> None:
+    """Clear the gate at the start of each run (dashboard lives for days)."""
+    _GATE.clear()
+
+
+_YTDLP_GATE_TOKENS = ("login required", "rate-limit", "rate limit", "checkpoint", "challenge")
+
+
+def _ytdlp_stderr_trips_gate(stderr: str) -> bool:
+    low = (stderr or "").lower()
+    return any(t in low for t in _YTDLP_GATE_TOKENS)
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -632,6 +662,8 @@ _CHALLENGE_MARKERS = (
     "/challenge/",
     "/checkpoint/",
     "checkpoint_required",
+    "verify_contactpoint",
+    "/accounts/confirm",
     "checkpoint_url",
     "challenge_required",
     "challenge_context",
@@ -724,6 +756,7 @@ class InstagramSession:
         # single account is an account-linking anomaly, not camouflage.
         self._locale: str | None = None
         self._timezone_id: str | None = None
+        self._user_agent: str | None = None
 
     def __enter__(self) -> InstagramSession:
         self.start()
@@ -752,8 +785,10 @@ class InstagramSession:
             self._locale = random.choice(LOCALE_POOL)
         if self._timezone_id is None:
             self._timezone_id = random.choice(TIMEZONE_POOL)
+        if self._user_agent is None:
+            self._user_agent = random.choice(USER_AGENT_POOL)
         self._context = self._browser.new_context(
-            user_agent=random.choice(USER_AGENT_POOL),
+            user_agent=self._user_agent,
             viewport={"width": width, "height": height},
             locale=self._locale,
             timezone_id=self._timezone_id,
@@ -774,23 +809,18 @@ class InstagramSession:
             self._open_context()
 
     def close(self) -> None:
-        try:
-            if self._page:
-                self._page.close()
-            if self._context:
-                self._context.close()
-            if self._browser:
-                self._browser.close()
-            if self._playwright:
-                self._playwright.stop()
-        except Exception:
-            pass
-        finally:
-            self._page = None
-            self._context = None
-            self._browser = None
-            self._playwright = None
-            self._nav_count = 0
+        for _step in ("page", "context", "browser", "playwright"):
+            try:
+                _obj = getattr(self, f"_{_step}")
+                if _obj:
+                    _obj.close() if _step != "playwright" else _obj.stop()
+            except Exception:
+                pass
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        self._nav_count = 0
 
     def validate(self, url: str = "https://www.instagram.com/") -> bool:
         """Lightweight login check: True if the session looks authenticated.
@@ -798,6 +828,12 @@ class InstagramSession:
         Loads one page and applies the same block markers as extraction.
         Never raises: any failure means "not usable", never "usable".
         """
+        if not self._page:
+            try:
+                self.start()
+            except Exception as exc:
+                logger.warning("Session start failed during validation: %s", exc)
+                return False
         if not self._page:
             return False
         try:
@@ -853,6 +889,7 @@ def discover_creator_reel_urls(
     Use headless Playwright to load creator's reels tab and extract recent reel URLs + view counts.
     Immune to broken yt-dlp profile extractors and API 429 blocks.
     """
+    check_gate()
     clean_handle = handle.lstrip("@").strip().lower()
     target_url = f"https://www.instagram.com/{clean_handle}/reels/"
     reels_found: list[dict[str, Any]] = []
@@ -876,7 +913,8 @@ def discover_creator_reel_urls(
             except Exception:
                 pass
             try:
-                anchors = page.locator(selector).all()
+                anchors = [a for a in page.locator(selector).all()
+                           if _extract_shortcode(a.get_attribute("href") or "")]
             except Exception:
                 anchors = []
             if anchors:
@@ -889,6 +927,11 @@ def discover_creator_reel_urls(
             except Exception:
                 probe_html = ""
             if _page_html_indicates_block(probe_html):
+                low = probe_html.lower()
+                if "challenge_required" in low or "suspicious login attempt" in low:
+                    raise InstagramChallenged(f"@{clean_handle}: challenge soft-block in empty grid")
+                if "login_required" in low or "log in to continue" in low:
+                    raise InstagramBlocked(f"@{clean_handle}: login_required soft-block in empty grid")
                 raise InstagramBlocked(f"@{clean_handle}: soft-block markers in empty grid")
             logger.warning("Empty reel grid for @%s with no block markers; treating as zero reels.", clean_handle)
             return reels_found
@@ -969,6 +1012,7 @@ def fetch_media_info_batch(
     rendering a page. 429s are honored with Retry-After backoff; failures
     return no entry so callers fall back to per-reel extraction.
     """
+    check_gate()
     try:
         import requests as _rq
     except ImportError:
@@ -1029,6 +1073,12 @@ def fetch_media_info_batch(
             raise InstagramChallenged(
                 f"media-info batch challenge-gated on {sc}: {resp.text[:120]}")
         if resp.status_code != 200:
+            body = resp.text[:500].lower()
+            if resp.status_code in (401, 403) or any(t in body for t in (
+                    "require_login", "login_required", "feedback_required", "please wait a few minutes")):
+                # P0-2: Instagram said stop — never grind the rest of the batch.
+                raise InstagramBlocked(
+                    f"media-info HTTP {resp.status_code} on {sc}: {body[:80]}")
             logger.debug("media-info HTTP %d for %s.", resp.status_code, sc)
             continue
         try:
@@ -1134,6 +1184,7 @@ def extract_single_reel_metadata(
     reel_url = reel_info["url"]
     creator_handle = reel_info["creator_handle"]
     shortcode = reel_info.get("id", "")
+    check_gate()
 
     # 1. Attempt high-speed Playwright extraction (bypasses broken yt-dlp & login walls)
     local_session = None
@@ -1147,6 +1198,7 @@ def extract_single_reel_metadata(
             page = local_session.get_page()
 
         page.goto(reel_url, wait_until="domcontentloaded", timeout=18000)
+        _assert_not_blocked(page, f"reel {shortcode or reel_url}")
 
         # Dismiss any occasional login or cookie dialog by pressing Escape
         try:
@@ -1258,6 +1310,8 @@ def extract_single_reel_metadata(
                 "metrics_estimated": metrics_estimated,
                 "is_pinned": bool(reel_info.get("is_pinned", False)),
             }
+    except InstagramBlocked:
+        raise
     except Exception as exc:
         logger.debug("Playwright extraction failed on %s: %s; trying yt-dlp fallback...", reel_url, exc)
     finally:
@@ -1265,6 +1319,10 @@ def extract_single_reel_metadata(
             local_session.close()
 
     # 2. Fallback to yt-dlp with cookies
+    try:
+        check_gate()
+    except InstagramChallenged:
+        raise
     cookie_args = get_cookie_args()
     cmd = [
         "yt-dlp",
@@ -1278,6 +1336,8 @@ def extract_single_reel_metadata(
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        if _ytdlp_stderr_trips_gate(res.stderr or ""):
+            trip_gate(f"yt-dlp metadata signal on {reel_url}")
         if res.returncode == 0:
             data = json.loads(res.stdout)
             reel_id = str(data.get("id") or reel_info["id"])
@@ -1337,6 +1397,7 @@ def extract_creator_reels(
     2. Fetches metadata and CDN streams (or fast_mode for dry-runs).
     3. Filters to posts within days_back window.
     """
+    check_gate()
     clean_handle = handle.lstrip("@").strip()
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     cutoff_timestamp = int(cutoff_dt.timestamp())
@@ -1538,6 +1599,10 @@ def download_reel_video(
             else:
                 temp_path.unlink(missing_ok=True)
                 err_snippet = (res.stderr or "").strip()[-250:]
+                # P2-28: login/rate-limit signals trip the gate so every
+                # later fallback refuses instead of grinding a gated account.
+                if _ytdlp_stderr_trips_gate(res.stderr or ""):
+                    trip_gate(f"yt-dlp signal on {reel_url}: {err_snippet[:80]}")
                 logger.warning("yt-dlp attempt %d failed (code %d): %s", attempt, res.returncode, err_snippet)
         except Exception as exc:
             logger.warning("yt-dlp attempt %d exception: %s", attempt, exc)
@@ -1573,6 +1638,7 @@ def extract_external_reels_from_feed(
       - on_progress (optional) receives a cumulative snapshot every 10 finds so
         callers can stream-checkpoint; a failing callback never breaks discovery.
     """
+    check_gate()
     if target_count <= 0:
         return []
 
@@ -1752,6 +1818,10 @@ def extract_external_reels_from_feed(
                         if isolated_tab else
                         extract_single_reel_metadata({"id": rid, "url": f"https://www.instagram.com/reel/{rid}/", "creator_handle": h}, session=session)
                     )
+                except InstagramChallenged:
+                    raise
+                except InstagramBlocked as blk:
+                    raise CookieExpiredException(str(blk), partial=external_candidates)
                 except Exception as meta_err:
                     logger.debug("Isolated metadata extraction failed on %s: %s", rid, meta_err)
                     meta = None

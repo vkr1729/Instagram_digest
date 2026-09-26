@@ -82,7 +82,23 @@ if [ -n "$SERVING_BUILD" ] && [ "$SERVING_BUILD" = "$EXPECTED_BUILD" ] && [ "$EX
 fi
 
 if port_answers; then
-    # Stale (or foreign) occupant. Reclaim the port from our own old servers
+    # Stale (or foreign) occupant. Never kill a running pipeline first:
+    # ask the occupant whether a sync/expand is in flight.
+    _st=""
+    _st=$(curl -s --noproxy '*' --max-time 2 "${BASE_URL}/api/sync-status" 2>/dev/null || true)
+    if echo "$_st" | python3 -c "import sys,json;sys.exit(0 if json.load(sys.stdin).get('is_running') else 1)" 2>/dev/null; then
+        echo "A sync is running on :8080 — keeping the live server." >&2
+        open_browser
+        exit 0
+    fi
+    _est=""
+    _est=$(curl -s --noproxy '*' --max-time 2 "${BASE_URL}/api/expand/status" 2>/dev/null || true)
+    if echo "$_est" | python3 -c "import sys,json;d=json.load(sys.stdin);sys.exit(0 if (d.get('state') or {}).get('is_running') else 1)" 2>/dev/null; then
+        echo "An expand is running on :8080 — keeping the live server." >&2
+        open_browser
+        exit 0
+    fi
+    # Reclaim the port from our own old servers
     # only: the anchored pattern matches a python interpreter running this
     # project's main.py --serve (absolute argv path included), not editors,
     # greps, or unrelated commands that merely mention those words. A foreign
@@ -123,8 +139,10 @@ exec >>"$SCRIPT_DIR/logs/launch.log" 2>&1
 # Run local dashboard server (inherits fd 9, so the lock is held until it exits).
 # B31: use the venv interpreter explicitly — falling back to system python3
 # when the venv is broken dies into a log the desktop user never sees.
+# P2-23: close fd 9 on exec so later launches can reach the fingerprint
+# check instead of piling behind a stale server forever.
 if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
-    exec "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/main.py" --serve
+    exec "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/main.py" --serve 9>&-
 fi
 notify-send "Instagram Digest" "Cannot start: .venv/bin/python is missing. Reinstall the venv, then relaunch." 2>/dev/null || true
 echo "FATAL: $SCRIPT_DIR/.venv/bin/python missing or not executable; refusing system-python fallback." >&2

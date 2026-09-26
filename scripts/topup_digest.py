@@ -326,7 +326,9 @@ def _topup_digest(watched_count: int = 136, new_week_id: str = "2026-09-14", dep
                          len(all_300), main.MIN_DEPLOY_ITEMS)
             return 2
         logger.info("Deploying updated site to GitHub Pages...")
-        site_builder.deploy_to_gh_pages()
+        if not site_builder.deploy_to_gh_pages():
+            logger.error("Deploy failed; digest saved locally. Run: main.py --deploy")
+            return 1
         logger.info("Successfully deployed to GitHub Pages!")
 
     return 0

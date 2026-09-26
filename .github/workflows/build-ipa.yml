@@ -120,3 +120,18 @@ jobs:
           name: InstagramDigest-Unsigned-IPA
           path: InstagramDigest.ipa
           if-no-files-found: error
+
+      - name: Save IPA to dist/ipa
+        run: |
+          mkdir -p dist/ipa
+          cp InstagramDigest.ipa "dist/ipa/InstagramDigest-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}.ipa"
+          cp InstagramDigest.ipa dist/ipa/InstagramDigest-latest.ipa
+          ls -lh dist/ipa/
+
+      - name: Commit IPA to dist/ipa
+        run: |
+          git config user.name "InstagramDigest Bot"
+          git config user.email "digest@bot.local"
+          git add -f dist/ipa/*.ipa
+          git diff --cached --quiet || git commit -m "ci: save IPA build ${GITHUB_SHA::8} to dist/ipa"
+          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "IPA commit push skipped (no permission or nothing to push)."

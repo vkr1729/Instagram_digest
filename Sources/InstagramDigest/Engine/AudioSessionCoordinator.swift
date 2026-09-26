@@ -19,13 +19,13 @@ public final class AudioSessionCoordinator: Sendable {
     public func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(
-                .playback,
-                mode: .moviePlayback,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .mixWithOthers]
-            )
+            // .allowBluetooth / .allowAirPlay are playAndRecord-only: with
+            // .playback they make setCategory throw and leave .soloAmbient
+            // (muted by the silent switch). A2DP + AirPlay are automatic here.
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
         } catch {
-            // Non-fatal, default system audio category remains
+            // Non-fatal at runtime; a regression here is caught by
+            // EngineTests.testAudioSessionUsesPlaybackCategory in CI.
         }
     }
 

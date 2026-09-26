@@ -69,6 +69,12 @@ def test_b5_stale_or_wrong_stage_still_rejected_on_resume():
     assert main._sync_progress_usable(_ckpt(limit_per_creator=5), 15, 1, True, 1) is False
 
 
+def test_p1_6_fresh_run_never_adopts_other_kind_but_resume_finishes_it():
+    adhoc = _ckpt(kind="ad-hoc")
+    assert main._sync_progress_usable(adhoc, 15, 1000, False, 1, kind="weekly") is False
+    assert main._sync_progress_usable(adhoc, 15, 1000, True, 1, kind="weekly") is True
+
+
 def test_b1_same_day_rerun_keeps_live_ids(tmp_path, monkeypatch):
     digest = tmp_path / "top100_digest.json"
     digest.write_text(json.dumps({

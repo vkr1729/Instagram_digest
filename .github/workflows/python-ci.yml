@@ -68,3 +68,8 @@ jobs:
       - name: Compile-check entry points and scripts
         run: |
           python -m py_compile main.py local_server.py recommendations.py notifier.py audit_channels.py extractor.py ranker.py site_builder.py storage_r2.py scripts/check_media_urls.py scripts/check_local_media.py
+
+      - name: Shell syntax
+        run: |
+          for f in *.sh scripts/*.sh; do bash -n "$f"; done
+          shellcheck -S error *.sh scripts/*.sh

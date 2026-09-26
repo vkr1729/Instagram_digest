@@ -117,6 +117,12 @@ if [ "$now_hr" -ge 6 ] && [ "$now_dow" != "5" ]; then
 fi
 
 log "Requesting system poweroff..."
+# P2-25: never power off while another pipeline still holds the lock
+# (dashboard expand or login resume started after the digest).
+if ! flock -n "$APP_DIR/data/.pipeline.lock" true 2>/dev/null; then
+    log "Pipeline still running — leaving machine ON."
+    exit 1
+fi
 if systemctl poweroff >>"$LOG_FILE" 2>&1; then
     exit 0
 fi

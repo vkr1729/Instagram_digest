@@ -133,6 +133,7 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
         _SYNC_STATE["status"] = "running"
         _SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
         _SYNC_STATE["last_error"] = None
+        _SYNC_STATE["last_result"] = None
 
     def _worker():
         try:
@@ -144,6 +145,13 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                     _SYNC_STATE["last_error"] = "cookie refresh failed; login session missing"
                 return
 
+            # P1-10: dashboard entry points honor the same guards as the CLI.
+            if not main_module._check_follow_cooldown():
+                with _SYNC_LOCK:
+                    _SYNC_STATE.update(is_running=False, status="failed",
+                                       last_error="follow cooldown active (recent mass-follow burst)")
+                return
+            main_module._apply_trust_warming_pacing()
             last_run = main_module.get_last_run_info()
             since_ts = None
             days_back = 7
@@ -151,6 +159,13 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 # B28: bound the anchor like the CLI (main.py) — an unbounded
                 # window turns a "quick top-up" into a multi-day scrape.
                 elapsed = time.time() - last_run["timestamp"]
+                # P2-19: a refresh within 1h of the last run has nothing new —
+                # say so instead of launching a full 7-day scrape.
+                if elapsed < 3600:
+                    with _SYNC_LOCK:
+                        _SYNC_STATE.update(is_running=False, status="skipped",
+                                           last_error="last run < 1h ago; nothing new")
+                    return
                 if 3600 <= elapsed <= 7 * 86400:
                     since_ts = int(last_run["timestamp"])
                     days_back = max(1, int(round(elapsed / 86400.0)))
@@ -163,6 +178,7 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 days_back=days_back,
                 since_timestamp=since_ts,
                 kind="ad-hoc",
+                resume=any(config.DATA_DIR.glob("sync_progress_*.json")),
             )
             with _SYNC_LOCK:
                 _SYNC_STATE["is_running"] = False
@@ -232,6 +248,7 @@ def trigger_sync_resume_task(deploy: bool = True) -> dict[str, Any]:
         _SYNC_STATE["status"] = "running"
         _SYNC_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
         _SYNC_STATE["last_error"] = None
+        _SYNC_STATE["last_result"] = None
 
     def _worker():
         try:
@@ -243,6 +260,9 @@ def trigger_sync_resume_task(deploy: bool = True) -> dict[str, Any]:
                     _SYNC_STATE["last_error"] = "cookie refresh failed; login session missing"
                 return
 
+            # P1-10: resumes skip the follow cooldown per CLI policy, but
+            # still honor trust-warming pacing.
+            main_module._apply_trust_warming_pacing()
             ret = main_module.run_full_sync(
                 dry_run=False,
                 deploy=deploy,
@@ -342,6 +362,8 @@ _FOLLOWING_RUNNING = False
 _FOLLOW_LOCK = threading.Lock()
 _FOLLOW_RESULTS: dict[str, Any] = {}
 _FOLLOW_RESULTS_MAX = 500
+# P1-8: profile follows share one browser session — serialize them.
+_FOLLOW_SERIAL = threading.Lock()
 
 
 def _store_follow_result(handle: str, result: Any) -> None:
@@ -359,7 +381,8 @@ def _launch_follow_worker(handle: str) -> None:
 
     def _worker() -> None:
         try:
-            res = extractor.follow_creator(handle)
+            with _FOLLOW_SERIAL:
+                res = extractor.follow_creator(handle)
         except Exception as exc:
             logger.warning("Follow worker for @%s failed: %s", handle, exc)
             res = {"ok": False, "error": str(exc) or "internal"}
@@ -891,7 +914,24 @@ def free_local_videos() -> dict[str, Any]:
                 payload = json.loads(box.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            paths = (payload or {}).get("local_paths") or {}
+            paths = (payload or {}).get("local_paths") or (payload or {}).get("downloaded_paths") or {}
+            if not isinstance(paths, dict):
+                continue
+            for p in paths.values():
+                try:
+                    protected.add(str(Path(str(p)).resolve()))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    # P2-21: parked sync checkpoints still need their downloads on resume.
+    try:
+        for ckpt in config.DATA_DIR.glob("sync_progress_*.json"):
+            try:
+                payload = json.loads(ckpt.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            paths = (payload or {}).get("local_paths") or (payload or {}).get("downloaded_paths") or {}
             if not isinstance(paths, dict):
                 continue
             for p in paths.values():
@@ -938,6 +978,18 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     atomic_io.durable_write_json(path, data)
 
 
+def _sources_editable() -> bool:
+    """False when sources.json is corrupt/missing-with-forensics: any channel
+    write must refuse rather than persist an empty list (P2-20)."""
+    src = config.SOURCES_FILE
+    if src.exists():
+        try:
+            return isinstance(json.loads(src.read_text(encoding="utf-8")), list)
+        except Exception:
+            return False
+    return not any(src.parent.glob(src.name + ".corrupt-*"))
+
+
 def _load_json_tolerant(path: Path, default: Any) -> Any:
     """Load JSON, quarantining corrupt files instead of silently discarding them.
 
@@ -976,7 +1028,18 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         # polls every 5-60s for weeks, which otherwise grows launch.log unbounded.
         pass
 
+    def _host_is_local(self) -> bool:
+        """Hardening: refuse DNS-rebinding reads (Host must be loopback)."""
+        try:
+            host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
+        except Exception:
+            return False
+        return host in ("127.0.0.1", "localhost", "::1")
+
     def do_HEAD(self):
+        if not self._host_is_local():
+            self.send_error(HTTPStatus.FORBIDDEN, "loopback only")
+            return
         parsed = urlparse(self.path)
         clean_path = parsed.path
 
@@ -1033,6 +1096,9 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_GET(self):
+        if not self._host_is_local():
+            self.send_error(HTTPStatus.FORBIDDEN, "loopback only")
+            return
         parsed = urlparse(self.path)
         clean_path = parsed.path
 
@@ -1056,6 +1122,9 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         # sync+deploy with no origin check (Referer on GET is bypassable via
         # Referrer-Policy: no-referrer, so it cannot be relied on).
         if clean_path in ("/retrigger", "/retrigger/"):
+            # P2-18: only auto-start on same-origin or typed navigations —
+            # a cross-site window.open must show a Start button instead.
+            auto = (self.headers.get("Sec-Fetch-Site") or "").lower() in ("same-origin", "none")
             html_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1102,6 +1171,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     <p id="msg">Decrypting fresh cookies from Chrome and curating the top 250 reels...</p>
     <div class="status-badge" id="badge">Sync Running</div>
     <div><a href="/" class="btn" id="homeBtn" style="display:none;">Return to Viewer</a></div>
+    <div><button class="btn" id="startBtn" style="display:none;" onclick="startSync()">Start Sync</button></div>
   </div>
   <script>
     // B29: await the trigger and only declare completion for the run we
@@ -1109,10 +1179,14 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     // read as "Sync Complete!".
     let seenRunning = false;
     let startFailed = false;
-    fetch('/api/sync-adhoc', { method: 'POST' })
-      .then((res) => res.json())
-      .then((data) => { if (!data || data.success === false) startFailed = true; })
-      .catch(() => { startFailed = true; });
+    function startSync() {
+      document.getElementById('startBtn').style.display = 'none';
+      fetch('/api/sync-adhoc', { method: 'POST' })
+        .then((res) => res.json())
+        .then((data) => { if (!data || data.success === false) startFailed = true; })
+        .catch(() => { startFailed = true; });
+    }
+    if (__AUTO__) startSync(); else document.getElementById('startBtn').style.display = 'inline-block';
     function showFinished(ok, detail) {
       if (ok) {
         document.getElementById('title').textContent = 'Sync Complete!';
@@ -1136,7 +1210,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         if (data.is_running) {
           seenRunning = true;
         } else if (seenRunning) {
-          showFinished(data.status === 'completed' || data.last_result === 0,
+          showFinished(data.status === 'completed',
             data.last_error);
           return;
         } else if (startFailed) {
@@ -1149,10 +1223,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
     checkStatus();
   </script>
 </body>
-</html>""".encode("utf-8")
+</html>""".replace("__AUTO__", "true" if auto else "false").encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(html_content)))
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             self.wfile.write(html_content)
             return
@@ -1566,6 +1641,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
+                self.send_header("X-Frame-Options", "DENY")
                 self.end_headers()
                 self.wfile.write(content)
                 return
@@ -1578,6 +1654,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(content)))
+                self.send_header("X-Frame-Options", "DENY")
                 self.end_headers()
                 self.wfile.write(content)
                 return
@@ -1683,6 +1760,9 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "File Not Found")
 
     def do_POST(self):
+        if not self._host_is_local():
+            self.send_error(HTTPStatus.FORBIDDEN, "loopback only")
+            return
         parsed = urlparse(self.path)
         if not _is_local_origin(self.headers.get("Origin"), self.headers.get("Referer")):
             self.send_error(HTTPStatus.FORBIDDEN, "Cross-origin POST rejected")
@@ -2040,6 +2120,10 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 # Also remove creator from sources.json so it never syncs or extracts again
                 # (skipped when the blacklist save above failed).
                 if handle and action == "add" and config.SOURCES_FILE.exists():
+                    if not _sources_editable():
+                        logger.error("sources.json corrupt; refusing to prune (restore it first).")
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "sources.json corrupt; restore it first")
+                        return
                     try:
                         with atomic_io.sources_file_lock():
                             sources = _load_json_tolerant(config.SOURCES_FILE, [])
@@ -2073,7 +2157,11 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             action = payload.get("action", "add")  # "add" to mute, "remove" to restore
             clean_handles = set(str(h).lower().replace("@", "").strip() for h in handles_in if h)
 
-            with _STATE_LOCK:
+            if not _sources_editable():
+                logger.error("sources.json corrupt; refusing bulk channel update (restore it first).")
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "sources.json corrupt; restore it first")
+                return
+            with _STATE_LOCK, atomic_io.sources_file_lock():
                 b_data = _load_json_tolerant(config.BLACKLIST_FILE, {"creators": []})
 
                 blacklist = set(c.lower().replace("@", "") for c in b_data.get("creators", []))
@@ -2081,6 +2169,10 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 sources = []
                 if config.SOURCES_FILE.exists():
                     sources = _load_json_tolerant(config.SOURCES_FILE, [])
+                    if not isinstance(sources, list):
+                        logger.error("sources.json corrupt; refusing bulk channel update (restore it first).")
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "sources.json corrupt; restore it first")
+                        return
 
                 if action == "add":
                     blacklist.update(clean_handles)
@@ -2106,6 +2198,8 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                     logger.info("Bulk updated channels: %d muted total, %d active sources.", len(b_data["creators"]), len(sources))
                 except Exception as e:
                     logger.error("Error writing bulk channel updates: %s", e)
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not save state")
+                    return
 
             resp = {
                 "success": True,

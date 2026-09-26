@@ -1,5 +1,12 @@
 import Foundation
 
+extension URLResponse {
+    /// URLSession downloads "succeed" on 4xx/5xx and return the error body.
+    var isHTTPSuccess: Bool {
+        ((self as? HTTPURLResponse)?.statusCode).map { (200...299).contains($0) } ?? false
+    }
+}
+
 /// Accepts only absolute http(s) URLs. `URL(string:)` also parses relative
 /// paths ("foo.mp4") and custom schemes, which fail later in URLSession /
 /// AVPlayer — reject them at decode time so the lossy decoders skip the

@@ -72,3 +72,54 @@ def _isolate_test_environment(monkeypatch, request):
         monkeypatch.setattr(notifier, "send_failure_alert_email", lambda *a, **kw: False)
         monkeypatch.setattr(notifier, "send_health_report_email", lambda *a, **kw: False)
 
+
+@pytest.fixture(autouse=True)
+def _isolate_state_paths(tmp_path, monkeypatch):
+    """No test may touch the live data/ dir: a planted expand checkpoint makes
+    resume_pending.sh run --expand --deploy at the next login."""
+    import main
+    import local_server
+    import extractor
+    data = tmp_path / "state"
+    (data / "digests").mkdir(parents=True)
+    (data / "videos").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(config, "DIGESTS_DIR", data / "digests")
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", data / "top100_digest.json")
+    monkeypatch.setattr(config, "LAST_RUN_FILE", data / "last_run.json")
+    monkeypatch.setattr(main, "SEEN_IDS_FILE", data / "seen_reel_ids.json")
+    monkeypatch.setattr(local_server, "COOKIE_ATTENTION_FILE", data / "cookie_attention.json")
+    # Rec #5: the account-safety gate is process-global — never leak a
+    # tripped gate from one test into the next.
+    extractor.reset_gate()
+
+
+def _live_data_snapshot():
+    """File names under the real ROOT_DIR/data at session start (tripwire baseline)."""
+    live = ROOT_DIR / "data"
+    try:
+        return ({p.name for p in live.glob("expand_checkpoint_*")}
+                | {p.name for p in live.glob("sync_progress_*")}
+                | {(live / "digests" / p.name).as_posix()
+                   for p in (live / "digests").glob("*.json")} if live.exists() else set())
+    except Exception:
+        return set()
+
+
+_LIVE_BASELINE = _live_data_snapshot()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Tripwire: fail loudly if any test planted state in the live data/ dir."""
+    live = ROOT_DIR / "data"
+    now_sync = {p.name for p in live.glob("expand_checkpoint_*")} if live.exists() else set()
+    now_prog = {p.name for p in live.glob("sync_progress_*")} if live.exists() else set()
+    now_dig = set()
+    if (live / "digests").exists():
+        now_dig = {(live / "digests" / p.name).as_posix()
+                   for p in (live / "digests").glob("*.json")}
+    new = (now_sync | now_prog | now_dig) - _LIVE_BASELINE
+    if new:
+        session.exitstatus = 1
+        print(f"\nFAIL: tests wrote live state into data/: {sorted(new)}")
+

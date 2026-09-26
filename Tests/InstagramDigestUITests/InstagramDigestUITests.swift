@@ -327,4 +327,43 @@ final class InstagramDigestUITests: XCTestCase {
         collectionView.tap()
         XCTAssertTrue(rankBadge.waitForExistence(timeout: 3.0))
     }
+
+    func testPlaybackClockAdvances() throws {
+        let progress = app.otherElements["PlaybackProgress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 8.0))
+        let first = progress.value as? String ?? ""
+        let start = Date()
+        var second = first
+        while second == first, Date().timeIntervalSince(start) < 3.0 {
+            second = (app.otherElements["PlaybackProgress"].value as? String) ?? second
+        }
+        XCTAssertNotEqual(second, first, "playback clock must advance within 3s")
+    }
+
+    func testTapPausesClock() throws {
+        let collectionView = app.collectionViews["FeedCollectionView"]
+        XCTAssertTrue(collectionView.waitForExistence(timeout: 8.0))
+        collectionView.tap()
+        let progress = app.otherElements["PlaybackProgress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5.0))
+        let paused = (progress.value as? String) ?? ""
+        XCTAssertTrue(paused.contains("paused"), "tap must pause playback")
+        let frozen = paused
+        sleep(1)
+        let later = (app.otherElements["PlaybackProgress"].value as? String) ?? ""
+        XCTAssertEqual(later.components(separatedBy: " ").first,
+                       frozen.components(separatedBy: " ").first,
+                       "paused clock must not advance")
+    }
+
+    func testForegroundKeepsRankBadge() throws {
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 8.0))
+        let before = rankBadge.label
+        XCUIDevice.shared.press(.home)
+        sleep(1)
+        app.activate()
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 8.0))
+        XCTAssertEqual(rankBadge.label, before, "foreground must not disturb playback")
+    }
 }

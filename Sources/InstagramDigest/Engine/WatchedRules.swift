@@ -76,4 +76,21 @@ public enum WatchedRules {
         }
         return 0
     }
+
+    /// Rec 2: quiet foreground refresh — refetch at most every 3h, and never
+    /// interrupt mid-reel when the week is unchanged.
+    public static func shouldRefresh(lastFetch: Date?, now: Date) -> Bool {
+        guard let last = lastFetch else { return true }
+        return now.timeIntervalSince(last) > 3 * 3600
+    }
+
+    /// Rec 2: a fetched manifest is a new week only when its id differs.
+    public static func isNewWeek(current: String, fetched: String) -> Bool {
+        !current.isEmpty && current != fetched
+    }
+
+    /// Rec 4: offline playlist — while offline, play only downloaded reels.
+    public static func offlinePlaylist(items: [ReelItem], isLocal: (ReelItem) -> Bool) -> [ReelItem] {
+        items.filter { isLocal($0) }
+    }
 }

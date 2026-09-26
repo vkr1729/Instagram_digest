@@ -379,7 +379,8 @@ def test_cookie_failure_sites_raise_attention():
     # raise the dashboard popup, plus the validation gate and the step-0
     # session fast-fail.
     assert main_src.count("notifier.send_cookie_alert_email()") == 10
-    assert main_src.count("local_server.raise_cookie_attention(") == 12
+    # P2-14 added one more gate site (expand challenge abort).
+    assert main_src.count("local_server.raise_cookie_attention(") == 13
     assert '"/accounts/login" in str(exc)' in main_src
 
 

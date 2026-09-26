@@ -13,6 +13,9 @@ struct InstagramDigestApp: App {
         let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing")
 
         if isUITesting {
+            if let bid = Bundle.main.bundleIdentifier {
+                UserDefaults.standard.removePersistentDomain(forName: bid)
+            }
             try? FileManager.default.removeItem(at: LibraryPathResolver.shared.mediaCacheBaseURL)
             try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.mediaCacheBaseURL)
         }
@@ -76,9 +79,15 @@ struct InstagramDigestApp: App {
 
     var body: some Scene {
         WindowGroup {
-            FeedMainView()
-                .modelContainer(modelContainer)
-                .preferredColorScheme(.dark)
+            if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
+               !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                // Hosting unit tests: no feed, no network, no writes to the singletons under test.
+                Color.black
+            } else {
+                FeedMainView()
+                    .modelContainer(modelContainer)
+                    .preferredColorScheme(.dark)
+            }
         }
     }
 }
@@ -123,6 +132,8 @@ struct FeedMainView: View {
     // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
     @Query private var savedBookmarks: [BookmarkItem]
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var lastManifestFetch: Date? = nil
 
     /// Wall-clock watch timer. Stored (not built in `body`): the pool
     /// publishes progress ticks every 0.5s, so a Timer.publish built in
@@ -234,6 +245,7 @@ struct FeedMainView: View {
                     progress: pool.currentProgress,
                     duration: pool.currentDuration,
                     currentTime: pool.currentTime,
+                    isPlaying: pool.isPlaying,
                     showBookmarkPop: showBookmarkPop,
                     isCaptionExpanded: isCaptionExpanded,
                     onTogglePlayPause: {
@@ -292,11 +304,19 @@ struct FeedMainView: View {
                             // category while the pool plays something else.
                             if pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId) {
                                 selectedCategoryId = newCat
-                                // The reset to 0 is a view-filter artifact, not a
-                                // watched position: suppress its resume persist so
-                                // it cannot overwrite the saved full-list position.
-                                suppressNextResumeSave = true
-                                activeIndex = 0
+                                if newCat == "all" {
+                                    // Back to the full list: resume where you left off, not at #1.
+                                    let saved = UserDefaults.standard.string(forKey: "lastActiveReelID_\(m.weekId)")
+                                    let idx = allReels.firstIndex { $0.id == saved } ?? 0
+                                    activeIndex = idx
+                                    pool.setCurrentIndex(idx)
+                                } else {
+                                    // The reset to 0 is a view-filter artifact, not a
+                                    // watched position: suppress its resume persist so
+                                    // it cannot overwrite the saved full-list position.
+                                    suppressNextResumeSave = true
+                                    activeIndex = 0
+                                }
                             }
                         }
                     )
@@ -379,6 +399,22 @@ struct FeedMainView: View {
         }
         .onChange(of: showBookmarksSheet) { _, isPresented in
             resumeFeedAfterSheet(isPresented: isPresented)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Rec 2: quiet foreground refresh — the new week appears without
+            // a force-quit; an unchanged week never disturbs playback.
+            guard phase == .active else { return }
+            guard WatchedRules.shouldRefresh(lastFetch: lastManifestFetch, now: Date()) else { return }
+            Task {
+                do {
+                    let fetched = try await DigestDataService.shared.fetchManifest()
+                    lastManifestFetch = Date()
+                    guard let m = manifest else { return }
+                    if WatchedRules.isNewWeek(current: m.weekId, fetched: fetched.weekId) {
+                        loadManifest()
+                    }
+                } catch { }
+            }
         }
         .onChange(of: pool.isPlaying) { _, isPlaying in
             guard !ProcessInfo.processInfo.arguments.contains("-ui-testing") else { return }
@@ -582,6 +618,13 @@ struct FeedMainView: View {
                 jumpToReel(at: nextIndex)
             }
         }
+        pool.onSkipDeadReel = { nextIndex in
+            // Move the pager with the pool. A skipped (unplayable) reel is not
+            // "watched", so no predecessor marking here (unlike jumpToReel).
+            guard nextIndex < pool.currentItems.count else { return }
+            activeIndex = nextIndex
+            pool.setCurrentIndex(nextIndex)
+        }
     }
 
     private func saveLastActiveReel(index: Int) {
@@ -754,9 +797,11 @@ struct FeedMainView: View {
         } else {
             BookmarkController.add(reel: reel, weekID: weekID, context: modelContext)
 
-            // Prompt user if owner key is not yet configured on this device
+            // Rec 3: ask for the owner key once — afterwards it lives under
+            // "Link Key" in Bookmarks. Pending remote backups retry on launch.
             let currentKey = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
-            if currentKey.isEmpty {
+            if currentKey.isEmpty && !UserDefaults.standard.bool(forKey: "owner_key_prompted") {
+                UserDefaults.standard.set(true, forKey: "owner_key_prompted")
                 ownerKeyInput = ""
                 showOwnerKeyAlert = true
                 // Owner-key alert is modal and covers the pop: delay the pop
@@ -819,7 +864,8 @@ struct FeedMainView: View {
         // Asynchronously download video to temp file, then present share sheet with video attached
         Task {
             do {
-                let (downloadedURL, _) = try await URLSession.shared.download(from: reel.videoUrl)
+                let (downloadedURL, resp) = try await URLSession.shared.download(from: reel.videoUrl)
+                guard resp.isHTTPSuccess else { throw URLError(.badServerResponse) }
                 if FileManager.default.fileExists(atPath: tempFile.path) {
                     try? FileManager.default.removeItem(at: tempFile)
                 }

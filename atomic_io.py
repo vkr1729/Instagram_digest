@@ -67,7 +67,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX fallback
     _fcntl = None
 
-_SOURCES_LOCK = threading.Lock()
+_SOURCES_LOCK = threading.RLock()
 _sources_depth = threading.local()
 
 

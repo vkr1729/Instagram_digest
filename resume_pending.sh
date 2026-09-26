@@ -57,6 +57,13 @@ if ! flock -n 200; then
 fi
 
 # Never collide with a live pipeline (local-server thread, cron job, manual CLI).
+# P2-24: wait for real connectivity first (network-online.target does
+# nothing in the user manager) — else the first login's resume fails the
+# R2 check and is not retried until the next login.
+for _ in $(seq 1 60); do
+    ping -c1 -W2 -q 1.1.1.1 >/dev/null 2>&1 && break
+    sleep 5
+done
 # pgrep below only sees separate CLI processes: pipelines run by the dashboard
 # server live in worker threads under `main.py --serve`, so ask the server
 # itself first (quiet when it is not running).

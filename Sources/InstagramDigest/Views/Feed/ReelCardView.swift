@@ -14,6 +14,7 @@ public struct ReelCardOverlayView: View {
     public let progress: Double
     public let duration: Double
     public let currentTime: Double
+    public let isPlaying: Bool
     public let showBookmarkPop: Bool
     public let isCaptionExpanded: Bool
     public var onTogglePlayPause: () -> Void
@@ -30,6 +31,7 @@ public struct ReelCardOverlayView: View {
         progress: Double = 0.0,
         duration: Double = 0.0,
         currentTime: Double = 0.0,
+        isPlaying: Bool = false,
         showBookmarkPop: Bool = false,
         isCaptionExpanded: Bool = false,
         onTogglePlayPause: @escaping () -> Void = {},
@@ -45,6 +47,7 @@ public struct ReelCardOverlayView: View {
         self.progress = progress
         self.duration = duration
         self.currentTime = currentTime
+        self.isPlaying = isPlaying
         self.showBookmarkPop = showBookmarkPop
         self.isCaptionExpanded = isCaptionExpanded
         self.onTogglePlayPause = onTogglePlayPause
@@ -157,6 +160,8 @@ public struct ReelCardOverlayView: View {
                 .frame(height: 2.5)
                 .padding(.bottom, 10)
                 .allowsHitTesting(false)
+                .accessibilityIdentifier("PlaybackProgress")
+                .accessibilityValue(String(format: "%.1f %@", currentTime, isPlaying ? "playing" : "paused"))
 
                 // Creator & Action Row (Mock 2: @handle, #rank, Share, Save)
                 HStack(alignment: .center, spacing: 8) {

@@ -92,7 +92,7 @@ async function enforceCap(env) {
       'SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes),0) AS s FROM bookmarks'
     ).first();
     const over = (countRow.c - MAX_ITEMS) + (countRow.s > MAX_BYTES ? 1 : 0);
-    if (over <= 0) break;
+    if (countRow.c <= MAX_ITEMS && countRow.s <= MAX_BYTES) break;
     const { results } = await env.DB.prepare(
       'SELECT id, size_bytes FROM bookmarks ORDER BY bookmarked_at ASC LIMIT 50'
     ).all();
@@ -289,7 +289,9 @@ async function handlePost(request, env, ctx) {
   const src = await env.MY_BUCKET.get(sourceKey);
   if (!src) return json(request, env, { error: 'SOURCE_PURGED' }, 404);
   const size = src.size; // authoritative — never trust client size_bytes
-  if (size > MAX_VIDEO_BYTES) return json(request, env, { error: 'TOO_LARGE' }, 413);
+  // P2-11: the 50 MB Telegram ceiling applies to the Telegram step only —
+  // the durable R2 copy must accept long reels up to 200 MB.
+  if (size > 200 * 1024 * 1024) return json(request, env, { error: 'TOO_LARGE' }, 413);
 
   await env.MY_BUCKET.put(`bookmarks/${id}.mp4`, src.body, {
     httpMetadata: { contentType: 'video/mp4', cacheControl: 'public, max-age=31536000, immutable' },
@@ -351,8 +353,11 @@ async function reconcileOrphans(env) {
   let cursor;
   do {
     const page = await env.MY_BUCKET.list({ prefix: 'bookmarks/', cursor });
+    const now = Date.now();
     for (const o of page.objects) {
       if (o.key === 'bookmarks/manifest.json') continue;
+      // Hardening: never reap an object uploaded < 15 min ago (same-seconds race).
+      try { if (o.uploaded && now - new Date(o.uploaded).getTime() < 15 * 60 * 1000) continue; } catch {}
       const m = o.key.match(/^bookmarks\/([A-Za-z0-9_-]+?)(?:_portrait\.jpg|\.mp4)$/);
       if (!m || !live.has(m[1])) orphans.push(o.key);
     }

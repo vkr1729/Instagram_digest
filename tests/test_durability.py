@@ -27,9 +27,12 @@ def test_durable_write_json_never_leaves_torn_or_tmp_files(tmp_path):
         t.join()
 
     # Final file is always complete valid JSON; no temp litter remains.
+    # (P1-12 isolation fixture creates tmp_path/"state", so scope the
+    # litter check to digest temp files, not the whole dir.)
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["items"] == list(range(50))
-    assert list(tmp_path.iterdir()) == [target]
+    assert [p for p in tmp_path.iterdir()
+            if p != target and p != tmp_path / "state"] == []
 
 
 def _fake_s3(keys):

@@ -18,6 +18,7 @@ public enum BookmarkController {
         // B13: tombstone before the fire-and-forget remote delete — a failed
         // delete must not resurrect the row on the next syncRemoteBookmarks.
         MediaCacheManager.addUnbookmarkedTombstone(reelID)
+        MediaCacheManager.removePendingRemoteBookmark(reelID)
         tasks[reelID]?.cancel()
         tasks[reelID] = Task {
             await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
@@ -82,7 +83,11 @@ public enum BookmarkController {
                 // Copy failed: row honestly stays .evicted.
             }
             guard !Task.isCancelled else { return }
-            _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
+            // Rec 3: track the durable R2 backup; retry while it is pending.
+            MediaCacheManager.addPendingRemoteBookmark(rID)
+            if (try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)) == true {
+                MediaCacheManager.removePendingRemoteBookmark(rID)
+            }
         }
     }
 }

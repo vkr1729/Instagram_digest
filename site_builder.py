@@ -603,6 +603,47 @@ def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.
         res = subprocess.run(["git", "push", "-f", "origin", "gh-pages"], cwd=site_dir, capture_output=True, text=True, timeout=300)
         if res.returncode == 0:
             logger.info("Successfully deployed to GitHub Pages! Live at https://vkr1729.github.io/Instagram_digest/")
+            # P1-5: record what Pages (and the iOS app) now serve — the JIT
+            # purge must never delete it, even if a later local save disagrees.
+            try:
+                served = json.loads((site_dir / "data.json").read_text(encoding="utf-8")).get("run_date") or ""
+                atomic_io.durable_write_json(config.DATA_DIR / "deployed_week.json", {"run_date": served})
+            except Exception as exc:
+                logger.warning("Could not record deployed week: %s", exc)
+            # Rec #6: confirm Pages actually serves the new week the way the
+            # phone sees it (push success != Pages build success). Timeout is
+            # an alerted abort, not silent success.
+            try:
+                import time as _time
+                import urllib.request as _urlreq
+                pages_url = (config.PAGES_BASE_URL.rstrip("/") + "/data.json") if config.PAGES_BASE_URL else ""
+                served_ok = False
+                if pages_url:
+                    deadline = _time.time() + 600
+                    expect = ""
+                    try:
+                        expect = json.loads((site_dir / "data.json").read_text(encoding="utf-8")).get("run_date") or ""
+                    except Exception:
+                        pass
+                    attempt = 0
+                    while _time.time() < deadline:
+                        attempt += 1
+                        try:
+                            req = _urlreq.Request(f"{pages_url}?cb={int(_time.time())}",
+                                                  headers={"User-Agent": "InstagramDigest-deploy-check/1.0"})
+                            with _urlreq.urlopen(req, timeout=30) as resp:
+                                live = json.loads(resp.read().decode("utf-8", "replace"))
+                            if not expect or live.get("run_date") == expect:
+                                served_ok = True
+                                break
+                        except Exception as poll_exc:
+                            logger.info("Pages poll %d: not serving new week yet (%s).", attempt, poll_exc)
+                        _time.sleep(30)
+                    if not served_ok:
+                        logger.error("Pages not serving new week %s after 10 min; treating deploy as failed.", expect)
+                        return False
+            except Exception as exc:
+                logger.warning("Pages serve-check skipped: %s", exc)
             return True
         else:
             logger.warning("Failed pushing to gh-pages: %s", res.stderr)

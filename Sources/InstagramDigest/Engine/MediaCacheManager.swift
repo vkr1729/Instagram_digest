@@ -12,6 +12,7 @@ public actor MediaCacheManager {
     public static let maxBookmarkStorageBytes: Int64 = 1_500_000_000
 
     private static let tombstoneKey = "ig_digest_unbookmarked_ids"
+    private static let pendingRemoteKey = "ig_digest_pending_remote_bookmarks"
 
     /// B13: ids the user explicitly un-bookmarked. Remote deletes are
     /// fire-and-forget; without tombstones a failed delete resurrects the
@@ -30,6 +31,24 @@ public actor MediaCacheManager {
         var ids = unbookmarkedTombstones
         ids.remove(reelID)
         UserDefaults.standard.set(Array(ids), forKey: tombstoneKey)
+    }
+
+    /// Rec 3: ids whose durable R2 backup has not confirmed yet. Insert on
+    /// add, remove on 2xx or unsave; retried on launch and foreground.
+    public static var pendingRemoteBookmarks: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: pendingRemoteKey) ?? [])
+    }
+
+    public static func addPendingRemoteBookmark(_ reelID: String) {
+        var ids = pendingRemoteBookmarks
+        ids.insert(reelID)
+        UserDefaults.standard.set(Array(ids), forKey: pendingRemoteKey)
+    }
+
+    public static func removePendingRemoteBookmark(_ reelID: String) {
+        var ids = pendingRemoteBookmarks
+        ids.remove(reelID)
+        UserDefaults.standard.set(Array(ids), forKey: pendingRemoteKey)
     }
 
     private let pathResolver: LibraryPathResolver
@@ -95,6 +114,7 @@ public actor MediaCacheManager {
             let bookmarks = try context.fetch(descriptor)
 
             var computedBytes: Int64 = 0
+            let knownIDs = Set(bookmarks.map { LibraryPathResolver.sanitizeComponent($0.reelID) })
             for bookmark in bookmarks {
                 let fileURL = pathResolver.bookmarkFileURL(for: bookmark.reelID)
                 if FileManager.default.fileExists(atPath: fileURL.path) {
@@ -117,6 +137,17 @@ public actor MediaCacheManager {
             }
             try context.save()
             self.totalBookmarkBytes = computedBytes
+            // Sweep files with no row (unsave whose deferred unlink died with
+            // the process, rolled-back saves): invisible to ledger, LRU and Free Storage.
+            let active = Set(activeVideoPoolReelIDs.map { LibraryPathResolver.sanitizeComponent($0) })
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: pathResolver.bookmarksDirectoryURL, includingPropertiesForKeys: nil)) ?? []
+            for url in files where url.pathExtension == "mp4" {
+                let stem = url.deletingPathExtension().lastPathComponent
+                if !knownIDs.contains(stem) && !active.contains(stem) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
         } catch {
             // Reconcile failed gracefully
         }
@@ -307,8 +338,12 @@ public actor MediaCacheManager {
         }
 
         if fm.fileExists(atPath: bookmarkDestURL.path) {
+            // Re-bookmark wins over a deferred unlink queued by an earlier unsave.
+            pendingDeletions.remove(reelID)
             if item.localStatus != .cached {
+                item.localStatus = .cached
                 item.sizeBytes = Self.diskFileSize(atPath: bookmarkDestURL.path) ?? item.sizeBytes
+                item.lastAccessedAt = Date()
                 try? context.save()
                 // Bytes already occupy disk (and reconcile counts them):
                 // re-derive the ledger instead of adding them a second time.
@@ -368,9 +403,22 @@ public actor MediaCacheManager {
             boundedConfig.timeoutIntervalForRequest = 15
             boundedConfig.timeoutIntervalForResource = 60
             let boundedSession = URLSession(configuration: boundedConfig)
-            let (tempURL, _) = try await boundedSession.download(from: remoteURL)
+            let downloaded: (URL, URLResponse)
+            do {
+                downloaded = try await boundedSession.download(from: remoteURL)
+            } catch {
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - estimatedBytes)
+                throw error
+            }
+            let (tempURL, response) = downloaded
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                try? FileManager.default.removeItem(at: tempURL)
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - estimatedBytes)
+                throw CacheError.corruptedFile("HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1) for \(reelID)")
+            }
             let dest = bookmarkDestURL
             let actualBytes: Int64 = Self.diskFileSize(atPath: tempURL.path) ?? estimatedBytes
+            let held = max(estimatedBytes, actualBytes)
             // Manifest sizes are estimates — enforce the cap on the real bytes.
             if actualBytes > estimatedBytes {
                 do {
@@ -393,7 +441,7 @@ public actor MediaCacheManager {
                     try resolver.applyProtectionAndBackupExclusion(to: dest)
                 }.value
             } catch {
-                reservedBookmarkBytes = max(0, reservedBookmarkBytes - actualBytes)
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - held)
                 throw error
             }
 
@@ -403,11 +451,11 @@ public actor MediaCacheManager {
             do {
                 try context.save()
                 // IOS-P1-2: ledger moves only after the DB save succeeds.
-                reservedBookmarkBytes = max(0, reservedBookmarkBytes - actualBytes)
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - held)
                 self.totalBookmarkBytes += actualBytes
             } catch {
                 context.rollback()
-                reservedBookmarkBytes = max(0, reservedBookmarkBytes - actualBytes)
+                reservedBookmarkBytes = max(0, reservedBookmarkBytes - held)
             }
         } else {
             throw CacheError.fileNotFound("No local or remote media available to store offline.")

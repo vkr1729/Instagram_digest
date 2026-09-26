@@ -23,8 +23,8 @@ logger = logging.getLogger("InstagramDigest.CookieExporter")
 
 def get_chrome_secret_service_password() -> bytes:
     """Retrieve Chrome Safe Storage encryption key from Secret Service via DBus."""
+    import dbus  # ImportError must propagate: main.py retries under /usr/bin/python3
     try:
-        import dbus
         bus = dbus.SessionBus()
         secrets = bus.get_object("org.freedesktop.secrets", "/org/freedesktop/secrets")
         service = dbus.Interface(secrets, "org.freedesktop.Secret.Service")
@@ -63,7 +63,7 @@ def netscape_cookie_expiry(expires_utc: int | None) -> int:
     return int(expires_utc / 1000000) - 11644473600
 
 
-def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
+def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes, host: str = "") -> str:
     """Decrypt a v10/v11 Chrome cookie blob with the supplied Safe Storage key."""
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -81,8 +81,13 @@ def decrypt_chrome_cookie(enc_bytes: bytes, key: bytes, iv: bytes) -> str:
     if padded[-pad_len:] != bytes([pad_len]) * pad_len:
         return ""
     unpadded = padded[:-pad_len]
-    # Linux Chrome prefixes the SHA256(host_key) to the plaintext.
-    return unpadded[32:].decode("utf-8", errors="replace")
+    # Linux Chrome prefixes SHA256(host_key): verifying it rejects wrong-key output.
+    if host and unpadded[:32] != hashlib.sha256(host.encode("utf-8")).digest():
+        return ""
+    try:
+        return unpadded[32:].decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
 
 
 def _secure_write_text(path: Path, content: str) -> None:
@@ -167,7 +172,7 @@ def export_instagram_cookies(output_dir: Path | None = None) -> dict[str, str]:
             conn.close()
         for host, name, path, expires, is_secure, enc_val in rows:
             enc_bytes = bytes(enc_val)
-            val = decrypt_chrome_cookie(enc_bytes, key, iv)
+            val = decrypt_chrome_cookie(enc_bytes, key, iv, host)
             if val:
                 cookies_dict[name] = val
                 cookies_pw.append({

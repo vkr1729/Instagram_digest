@@ -148,7 +148,8 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             let dest = resolver.thumbnailFileURL(for: weekID, reelID: reel.id)
             if FileManager.default.fileExists(atPath: dest.path) { continue }
             do {
-                let (tmpURL, _) = try await URLSession.shared.download(from: remote)
+                let (tmpURL, resp) = try await URLSession.shared.download(from: remote)
+                guard resp.isHTTPSuccess else { try? FileManager.default.removeItem(at: tmpURL); continue }
                 try? FileManager.default.createDirectory(
                     at: dest.deletingLastPathComponent(),
                     withIntermediateDirectories: true)
@@ -182,6 +183,11 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         overallProgress = 0.0
         state = .idle
         UIApplication.shared.isIdleTimerDisabled = false
+    }
+
+    /// A finished batch must not strand the (singleton) sheet on "Done" forever.
+    public func resetIfFinished() {
+        if case .completed = state, !hasActiveDownloads { state = .idle; overallProgress = 0 }
     }
 
     private enum SuspensionSource { case none, user, watchdog, background }
@@ -376,6 +382,20 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        if let resp = downloadTask.response, !resp.isHTTPSuccess {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            try? FileManager.default.removeItem(at: location)
+            Task { @MainActor in
+                guard let entry = self.inFlightTasks.removeValue(forKey: downloadTask.taskIdentifier) else { return }
+                let item = entry.item
+                self.removePersistedResumeData(for: item.id)
+                let retries = (self.retryCounts[item.id] ?? 0) + 1
+                self.retryCounts[item.id] = retries
+                if status >= 500 && retries <= self.maxRetriesPerItem { self.queue.append(item) } else { self.failedInBatch += 1 }
+                self.drainQueue()
+            }
+            return
+        }
         // Synchronously move the file to a sandbox temporary staging path BEFORE this delegate method returns!
         // Otherwise, the iOS system automatically unlinks/deletes the file at `location` the moment the method returns.
         let tempStagingURL = FileManager.default.temporaryDirectory.appendingPathComponent("staging_\(UUID().uuidString).tmp")
@@ -451,11 +471,15 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             guard let entry = self.inFlightTasks.removeValue(forKey: task.taskIdentifier) else { return }
             let item = entry.item
 
+            let isCancelled = (error as NSError).code == NSURLErrorCancelled
             if let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
                 self.persistResumeData(resumeData, for: item.id)
+            } else if !isCancelled {
+                // No fresh resume data => any persisted blob is unusable (tmp purged,
+                // object changed). Drop it so the retry starts clean.
+                self.removePersistedResumeData(for: item.id)
             }
 
-            let isCancelled = (error as NSError).code == NSURLErrorCancelled
             if !isCancelled {
                 let retries = (self.retryCounts[item.id] ?? 0) + 1
                 self.retryCounts[item.id] = retries

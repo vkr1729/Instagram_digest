@@ -209,6 +209,36 @@ final class EngineTests: XCTestCase {
     }
 
     @MainActor
+    func testAudioSessionUsesPlaybackCategory() {
+        AudioSessionCoordinator.shared.configureAudioSession()
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .playback,
+                       "setCategory must not silently fall back to .soloAmbient")
+    }
+
+    @MainActor
+    func testShouldRefreshAndIsNewWeek() {
+        XCTAssertTrue(WatchedRules.shouldRefresh(lastFetch: nil, now: Date()))
+        XCTAssertFalse(WatchedRules.shouldRefresh(lastFetch: Date(), now: Date()))
+        XCTAssertTrue(WatchedRules.shouldRefresh(
+            lastFetch: Date(timeIntervalSinceNow: -4 * 3600), now: Date()))
+        XCTAssertFalse(WatchedRules.shouldRefresh(
+            lastFetch: Date(timeIntervalSinceNow: -3600), now: Date()))
+        XCTAssertTrue(WatchedRules.isNewWeek(current: "2026-09-14", fetched: "2026-09-21"))
+        XCTAssertFalse(WatchedRules.isNewWeek(current: "2026-09-14", fetched: "2026-09-14"))
+        XCTAssertFalse(WatchedRules.isNewWeek(current: "", fetched: "2026-09-21"))
+    }
+
+    @MainActor
+    func testOfflinePlaylistKeepsOnlyDownloaded() {
+        let items = [
+            ReelItem(id: "a", creatorHandle: "c", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/a.mp4")!),
+            ReelItem(id: "b", creatorHandle: "c", caption: "", rank: 2, videoUrl: URL(string: "https://example.com/b.mp4")!),
+        ]
+        let out = WatchedRules.offlinePlaylist(items: items) { $0.id == "b" }
+        XCTAssertEqual(out.map(\.id), ["b"])
+    }
+
+    @MainActor
     func testSlotRotationForwardContinuous() async throws {
         let pool = AVPlayerPool.shared
         let reels = [

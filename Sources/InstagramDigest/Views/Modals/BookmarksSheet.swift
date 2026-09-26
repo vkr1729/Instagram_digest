@@ -60,6 +60,13 @@ public struct BookmarksSheet: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.5))
                                 .accessibilityIdentifier("BookmarksCountLabel")
+                            let pending = MediaCacheManager.pendingRemoteBookmarks.count
+                            if pending > 0 {
+                                Text("\(pending) not backed up")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.orange)
+                                    .accessibilityIdentifier("BookmarksPendingLabel")
+                            }
                             Spacer()
 
                             // Owner Key Link Button
@@ -142,7 +149,12 @@ public struct BookmarksSheet: View {
                                                 HStack {
                                                     Spacer()
 
-                                                    if bookmark.localStatus == .cached {
+                                                    if MediaCacheManager.pendingRemoteBookmarks.contains(bookmark.reelID) {
+                                                        Image(systemName: "icloud.slash")
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(.orange)
+                                                            .accessibilityIdentifier("BookmarkPendingBadge_\(index)")
+                                                    } else if bookmark.localStatus == .cached {
                                                         Image(systemName: "checkmark.circle.fill")
                                                             .font(.system(size: 12))
                                                             .foregroundColor(.green)
@@ -210,6 +222,7 @@ public struct BookmarksSheet: View {
             }
             .task {
                 await refreshLedger()
+                await retryPendingRemoteBookmarks()
             }
             .alert("Cloudflare Owner Key", isPresented: $showOwnerKeyPrompt) {
                 TextField("Owner Key", text: $ownerKeyInput)
@@ -465,6 +478,15 @@ public struct BookmarkPlayerOverlay: View {
             player?.pause()
             isPlaying = false
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            // Same discipline as the pool: no audio from a backgrounded overlay,
+            // and keep isPlaying truthful so the next tap resumes.
+            player?.pause()
+            isPlaying = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
+            isPlaying = (player?.rate ?? 0) > 0
+        }
         .onDisappear {
             teardownPlayer()
         }
@@ -623,7 +645,8 @@ public struct BookmarkPlayerOverlay: View {
         guard let videoURL = bookmark.videoUrl else { return }
         Task {
             do {
-                let (downloadedURL, _) = try await URLSession.shared.download(from: videoURL)
+                let (downloadedURL, resp) = try await URLSession.shared.download(from: videoURL)
+                guard resp.isHTTPSuccess else { throw URLError(.badServerResponse) }
                 if FileManager.default.fileExists(atPath: tempFile.path) {
                     try? FileManager.default.removeItem(at: tempFile)
                 }
@@ -648,6 +671,26 @@ public struct BookmarkPlayerOverlay: View {
         hideChromeWorkItem = nil
         player?.pause()
         player = nil
+    }
+
+    private func retryPendingRemoteBookmarks() async {
+        let pending = MediaCacheManager.pendingRemoteBookmarks
+        guard !pending.isEmpty else { return }
+        let key = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
+        guard !key.isEmpty else { return }
+        for reelID in pending {
+            guard let bm = bookmarks.first(where: { $0.reelID == reelID }) else {
+                MediaCacheManager.removePendingRemoteBookmark(reelID)
+                continue
+            }
+            let reel = ReelItem(id: bm.reelID, creatorHandle: bm.creatorHandle,
+                                caption: bm.caption, rank: bm.rank,
+                                videoUrl: bm.videoUrl ?? URL(string: "https://example.com/x.mp4")!,
+                                thumbnailUrl: bm.thumbnailUrl, category: bm.category)
+            if (try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)) == true {
+                MediaCacheManager.removePendingRemoteBookmark(reelID)
+            }
+        }
     }
 }
 

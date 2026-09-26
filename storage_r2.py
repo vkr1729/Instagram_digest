@@ -17,7 +17,7 @@ import threading
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 import config
 
@@ -71,7 +71,7 @@ def get_bucket_storage_usage() -> tuple[int, int]:
             for obj in contents:
                 total_bytes += obj.get("Size", 0)
                 total_objects += 1
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.warning("Error calculating R2 bucket usage: %s", e)
         return -1, -1
 
@@ -186,7 +186,7 @@ def purge_expired_r2_objects(max_age_days: int = config.RETENTION_DAYS) -> list[
                 logger.error("Failed deleting expired %s: %s", err.get("Key"), err.get("Message"))
             # Report only keys R2 confirms deleted.
             purged.extend([d.get("Key", "") for d in resp.get("Deleted") or []])
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.warning("Error during R2 purge: %s", e)
 
     logger.info("Purged %d expired objects from Cloudflare R2.", len(purged))
@@ -287,7 +287,7 @@ def purge_unreferenced_r2_videos() -> list[str]:
         if purged:
             logger.info("Purged %d unreferenced video objects from Cloudflare R2.", len(purged))
         return purged
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.warning("Error during R2 unreferenced videos purge: %s", e)
         return []
 
@@ -309,7 +309,7 @@ def purge_previous_weeks_videos(
     3. NEVER purges keys under videos/{live week}/ when keep_week_ids names the
        week the persisted digest still points at: a crash or quota abort between
        this purge and the new save_digest_batch must leave live playback working
-       (PY-P0-1). The kept week is reclaimed by the post-publish rolling purges.
+       (PY-P0-1). The kept week is reclaimed by the next run's JIT purge.
     4. Strictly scoped to prefix "videos/".
     """
     s3 = get_s3_client()
@@ -353,7 +353,7 @@ def purge_previous_weeks_videos(
         if purged:
             logger.info("JIT Purged %d previous-week objects from Cloudflare R2.", len(purged))
         return purged
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         logger.warning("Error during JIT previous-week purge: %s", e)
         return []
 
@@ -453,7 +453,7 @@ def upload_reel_to_r2(
                 s3.head_object(Bucket=config.R2_BUCKET_NAME, Key=r2_key)
                 logger.info("Object %s already exists on R2, skipping upload: %s", key_name, public_url)
                 return public_url
-            except ClientError:
+            except (ClientError, BotoCoreError):
                 pass  # Does not exist yet, proceed to upload
 
         try:
