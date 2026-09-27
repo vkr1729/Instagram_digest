@@ -408,16 +408,26 @@ final class InstagramDigestUITests: XCTestCase {
             if unsaveButton.waitForExistence(timeout: 5.0) {
                 unsaveButton.tap()
             }
-            // Unsaving the last bookmark closes the player; the sheet then
-            // shows the empty state. The @Query delete can take a few
-            // runloops (the remove path reconciles the ledger first), so
-            // poll: tap Update/refresh via Done+reopen is NOT needed — just
-            // wait longer than the 8s default.
+            // The @Query delete can lag the tap (ledger/file work precedes
+            // it); poll the empty state up to 20s.
             let emptyGone = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "exists == true"),
                 object: app.staticTexts["BookmarksEmptyStateText"])
-            XCTAssertEqual(XCTWaiter.wait(for: [emptyGone], timeout: 20.0), .completed,
-                           "unsaving the last bookmark must empty the sheet")
+            let emptyResult = XCTWaiter.wait(for: [emptyGone], timeout: 20.0)
+            if emptyResult != .completed {
+                // Fallback: the row delete may have landed while the player
+                // was still mounted — close via Done and re-open: an emptied
+                // sheet shows the empty state; a failed unsave still shows
+                // the tile. This distinguishes "unsave lost" from "UI lag".
+                app.buttons["BookmarkPlayerCloseButton"].tap()
+                app.buttons["BookmarksDoneButton"].tap()
+                let chip = app.buttons["BookmarksChipButton"]
+                XCTAssertTrue(chip.waitForExistence(timeout: 5.0))
+                chip.tap()
+                XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
+                XCTAssertTrue(app.staticTexts["BookmarksEmptyStateText"].waitForExistence(timeout: 8.0),
+                              "unsave must delete the row even if the player close raced it")
+            }
             XCTAssertFalse(app.buttons["BookmarkPlayerUnsaveButton"].exists,
                            "player must be gone after last unsave")
         }

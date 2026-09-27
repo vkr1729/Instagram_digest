@@ -665,9 +665,6 @@ public struct BookmarkPlayerOverlay: View {
         // Dismiss the player synchronously on the intent: the sheet gates
         // the overlay on activePlaybackIndex, so clearing it unmounts the
         // player immediately, independent of when the @Query delete lands.
-        // The row delete follows for the grid. (Driving dismissal from the
-        // @Query count raced the branch swap and dropped the nav-bar
-        // identity on this Xcode; intent-driven close has no such race.)
         teardownPlayer()
         onClose()
         onDeleteBookmark(bookmark)
