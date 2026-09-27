@@ -385,16 +385,13 @@ public struct BookmarkPlayerOverlay: View {
                             Color.black
                             if (bookmark.reelID == scrolledReelID || (scrolledReelID == nil && index == currentIndex)), let p = player {
                                 BookmarkVideoContainer(player: p)
-                                    // The pause tap lives on the VIDEO view,
-                                    // not on a full-cell Color.clear: a cell-
-                                    // wide gesture competes with (and eats)
-                                    // the HUD Buttons above it. Scoped to the
-                                    // video frame, chrome taps pause while
-                                    // Saved/Share taps reach their Buttons.
-                                    .onTapGesture {
-                                        togglePlayPause()
-                                    }
                             }
+                            // The pause tap and the HUD chrome BOTH live on
+                            // the overlay layers above (video-tap zone +
+                            // Buttons) — never on the paged cell. A gesture on
+                            // the cell competes with every control above it
+                            // and eats the unsave tap in CI (tap synthesized,
+                            // handleUnsave never runs, 3 consecutive runs).
                         }
                         .containerRelativeFrame([.horizontal, .vertical])
                         .id(bookmark.reelID)
@@ -451,6 +448,18 @@ public struct BookmarkPlayerOverlay: View {
                     .padding(.top, 56)
 
                     Spacer()
+
+                    // Pause-on-video-tap: a full-area transparent zone ABOVE
+                    // the pager but BELOW the HUD VStack (later siblings win
+                    // hit-testing), so chrome taps pause while Saved/Share
+                    // taps reach their Buttons. No gesture on the paged cell
+                    // itself — a cell-level gesture competes with every
+                    // control above it and eats the unsave tap in CI.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            togglePlayPause()
+                        }
 
                     // Rec 1: overlay playback clock — same pattern as the
                     // feed's PlaybackProgress (identifier on a visible,
