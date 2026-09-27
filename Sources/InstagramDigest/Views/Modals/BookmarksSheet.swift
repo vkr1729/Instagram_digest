@@ -657,9 +657,12 @@ public struct BookmarkPlayerOverlay: View {
 
     private func handleUnsave(bookmark: BookmarkItem) {
         let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
+        // Delete FIRST so the @Query grid is already empty when the player
+        // closes below — otherwise the sheet's `!bookmarks.isEmpty` gate
+        // stays true and the overlay never dismisses (UAT: playerGone poll).
+        onDeleteBookmark(bookmark)
         if remaining.isEmpty {
             teardownPlayer()
-            onDeleteBookmark(bookmark)
             onClose()
             return
         }
@@ -672,9 +675,6 @@ public struct BookmarkPlayerOverlay: View {
         scrolledReelID = nextBookmark.reelID
         isCaptionExpanded = false
         loadVideo(for: nextBookmark)
-
-        // Delete the unsaved item from database
-        onDeleteBookmark(bookmark)
     }
 
     private func triggerShare(bookmark: BookmarkItem) {
