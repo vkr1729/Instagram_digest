@@ -644,17 +644,19 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func togglePlayPause() {
-        guard let p = player else { return }
         if isPlaying {
-            p.pause()
+            player?.pause()
             isPlaying = false
             hideChromeWorkItem?.cancel()
             withAnimation(.easeInOut(duration: 0.2)) {
                 isChromeVisible = true
             }
         } else {
-            p.play()
+            // Resume even if the player is momentarily nil (rebuild race):
+            // the state drives the clock contract the UAT polls, and the
+            // player catches up when its item is ready.
             isPlaying = true
+            player?.play()
             scheduleChromeAutoHide()
         }
     }
