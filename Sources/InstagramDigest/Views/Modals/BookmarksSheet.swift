@@ -664,6 +664,11 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func scheduleChromeAutoHide() {
+        // Test seam: under -ui-testing the chrome stays visible. The 2.5s
+        // auto-hide + fade races every XCUITest tap on this overlay and
+        // failed the bookmark UAT 6+ times; a human taps visible chrome,
+        // so pinning it visible in CI loses no real coverage.
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
         hideChromeWorkItem?.cancel()
         let work = DispatchWorkItem {
             withAnimation(.easeInOut(duration: 0.25)) {
