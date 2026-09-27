@@ -656,12 +656,14 @@ public struct BookmarkPlayerOverlay: View {
     private func handleUnsave(bookmark: BookmarkItem) {
         let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
         if remaining.isEmpty {
-            // Last bookmark: delete the row, then close the player outright.
-            // The sheet gates the overlay on !bookmarks.isEmpty, so the row
-            // must be gone when the player dismisses (UAT: playerGone poll).
-            onDeleteBookmark(bookmark)
+            // Last bookmark: park the overlay on the empty grid BEFORE the
+            // row delete. The sheet gates the player on !bookmarks.isEmpty,
+            // so deleting first tears the overlay down with the grid branch
+            // swap and takes the nav-bar identity with it (UAT). Closing
+            // first leaves the empty-state grid mounted under no player.
             teardownPlayer()
             onClose()
+            onDeleteBookmark(bookmark)
             return
         }
 
