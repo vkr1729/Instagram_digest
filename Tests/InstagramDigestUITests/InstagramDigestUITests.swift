@@ -414,20 +414,8 @@ final class InstagramDigestUITests: XCTestCase {
                 predicate: NSPredicate(format: "exists == true"),
                 object: app.staticTexts["BookmarksEmptyStateText"])
             let emptyResult = XCTWaiter.wait(for: [emptyGone], timeout: 20.0)
-            if emptyResult != .completed {
-                // Fallback: the row delete may have landed while the player
-                // was still mounted — close via Done and re-open: an emptied
-                // sheet shows the empty state; a failed unsave still shows
-                // the tile. This distinguishes "unsave lost" from "UI lag".
-                app.buttons["BookmarkPlayerCloseButton"].tap()
-                app.buttons["BookmarksDoneButton"].tap()
-                let chip = app.buttons["BookmarksChipButton"]
-                XCTAssertTrue(chip.waitForExistence(timeout: 5.0))
-                chip.tap()
-                XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
-                XCTAssertTrue(app.staticTexts["BookmarksEmptyStateText"].waitForExistence(timeout: 8.0),
-                              "unsave must delete the row even if the player close raced it")
-            }
+            XCTAssertEqual(emptyResult, .completed,
+                           "unsaving the last bookmark must empty the sheet")
             XCTAssertFalse(app.buttons["BookmarkPlayerUnsaveButton"].exists,
                            "player must be gone after last unsave")
         }

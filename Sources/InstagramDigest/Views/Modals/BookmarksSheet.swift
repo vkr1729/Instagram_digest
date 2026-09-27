@@ -433,9 +433,10 @@ public struct BookmarkPlayerOverlay: View {
                             // Plain HStack + gesture (NOT a Button): the cell's
                             // full-screen pause onTapGesture claims touches over
                             // the small capsule, so Button actions never fire
-                            // in CI (tap synthesized but undelivered, 4 runs).
-                            // A high-priority gesture wins the competition and
-                            // keeps VoiceOver/label semantics via the traits.
+                            // in CI (tap synthesized but undelivered). The
+                            // gesture wins the competition; the guard inside
+                            // handleUnsave makes any double-delivery a no-op.
+                            // .isButton traits keep the UAT query resolving.
                             HStack(spacing: 4) {
                                 Image(systemName: "bookmark.fill")
                                     .font(.system(size: 12))
@@ -457,9 +458,9 @@ public struct BookmarkPlayerOverlay: View {
                             .accessibilityLabel("Saved")
                             .accessibilityIdentifier("BookmarkPlayerUnsaveButton")
                             .accessibilityAddTraits(.isButton)
-                            .highPriorityGesture(TapGesture().onEnded {
+                            .onTapGesture {
                                 handleUnsave(bookmark: bookmark)
-                            })
+                            }
 
                             // Share Button
                             Button {
@@ -662,13 +663,17 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func handleUnsave(bookmark: BookmarkItem) {
+        // Guard against the double-delivery the capsule's gesture+legacy
+        // path can produce: the second call would compute remaining AFTER
+        // the row is gone (empty) and tear down a settled UI.
+        let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
+        guard remaining.count < bookmarks.count else { return }
         // Dismiss the player synchronously on the intent: the sheet gates
         // the overlay on activePlaybackIndex, so clearing it unmounts the
         // player immediately, independent of when the @Query delete lands.
         teardownPlayer()
         onClose()
         onDeleteBookmark(bookmark)
-        let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
         if remaining.isEmpty {
             return
         }
