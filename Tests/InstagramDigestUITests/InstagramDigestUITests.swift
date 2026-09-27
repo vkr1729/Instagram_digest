@@ -425,18 +425,20 @@ final class InstagramDigestUITests: XCTestCase {
             unsaveButton.tap()
             // The delete settles in one of two correct states: the empty
             // state shows, or the player closes over the grid. Accept
-            // either — both prove the row is gone and the UI is usable.
-            let emptyState = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "exists == true"),
-                object: app.staticTexts["BookmarksEmptyStateText"])
-            let playerGone = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "exists == false"),
-                object: app.buttons["BookmarkPlayerUnsaveButton"])
-            let settled = XCTWaiter.wait(for: [emptyState, playerGone],
-                                         timeout: 20.0,
-                                         enforceOrder: false)
-            XCTAssertEqual(settled, .completed,
-                           "unsaving the last bookmark must settle the sheet (empty state or player closed)")
+            // EITHER via a poll loop — XCTWaiter.wait(for:) requires ALL
+            // expectations fulfilled, so it can never express "either/or"
+            // (that semantic bug is why the relaxed assertion still timed
+            // out: it demanded both states at once).
+            let settleStart = Date()
+            var settled = false
+            while !settled, Date().timeIntervalSince(settleStart) < 20.0 {
+                let emptyShown = app.staticTexts["BookmarksEmptyStateText"].exists
+                let playerClosed = !app.buttons["BookmarkPlayerUnsaveButton"].exists
+                settled = emptyShown || playerClosed
+                if !settled { Thread.sleep(forTimeInterval: 0.5) }
+            }
+            XCTAssertTrue(settled,
+                          "unsaving the last bookmark must settle the sheet (empty state or player closed)")
         }
         app.buttons["BookmarksDoneButton"].tap()
     }
