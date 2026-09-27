@@ -449,13 +449,18 @@ public struct BookmarkPlayerOverlay: View {
 
                     Spacer()
 
-                    // Pause-on-video-tap: a full-area transparent zone ABOVE
+                    // Pause-on-video-tap: a bounded transparent zone ABOVE
                     // the pager but BELOW the HUD VStack (later siblings win
                     // hit-testing), so chrome taps pause while Saved/Share
-                    // taps reach their Buttons. No gesture on the paged cell
-                    // itself — a cell-level gesture competes with every
-                    // control above it and eats the unsave tap in CI.
+                    // taps reach their Buttons. Bounded (not full-area): an
+                    // unconstrained Color.clear in a VStack claims the whole
+                    // screen INCLUDING the HUD area, swallowing the capsule
+                    // taps beneath it. No gesture on the paged cell itself —
+                    // a cell-level gesture competes with every control above
+                    // it and eats the unsave tap in CI.
                     Color.clear
+                        .frame(height: 120)
+                        .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             togglePlayPause()
