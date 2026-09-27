@@ -7,6 +7,8 @@ public struct GridView: View {
     public let watchedReelIDs: Set<String>
     public var onSelectReel: (Int) -> Void
     public var weekID: String = "default_week"
+    /// Rec 2 freshness caption, e.g. "Week of Sep 26 · updated 2 h ago".
+    public var freshnessCaption: String = ""
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [
@@ -20,12 +22,14 @@ public struct GridView: View {
         currentIndex: Int,
         watchedReelIDs: Set<String>,
         weekID: String = "default_week",
+        freshnessCaption: String = "",
         onSelectReel: @escaping (Int) -> Void
     ) {
         self.reels = reels
         self.currentIndex = currentIndex
         self.watchedReelIDs = watchedReelIDs
         self.weekID = weekID
+        self.freshnessCaption = freshnessCaption
         self.onSelectReel = onSelectReel
     }
 
@@ -101,6 +105,14 @@ public struct GridView: View {
             .navigationTitle("All Reels (\(reels.count))")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    if !freshnessCaption.isEmpty {
+                        Text(freshnessCaption)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("GridFreshnessCaption")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
                         dismiss()

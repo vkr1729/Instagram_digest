@@ -546,10 +546,35 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
     try:
         import config as _cfg4
         base = str(getattr(_cfg4, "PAGES_BASE_URL", "")).rstrip("/")
-        with _url.urlopen(base + "/", timeout=20) as r:
+        # Rec #6: check what the phone actually gets (data.json content),
+        # not just that Pages answers HTTP 200.
+        with _url.urlopen(base + "/data.json", timeout=20) as r:
             code = r.getcode()
-        report["pages_ok"] = code == 200
-        report["pages_status"] = f"HTTP {code}"
+            try:
+                live = _json.loads(r.read().decode("utf-8", "replace"))
+                served_week = str(live.get("run_date") or "")
+                served_n = len(live.get("items", []) or [])
+            except Exception:
+                served_week, served_n = "", -1
+        try:
+            local = _json.loads(_cfg4.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+            local_week = str(local.get("run_date") or "")
+        except Exception:
+            local_week = ""
+        if code == 200 and served_week and local_week and served_week == local_week:
+            report["pages_ok"] = True
+            report["pages_status"] = f"serves week {served_week} ({served_n} reels)"
+        elif code == 200 and served_week and local_week:
+            report["pages_ok"] = False
+            report["pages_status"] = f"serves week {served_week}, local is {local_week}"
+            report["notes"].append(
+                f"Pages serves week {served_week} but local digest is {local_week}; deploy may have failed.")
+        elif code == 200 and served_week:
+            report["pages_ok"] = True
+            report["pages_status"] = f"serves week {served_week} ({served_n} reels)"
+        else:
+            report["pages_ok"] = code == 200
+            report["pages_status"] = f"HTTP {code}"
     except Exception as exc:
         report["pages_ok"] = False
         report["pages_status"] = "unreachable"

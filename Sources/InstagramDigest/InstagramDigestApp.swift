@@ -135,6 +135,10 @@ struct FeedMainView: View {
     @Query private var savedBookmarks: [BookmarkItem]
     @Environment(\.scenePhase) private var scenePhase
     @State private var lastManifestFetch: Date? = nil
+    // Rec 4: offline playlist — while offline, the pool narrows to
+    // downloaded reels (same setReels mechanism as the category filter).
+    // Forced via -ui-testing-offline for the hermetic XCUITest.
+    @State private var offlineActive: Bool = false
 
     /// Wall-clock watch timer. Stored (not built in `body`): the pool
     /// publishes progress ticks every 0.5s, so a Timer.publish built in
@@ -298,6 +302,8 @@ struct FeedMainView: View {
                     StoryCategoryBarView(
                         totalCount: allReels.count,
                         selectedCategoryId: selectedCategoryId,
+                        offlineCaption: offlineActive
+                            ? "Offline · \(pool.currentItems.count) downloaded" : "",
                         onSelectCategory: { newCat in
                             guard let m = manifest else { return }
                             // B14: only adopt the selection when it matched
@@ -372,6 +378,9 @@ struct FeedMainView: View {
                 currentIndex: activeIndex,
                 watchedReelIDs: watchedReelIDs,
                 weekID: manifest?.weekId ?? "default_week",
+                freshnessCaption: WatchedRules.freshnessCaption(
+                    weekID: manifest?.weekId ?? "",
+                    generatedAt: manifest?.generatedAt),
                 onSelectReel: { targetIndex in
                     jumpToReel(at: targetIndex)
                 }
@@ -441,6 +450,7 @@ struct FeedMainView: View {
         }
         .task {
             loadManifest()
+            applyOfflinePlaylistIfNeeded()
         }
         .onAppear {
             setupPoolCallbacks()
@@ -573,6 +583,9 @@ struct FeedMainView: View {
                         }
                     }
                 }
+                // Rec 4: the manifest arrived after the .task ordering — if
+                // the offline flag is set, narrow now that items exist.
+                applyOfflinePlaylistIfNeeded()
                 // Load historical watched state immediately after manifest arrives
                 refreshWatchedReels()
 
@@ -604,6 +617,42 @@ struct FeedMainView: View {
                 self.errorMessage = "Unable to connect to digest: \(error.localizedDescription)"
                 self.isLoading = false
             }
+        }
+    }
+
+    // MARK: - Rec 4 offline playlist
+
+    /// Narrows the pool to downloaded reels while offline (or under the
+    /// -ui-testing-offline XCUITest flag). Keeps the current reel's position;
+    /// restores the full list when the connection returns. One derived
+    /// filter, no new state machine.
+    private func applyOfflinePlaylistIfNeeded() {
+        let forced = ProcessInfo.processInfo.arguments.contains("-ui-testing-offline")
+        let offline = forced || !Reachability.isConnectedToNetwork()
+        guard !allReels.isEmpty, let weekID = manifest?.weekId else {
+            // Manifest not loaded yet: remember the forced flag so the
+            // post-load call can narrow once items exist.
+            if forced { offlineActive = true }
+            return
+        }
+        if offline {
+            let local = WatchedRules.offlinePlaylist(items: allReels) {
+                LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id)
+            }
+            guard !local.isEmpty else { return }
+            let currentID = pool.currentItems.isEmpty ? nil
+                : pool.currentItems[min(max(0, activeIndex), pool.currentItems.count - 1)].id
+            let idx = currentID.flatMap { id in local.firstIndex { $0.id == id } } ?? 0
+            offlineActive = true
+            activeIndex = idx
+            pool.setReels(local, weekID: weekID, startIndex: idx)
+        } else if offlineActive {
+            offlineActive = false
+            let currentID = pool.currentItems.isEmpty ? nil
+                : pool.currentItems[min(max(0, activeIndex), pool.currentItems.count - 1)].id
+            let idx = currentID.flatMap { id in allReels.firstIndex { $0.id == id } } ?? 0
+            activeIndex = idx
+            pool.setReels(allReels, weekID: weekID, startIndex: idx)
         }
     }
 

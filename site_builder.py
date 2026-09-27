@@ -603,22 +603,21 @@ def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.
         res = subprocess.run(["git", "push", "-f", "origin", "gh-pages"], cwd=site_dir, capture_output=True, text=True, timeout=300)
         if res.returncode == 0:
             logger.info("Successfully deployed to GitHub Pages! Live at https://vkr1729.github.io/Instagram_digest/")
-            # P1-5: record what Pages (and the iOS app) now serve — the JIT
-            # purge must never delete it, even if a later local save disagrees.
-            try:
-                served = json.loads((site_dir / "data.json").read_text(encoding="utf-8")).get("run_date") or ""
-                atomic_io.durable_write_json(config.DATA_DIR / "deployed_week.json", {"run_date": served})
-            except Exception as exc:
-                logger.warning("Could not record deployed week: %s", exc)
             # Rec #6: confirm Pages actually serves the new week the way the
             # phone sees it (push success != Pages build success). Timeout is
-            # an alerted abort, not silent success.
+            # an alerted abort, not silent success. deployed_week.json is
+            # written only once the check passes, so a Pages-build lag can
+            # never poison the JIT purge keep-set (P1-5).
+            served_ok = False
             try:
                 import time as _time
                 import urllib.request as _urlreq
                 pages_url = (config.PAGES_BASE_URL.rstrip("/") + "/data.json") if config.PAGES_BASE_URL else ""
-                served_ok = False
-                if pages_url:
+                if not pages_url:
+                    # No Pages URL configured (tests, local-only): the push
+                    # itself is the only signal available.
+                    served_ok = True
+                else:
                     deadline = _time.time() + 600
                     expect = ""
                     try:
@@ -644,6 +643,15 @@ def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.
                         return False
             except Exception as exc:
                 logger.warning("Pages serve-check skipped: %s", exc)
+                served_ok = True
+            # P1-5: record what Pages (and the iOS app) now serve — the JIT
+            # purge must never delete it, even if a later local save disagrees.
+            if served_ok:
+                try:
+                    served = json.loads((site_dir / "data.json").read_text(encoding="utf-8")).get("run_date") or ""
+                    atomic_io.durable_write_json(config.DATA_DIR / "deployed_week.json", {"run_date": served})
+                except Exception as exc:
+                    logger.warning("Could not record deployed week: %s", exc)
             return True
         else:
             logger.warning("Failed pushing to gh-pages: %s", res.stderr)

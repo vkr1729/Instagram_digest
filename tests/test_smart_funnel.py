@@ -175,3 +175,39 @@ def test_fetch_media_batch_raises_challenged(monkeypatch, tmp_path):
     with patch.object(extractor, "_client_hint_headers", return_value={}):
         with pytest.raises(extractor.InstagramChallenged):
             extractor.fetch_media_info_batch(["AAA"], pause_secs=0)
+
+
+def test_gate_trips_and_blocks_every_entry_point():
+    """Rec #5: one tripped gate refuses every public extractor entry point."""
+    extractor.reset_gate()
+    extractor.trip_gate("unit-test trip")
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor.check_gate()
+    # Every request path calls check_gate() first: a tripped gate must
+    # refuse the cheapest probe of each entry point without touching the
+    # network (empty shortcodes / dry-run-shaped calls still raise).
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor.discover_creator_reel_urls("alice", max_reels=1)
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor.extract_single_reel_metadata(
+            {"url": "https://www.instagram.com/reel/x/", "creator_handle": "a"}, page=MagicMock())
+    extractor.reset_gate()
+    extractor.check_gate()  # must not raise after reset
+
+
+def test_blocked_nodata_streak_trips_gate(monkeypatch):
+    """Rec #5: 5 consecutive no-data block pages trip the circuit breaker."""
+    extractor.reset_gate()
+    assert extractor._BLOCKED_NODATA_STREAK == 0
+    page = MagicMock()
+    page.url = "https://www.instagram.com/reel/ABC123xyz/"
+    page.content.return_value = "<html>please wait a few minutes, try again later</html>"
+    page.query_selector.return_value = None
+    for _ in range(5):
+        assert extractor.extract_single_reel_metadata(
+            {"url": "https://www.instagram.com/reel/ABC123xyz/",
+             "creator_handle": "alice", "id": "ABC123xyz"},
+            page=page) is None
+    with pytest.raises(extractor.InstagramChallenged):
+        extractor.check_gate()
+    extractor.reset_gate()

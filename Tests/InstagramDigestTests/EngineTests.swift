@@ -229,6 +229,16 @@ final class EngineTests: XCTestCase {
     }
 
     @MainActor
+    func testFreshnessCaptionFormatsWeekAndAge() {
+        XCTAssertEqual(WatchedRules.freshnessCaption(weekID: "w", generatedAt: nil), "")
+        let gen = Date(timeIntervalSinceNow: -2 * 3600)
+        let caption = WatchedRules.freshnessCaption(weekID: "2026-09-14", generatedAt: gen)
+        XCTAssertTrue(caption.hasPrefix("Week of "), "caption must lead with the week: \(caption)")
+        XCTAssertTrue(caption.contains("2 h ago"), "caption must carry the age: \(caption)")
+        XCTAssertTrue(caption.contains("2026-09-14"), "caption must carry the week id: \(caption)")
+    }
+
+    @MainActor
     func testOfflinePlaylistKeepsOnlyDownloaded() {
         let items = [
             ReelItem(id: "a", creatorHandle: "c", caption: "", rank: 1, videoUrl: URL(string: "https://example.com/a.mp4")!),
@@ -240,11 +250,13 @@ final class EngineTests: XCTestCase {
 
     @MainActor
     func testSlotRotationForwardContinuous() async throws {
+        // Rec 1: deterministic local clip — no network, no failure ladder.
+        let clip = Bundle.main.url(forResource: "uitest_clip", withExtension: "mp4")!
         let pool = AVPlayerPool.shared
         let reels = [
-            ReelItem(id: "r0", creatorHandle: "c0", caption: "Caption 0", rank: 1, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/01_test_r0.mp4")!),
-            ReelItem(id: "r1", creatorHandle: "c1", caption: "Caption 1", rank: 2, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/02_test_r1.mp4")!),
-            ReelItem(id: "r2", creatorHandle: "c2", caption: "Caption 2", rank: 3, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/03_test_r2.mp4")!)
+            ReelItem(id: "r0", creatorHandle: "c0", caption: "Caption 0", rank: 1, videoUrl: clip),
+            ReelItem(id: "r1", creatorHandle: "c1", caption: "Caption 1", rank: 2, videoUrl: clip),
+            ReelItem(id: "r2", creatorHandle: "c2", caption: "Caption 2", rank: 3, videoUrl: clip)
         ]
 
         pool.setReels(reels, weekID: "test_week_rot", startIndex: 0)
@@ -333,10 +345,12 @@ final class EngineTests: XCTestCase {
 
     @MainActor
     func testSlotRotationBackwardContinuous() async throws {
+        // Rec 1: deterministic local clip — no network, no failure ladder.
+        let clip = Bundle.main.url(forResource: "uitest_clip", withExtension: "mp4")!
         let pool = AVPlayerPool.shared
         let reels = [
-            ReelItem(id: "b0", creatorHandle: "c0", caption: "Caption 0", rank: 1, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/01_test_b0.mp4")!),
-            ReelItem(id: "b1", creatorHandle: "c1", caption: "Caption 1", rank: 2, videoUrl: URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/videos/2026-09-14/02_test_b1.mp4")!)
+            ReelItem(id: "b0", creatorHandle: "c0", caption: "Caption 0", rank: 1, videoUrl: clip),
+            ReelItem(id: "b1", creatorHandle: "c1", caption: "Caption 1", rank: 2, videoUrl: clip)
         ]
 
         pool.setReels(reels, weekID: "test_week_back", startIndex: 1)

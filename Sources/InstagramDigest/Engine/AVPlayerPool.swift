@@ -198,7 +198,6 @@ public final class AVPlayerPool: ObservableObject {
     // MARK: - Navigation & Loading
 
     public func setReels(_ items: [ReelItem], weekID: String, startIndex: Int = 0) {
-        var items = items
         // UI-test seam: the fixture's R2 media is purged, so every reel
         // would fail and the skip/auto-advance cascade would move the pager
         // mid-test (3s clip also self-advances off reel #1). Seed every

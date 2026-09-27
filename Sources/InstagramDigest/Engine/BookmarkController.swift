@@ -85,6 +85,10 @@ public enum BookmarkController {
             guard !Task.isCancelled else { return }
             // Rec 3: track the durable R2 backup; retry while it is pending.
             MediaCacheManager.addPendingRemoteBookmark(rID)
+            // Rec 3 XCUITest seam: the CI simulator has no owner key and no
+            // Worker route — the POST can never succeed, and firing it only
+            // burns the test's time budget. The badge test asserts pending.
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
             if (try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)) == true {
                 MediaCacheManager.removePendingRemoteBookmark(rID)
             }

@@ -48,9 +48,17 @@ def check_gate() -> None:
 def reset_gate() -> None:
     """Clear the gate at the start of each run (dashboard lives for days)."""
     _GATE.clear()
+    global _BLOCKED_NODATA_STREAK
+    _BLOCKED_NODATA_STREAK = 0
 
 
 _YTDLP_GATE_TOKENS = ("login required", "rate-limit", "rate limit", "checkpoint", "challenge")
+
+
+# Rec #5: consecutive no-data block-marker reel pages trip the gate (the
+# soft-block heuristic returns None per page, so the run would otherwise
+# grind through all ~500 reels on a gated account).
+_BLOCKED_NODATA_STREAK = 0
 
 
 def _ytdlp_stderr_trips_gate(stderr: str) -> bool:
@@ -1233,8 +1241,16 @@ def extract_single_reel_metadata(
             # Marker strings alone are not enough — they also occur in reel
             # captions ("try again later") and in JS bundle enums — so a page
             # carrying real reel metadata is never dropped on this signal.
+            # Rec #5: count consecutive no-data block pages; N in a row trips
+            # the circuit breaker so the run stops instead of grinding.
+            global _BLOCKED_NODATA_STREAK
+            _BLOCKED_NODATA_STREAK += 1
+            if _BLOCKED_NODATA_STREAK >= 5:
+                trip_gate(f"{_BLOCKED_NODATA_STREAK} consecutive block-marker reel pages with no reel data")
             logger.warning("Soft-block markers in reel page %s; skipping without fallback.", reel_url)
             return None
+        # Reel data present: not a wall — reset the streak.
+        _BLOCKED_NODATA_STREAK = 0
         if blocked:
             logger.warning(
                 "Soft-block markers present but reel metadata found on %s; continuing.",

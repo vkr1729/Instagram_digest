@@ -360,6 +360,10 @@ final class InstagramDigestUITests: XCTestCase {
         // First saved bookmark must appear in the grid.
         XCTAssertTrue(app.buttons["BookmarkGridItem_0"].waitForExistence(timeout: 5.0),
                       "Saved bookmark must persist into the Bookmarks sheet")
+        // Rec 3: CI bookmarks with no owner key, so the durable R2 backup
+        // stays pending — the tile must carry the not-backed-up badge.
+        XCTAssertTrue(app.images["BookmarkPendingBadge_0"].waitForExistence(timeout: 5.0),
+                      "Unbacked bookmark must show BookmarkPendingBadge_0")
         app.buttons["BookmarksDoneButton"].tap()
     }
 
@@ -377,6 +381,18 @@ final class InstagramDigestUITests: XCTestCase {
         let firstItem = app.buttons["BookmarkGridItem_0"]
         if firstItem.waitForExistence(timeout: 5.0) {
             firstItem.tap()
+            // Rec 1: the bookmark player must actually play — its clock
+            // advances on the seeded local copy (no network in CI).
+            let overlayClock = app.otherElements["BookmarkPlayerProgress"]
+            XCTAssertTrue(overlayClock.waitForExistence(timeout: 8.0),
+                          "Bookmark player clock must exist")
+            let first = (overlayClock.value as? String ?? "").components(separatedBy: " ").first ?? ""
+            let start = Date()
+            var second = first
+            while second == first, Date().timeIntervalSince(start) < 10.0 {
+                second = ((app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first) ?? second
+            }
+            XCTAssertNotEqual(second, first, "bookmark player clock must advance within 10s")
             let unsaveButton = app.buttons["BookmarkPlayerUnsaveButton"]
             if unsaveButton.waitForExistence(timeout: 5.0) {
                 unsaveButton.tap()
@@ -446,5 +462,25 @@ final class InstagramDigestUITests: XCTestCase {
         app.activate()
         XCTAssertTrue(rankBadge.waitForExistence(timeout: 8.0))
         XCTAssertFalse(rankBadge.label.isEmpty, "foreground must not strand the feed")
+    }
+
+    // MARK: - Rec 4. Offline playlist (forced hermetic branch)
+
+    func testOfflinePlaylistShowsOnlyDownloaded() throws {
+        // Relaunch with the forced-offline flag: the pool must narrow to
+        // the seeded local clips and the chip must say so.
+        app.terminate()
+        app.launchArguments = ["-ui-testing", "-ui-testing-offline"]
+        app.launch()
+        let chip = app.staticTexts["OfflinePlaylistChip"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 10.0), "Offline chip must appear in forced-offline mode")
+        XCTAssertTrue(chip.label.contains("Offline"), "chip must read 'Offline · N downloaded', got: \(chip.label)")
+        // Paging must stay inside the downloaded set: the rank badge keeps
+        // resolving and the chip never disappears.
+        let rankBadge = app.staticTexts["ReelRankBadge"]
+        XCTAssertTrue(rankBadge.waitForExistence(timeout: 5.0))
+        app.swipeUp()
+        XCTAssertTrue(chip.waitForExistence(timeout: 5.0), "offline chip must survive paging")
+        app.launchArguments = ["-ui-testing"]
     }
 }

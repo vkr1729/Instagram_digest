@@ -89,6 +89,24 @@ public enum WatchedRules {
         !current.isEmpty && current != fetched
     }
 
+    /// Rec 2: one-line grid freshness caption from the manifest's
+    /// generated_at, e.g. "Week of Sep 26 · updated 2 h ago". Empty when
+    /// the manifest carries no timestamp.
+    public static func freshnessCaption(weekID: String, generatedAt: Date?, now: Date = Date()) -> String {
+        guard let gen = generatedAt else { return "" }
+        let weekFormatter = DateFormatter()
+        weekFormatter.dateFormat = "MMM d"
+        weekFormatter.locale = Locale(identifier: "en_US_POSIX")
+        let week = weekFormatter.string(from: gen)
+        let mins = max(0, Int(now.timeIntervalSince(gen) / 60))
+        let age: String
+        if mins < 1 { age = "just now" }
+        else if mins < 60 { age = "\(mins) min ago" }
+        else if mins < 60 * 24 { age = "\(mins / 60) h ago" }
+        else { age = "\(mins / (60 * 24)) d ago" }
+        return "Week of \(week) · updated \(age) — \(weekID)"
+    }
+
     /// Rec 4: offline playlist — while offline, play only downloaded reels.
     public static func offlinePlaylist(items: [ReelItem], isLocal: (ReelItem) -> Bool) -> [ReelItem] {
         items.filter { isLocal($0) }

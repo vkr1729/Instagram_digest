@@ -500,6 +500,17 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
         return 1
     reels = [r for r in box["reels"] if isinstance(r, dict) and r.get("id")]
     paths = {rid: Path(p) for rid, p in (box.get("local_paths") or {}).items()}
+    # P2-16: check the live week BEFORE burning upload bandwidth — a
+    # cross-week outbox must refuse fast, not after a 4-worker upload loop.
+    try:
+        _live = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.error("Reconcile cannot read live digest: %s", exc)
+        return 2
+    if (_live.get("run_date") or "") != week_id:
+        logger.error("Live digest is week %s, outbox is %s; refusing to merge across weeks.",
+                     _live.get("run_date"), week_id)
+        return 2
     logger.info("Reconciling %d parked uploads for week %s...", len(reels), week_id)
 
     existing_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
@@ -556,18 +567,13 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
             pass
         return 2
 
-    # P2-16: run the live-week check BEFORE deleting the outbox (a
-    # cross-week mismatch must keep the outbox for the right week), and
-    # keep the outbox until after the merged digest is saved.
+    # Live week was already verified before uploading; the outbox is kept
+    # until after the merged digest is saved below.
     try:
         digest = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
     except Exception as exc:
         logger.error("Reconcile uploaded %d reels but cannot read live digest: %s",
                      len(uploaded), exc)
-        return 2
-    if digest.get("run_date") != week_id:
-        logger.error("Live digest is week %s, outbox is %s; refusing to merge across weeks.",
-                     digest.get("run_date"), week_id)
         return 2
     items = digest.get("items", [])
     live_ids = {it.get("id") for it in items}
@@ -825,8 +831,6 @@ def _run_full_sync(
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    # P2-17: the weekly anchor is the run's START, not its end — reels
-    # posted while the run works would otherwise fall between two runs.
     run_started_ts = time.time()
     if since_timestamp is not None:
         logger.info("Starting Instagram Digest ad-hoc sync for week %s (since_ts=%d, days_back=%d, dry_run=%s)...",
@@ -939,6 +943,11 @@ def _run_full_sync(
                                        resume, banked_age_days, kind=kind):
                 sync_progress = loaded_sync
                 kind = loaded_sync.get("kind") or kind
+                # P2-17: a resume keeps the ORIGINAL run start as the weekly
+                # anchor — reels posted mid-run must not fall between runs.
+                _banked_start = loaded_sync.get("run_started_ts")
+                if isinstance(_banked_start, (int, float)) and _banked_start > 0:
+                    run_started_ts = float(_banked_start)
                 # Week-drift (same class as the run_expand fix): resumed work
                 # keeps the week it started in — its local files, uploaded URLs
                 # and R2 keys all live under that week_id. Adopt it, or the JIT
@@ -984,6 +993,9 @@ def _run_full_sync(
             "version": 1, "week_id": week_id,
             "days_back": days_back, "limit_per_creator": limit_per_creator,
             "since_timestamp": since_timestamp, "stage": stage, "kind": kind,
+            # P2-17: anchor resumes to the ORIGINAL run start, not the resume
+            # moment — reels posted mid-run must not fall between two runs.
+            "run_started_ts": run_started_ts,
         }
         if extra:
             payload.update(extra)

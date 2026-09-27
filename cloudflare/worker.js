@@ -91,7 +91,8 @@ async function enforceCap(env) {
     const countRow = await env.DB.prepare(
       'SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes),0) AS s FROM bookmarks'
     ).first();
-    const over = (countRow.c - MAX_ITEMS) + (countRow.s > MAX_BYTES ? 1 : 0);
+    // P2-10: break only when BOTH count and bytes fit (the old `over`
+    // arithmetic never evicted bytes below 300 items).
     if (countRow.c <= MAX_ITEMS && countRow.s <= MAX_BYTES) break;
     const { results } = await env.DB.prepare(
       'SELECT id, size_bytes FROM bookmarks ORDER BY bookmarked_at ASC LIMIT 50'

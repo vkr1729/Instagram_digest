@@ -252,6 +252,10 @@ public struct BookmarksSheet: View {
     }
 
     private func retryPendingRemoteBookmarks() async {
+        // Rec 3: under -ui-testing the Worker is unreachable by design, so
+        // every CI bookmark stays pending and the badge XCUITest can see it.
+        // Skipping the doomed POST keeps the test fast and hermetic.
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
         let pending = MediaCacheManager.pendingRemoteBookmarks
         guard !pending.isEmpty else { return }
         let key = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
@@ -307,6 +311,10 @@ public struct BookmarkPlayerOverlay: View {
     @State private var isPlaying: Bool = true
     @State private var isChromeVisible: Bool = true
     @State private var isCaptionExpanded: Bool = false
+    // Rec 1: playback-proof overlay clock for the XCUITest (mirrors the
+    // feed's PlaybackProgress accessibility contract).
+    @State private var bookmarkCurrentTime: Double = 0
+    @State private var bookmarkClockToken: Any?
     @State private var hideChromeWorkItem: DispatchWorkItem?
     @State private var endObserverToken: NSObjectProtocol?
 
@@ -406,6 +414,13 @@ public struct BookmarkPlayerOverlay: View {
                     .padding(.top, 56)
 
                     Spacer()
+
+                    // Rec 1: overlay playback clock (same contract as the
+                    // feed's PlaybackProgress): "<secs> playing|paused".
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .accessibilityIdentifier("BookmarkPlayerProgress")
+                        .accessibilityValue(String(format: "%.1f %@", bookmarkCurrentTime, isPlaying ? "playing" : "paused"))
 
                     // Bottom HUD (Channel, Caption, Unsave, Share)
                     VStack(alignment: .leading, spacing: 10) {
@@ -593,6 +608,19 @@ public struct BookmarkPlayerOverlay: View {
         AudioSessionCoordinator.shared.activateSession()
         avPlayer.play()
 
+        // Rec 1: 0.5s clock ticks drive the overlay's PlaybackProgress
+        // accessibility value so CI can prove the bookmark player moves.
+        if let token = bookmarkClockToken {
+            avPlayer.removeTimeObserver(token)
+            bookmarkClockToken = nil
+        }
+        bookmarkCurrentTime = 0
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+        bookmarkClockToken = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
+            let cur = time.seconds
+            if cur.isFinite { bookmarkCurrentTime = cur }
+        }
+
         endObserverToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
@@ -689,6 +717,10 @@ public struct BookmarkPlayerOverlay: View {
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil
+        }
+        if let token = bookmarkClockToken {
+            player?.removeTimeObserver(token)
+            bookmarkClockToken = nil
         }
         hideChromeWorkItem?.cancel()
         hideChromeWorkItem = nil

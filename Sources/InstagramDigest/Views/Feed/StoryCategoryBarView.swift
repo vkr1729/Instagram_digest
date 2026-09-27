@@ -20,6 +20,8 @@ public struct StoryCategoryBarView: View {
     public let categories: [StoryCategoryItem]
     public let selectedCategoryId: String
     public var onSelectCategory: (String) -> Void
+    /// Rec 4: "Offline · N downloaded" while the offline filter applies.
+    public var offlineCaption: String = ""
 
     public static func standardCategories(totalCount: Int = 0) -> [StoryCategoryItem] {
         let topTitle = totalCount > 0 ? "Top \(totalCount)" : "Top"
@@ -38,10 +40,12 @@ public struct StoryCategoryBarView: View {
         totalCount: Int = 0,
         categories: [StoryCategoryItem]? = nil,
         selectedCategoryId: String = "all",
+        offlineCaption: String = "",
         onSelectCategory: @escaping (String) -> Void = { _ in }
     ) {
         self.categories = categories ?? Self.standardCategories(totalCount: totalCount)
         self.selectedCategoryId = selectedCategoryId
+        self.offlineCaption = offlineCaption
         self.onSelectCategory = onSelectCategory
     }
 
@@ -56,7 +60,20 @@ public struct StoryCategoryBarView: View {
     )
 
     public var body: some View {
-        HStack(alignment: .top, spacing: 0) {
+        VStack(spacing: 2) {
+            // Rec 4: offline chip — visible only while the offline filter
+            // narrows the playlist to downloaded reels.
+            if !offlineCaption.isEmpty {
+                Text(offlineCaption)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.cyan)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(Color.cyan.opacity(0.15))
+                    .clipShape(Capsule())
+                    .accessibilityIdentifier("OfflinePlaylistChip")
+            }
+            HStack(alignment: .top, spacing: 0) {
             ForEach(categories) { cat in
                 let isSelected = cat.id == selectedCategoryId
 
@@ -111,6 +128,7 @@ public struct StoryCategoryBarView: View {
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("Category_\(cat.id)")
                 .accessibilityValue(isSelected ? "selected" : "unselected")
+            }
             }
         }
         .padding(.horizontal, 8)

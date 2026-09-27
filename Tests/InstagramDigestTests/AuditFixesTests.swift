@@ -153,4 +153,52 @@ final class AuditFixesTests: XCTestCase {
     func testDiskFileSizeHelper() {
         XCTAssertNil(MediaCacheManager.diskFileSize(atPath: "/nonexistent/path/reel.mp4"))
     }
+
+    // MARK: - Rec 3: pending remote-bookmark backup drains on retry
+
+    func testPendingRemoteBookmarksDrainOnRetry() async throws {
+        // Rec 3: a 500 must keep the id pending; a later 200 must clear it.
+        StubURLProtocol.responses = []
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let service = DigestDataService(session: URLSession(configuration: config))
+        let reel = ReelItem(id: "pending_drain", creatorHandle: "c", caption: "",
+                            rank: 1, videoUrl: URL(string: "https://example.com/p.mp4")!)
+
+        MediaCacheManager.addPendingRemoteBookmark("pending_drain")
+        StubURLProtocol.respond(status: 500)
+        // saveRemoteBookmark returns false (not throws) on 5xx: the id
+        // must stay pending for the launch/foreground retry.
+        let failed = try await service.saveRemoteBookmark(reel: reel)
+        XCTAssertFalse(failed)
+        XCTAssertTrue(MediaCacheManager.pendingRemoteBookmarks.contains("pending_drain"))
+
+        StubURLProtocol.respond(status: 200)
+        let ok = try await service.saveRemoteBookmark(reel: reel)
+        XCTAssertTrue(ok)
+        MediaCacheManager.removePendingRemoteBookmark("pending_drain")
+        XCTAssertFalse(MediaCacheManager.pendingRemoteBookmarks.contains("pending_drain"))
+    }
+}
+
+/// Rec 3: minimal URLProtocol stub — scripted status codes, empty body.
+private final class StubURLProtocol: URLProtocol {
+    struct Scripted { let status: Int }
+    static var responses: [Scripted] = []
+
+    static func respond(status: Int) { responses.append(Scripted(status: status)) }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let status = Self.responses.isEmpty ? 200 : Self.responses.removeFirst().status
+        let response = HTTPURLResponse(url: request.url!, statusCode: status,
+                                       httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
