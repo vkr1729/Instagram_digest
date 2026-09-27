@@ -451,12 +451,14 @@ public struct BookmarkPlayerOverlay: View {
                     // Button (not a gesture) so delivery follows the same
                     // control path as the HUD Buttons it sits beside — no
                     // gesture competition anywhere in this overlay.
-                    // Plain style: no button-chrome animation or layout
-                    // pass that could shift frames mid-tap.
+                    // Plain style + fixed frame: no button-chrome animation
+                    // or zero-size layout pass that XCUITest's
+                    // scroll-to-visible cannot complete on.
                     Button {
                         togglePlayPause()
                     } label: {
                         Color.clear
+                            .frame(maxWidth: .infinity, minHeight: 300)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
