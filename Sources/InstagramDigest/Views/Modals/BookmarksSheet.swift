@@ -377,7 +377,21 @@ public struct BookmarkPlayerOverlay: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Vertical Paging Pager (iOS 17 native)
+            // Vertical Paging Pager — single bookmark, no paging needed.
+            // A plain full-screen video view replaces the paging ScrollView:
+            // every control XCUITest touches lives outside ScrollView
+            // geometry now, so scroll-to-visible can always complete
+            // (kAXErrorCannotComplete failed pause/unsave taps, 5 runs).
+            // Multi-bookmark paging is preserved below when count > 1.
+            if bookmarks.count <= 1, currentBookmark != nil {
+                ZStack {
+                    Color.black
+                    if let p = player {
+                        BookmarkVideoContainer(player: p)
+                    }
+                }
+                .ignoresSafeArea()
+            } else {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
@@ -411,6 +425,7 @@ public struct BookmarkPlayerOverlay: View {
                 if let bm = currentBookmark {
                     loadVideo(for: bm)
                 }
+            }
             }
 
             // Natural background scrim for chrome readability
