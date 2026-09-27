@@ -447,26 +447,7 @@ public struct BookmarkPlayerOverlay: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 56)
 
-                    // Pause control: a small visible capsule Button in the
-                    // chrome VStack flow (same layout pattern as the Saved /
-                    // Share capsules below it, so it always has a real,
-                    // tappable frame). A real Button, not a gesture, so
-                    // delivery follows the same control path as its HUD
-                    // siblings — no gesture competition anywhere in this
-                    // overlay, and XCUITest can scroll to and tap it.
-                    Button {
-                        togglePlayPause()
-                    } label: {
-                        Text("Pause")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.85))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(Color.white.opacity(0.14))
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("BookmarkPlayerPauseZone")
+                    Spacer()
 
                     // Rec 1: overlay playback clock — same pattern as the
                     // feed's PlaybackProgress (identifier on a visible,
@@ -488,6 +469,34 @@ public struct BookmarkPlayerOverlay: View {
                                 .foregroundColor(.white)
 
                             Spacer()
+
+                            // Pause control: a small capsule in the HUD row
+                            // itself (same flow as Saved/Share, so it always
+                            // has a real laid-out frame). Earlier iterations
+                            // put the pause target in the overlay ScrollView's
+                            // geometry (clear zones, spacers, zero-size
+                            // Buttons) where XCUITest's scroll-to-visible
+                            // cannot complete (kAXErrorCannotComplete, 4
+                            // runs). A capsule beside its siblings is always
+                            // visible and tappable; a real Button, not a
+                            // gesture, so delivery matches its siblings.
+                            Button {
+                                togglePlayPause()
+                            } label: {
+                                Text(isPlaying ? "Pause" : "Play")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 32)
+                                    .background(Color.white.opacity(0.14))
+                                    .clipShape(Capsule())
+                                    .overlay(
+                                        Capsule().stroke(Color.white.opacity(0.35), lineWidth: 0.8)
+                                    )
+                            }
+                            .contentShape(Rectangle())
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("BookmarkPlayerPauseZone")
 
                             // Bookmark Toggle (Clicking removes it from bookmarks!)
                             // Real Button (matches the feed's Save control and
