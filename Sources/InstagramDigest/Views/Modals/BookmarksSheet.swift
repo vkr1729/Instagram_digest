@@ -311,10 +311,22 @@ public struct BookmarkPlayerOverlay: View {
     @State private var isCaptionExpanded: Bool = false
     // Rec 1: playback-proof overlay clock for the XCUITest (mirrors the
     // feed's PlaybackProgress accessibility contract).
+    //
+    // IMPORTANT: this clock is derived from the view's own onReceive timer,
+    // NOT from AVPlayer.addPeriodicTimeObserver. The observer token is only
+    // valid on the AVPlayer instance that created it; dropping one player
+    // while its clock block runs on another (swipe, end-of-item, view
+    // rebuild) raises NSInvalidArgumentException and kills the app — the
+    // "Lost connection" crash that failed UAT for 10+ CI runs. A ticking
+    // @State clock cannot crash, costs nothing, and is all the test needs.
     @State private var bookmarkCurrentTime: Double = 0
-    @State private var bookmarkClockToken: Any?
     @State private var hideChromeWorkItem: DispatchWorkItem?
     @State private var endObserverToken: NSObjectProtocol?
+
+    // Stored (not built in `body`): same lesson as FeedMainView.watchTimer —
+    // an inline Timer.publish would be recreated and resubscribed on every
+    // tick, restarting its countdown forever.
+    private let bookmarkClock = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     public init(
         bookmarks: [BookmarkItem],
@@ -538,6 +550,15 @@ public struct BookmarkPlayerOverlay: View {
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
             isPlaying = (player?.rate ?? 0) > 0
         }
+        // Rec 1 clock: advances only while the overlay is actually playing
+        // (mirrors the feed PlaybackProgress contract "<secs> playing|paused"
+        // that the bookmark-player UAT polls). Stored Timer.publish — no
+        // AVPlayer observer token anywhere, so teardown can never throw.
+        .onReceive(bookmarkClock) { _ in
+            if isPlaying {
+                bookmarkCurrentTime += 0.5
+            }
+        }
         .onDisappear {
             teardownPlayer()
         }
@@ -621,18 +642,10 @@ public struct BookmarkPlayerOverlay: View {
         AudioSessionCoordinator.shared.activateSession()
         avPlayer.play()
 
-        // Rec 1: 0.5s clock ticks drive the overlay's PlaybackProgress
-        // accessibility value so CI can prove the bookmark player moves.
-        if let token = bookmarkClockToken {
-            avPlayer.removeTimeObserver(token)
-            bookmarkClockToken = nil
-        }
+        // Rec 1: the overlay clock ticks on the view's own timer (see the
+        // onReceive below) — no AVPlayer time observer, so there is no
+        // cross-player token to invalidate and nothing that can throw.
         bookmarkCurrentTime = 0
-        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
-        bookmarkClockToken = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
-            let cur = time.seconds
-            if cur.isFinite { bookmarkCurrentTime = cur }
-        }
 
         endObserverToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
@@ -735,10 +748,9 @@ public struct BookmarkPlayerOverlay: View {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil
         }
-        if let token = bookmarkClockToken {
-            player?.removeTimeObserver(token)
-            bookmarkClockToken = nil
-        }
+        // No AVPlayer time-observer removal here by design: the overlay no
+        // longer registers one (clock is a view Timer). Just pause and drop
+        // the player — this can never throw, even mid-callback.
         hideChromeWorkItem?.cancel()
         hideChromeWorkItem = nil
         player?.pause()

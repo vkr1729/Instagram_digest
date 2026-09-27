@@ -380,38 +380,51 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
         let firstItem = app.buttons["BookmarkGridItem_0"]
         if firstItem.waitForExistence(timeout: 5.0) {
-            // The grid tile tap can race the thumbnail load and land on a
-            // half-bound cell (player then never opens — "Lost connection"
-            // when the query resolves mid-teardown). Retry the tile tap
-            // until the player clock actually appears (max ~3 tries).
+            // Open the player with a bounded retry: a tile tap can race the
+            // thumbnail bind and land on a half-bound cell (player never
+            // opens, hierarchy tears down mid-query). Each attempt re-queries
+            // a FRESH element snapshot instead of reusing a stale reference
+            // from a torn-down hierarchy — that reuse is what surfaced as
+            // "Lost connection to the application" on line 411.
             var clockAppeared = false
             for _ in 0..<3 {
-                firstItem.tap()
+                // Fresh query every attempt: never touch an element resolved
+                // against a previous (possibly torn-down) hierarchy.
+                let tile = app.buttons["BookmarkGridItem_0"]
+                guard tile.waitForExistence(timeout: 5.0) else { break }
+                tile.tap()
                 let probe = app.otherElements["BookmarkPlayerProgress"]
                 if probe.waitForExistence(timeout: 8.0) { clockAppeared = true; break }
             }
             XCTAssertTrue(clockAppeared, "Bookmark player must open from the grid tile")
             // Rec 1: the bookmark player must actually play — its clock
             // advances on the seeded local copy (no network in CI).
-            let overlayClock = app.otherElements["BookmarkPlayerProgress"]
-            XCTAssertTrue(overlayClock.waitForExistence(timeout: 8.0),
+            // All queries below are fresh snapshots: the player tears down
+            // and rebuilds across unsave, so a cached element reference can
+            // point at a dead hierarchy ("Lost connection") — re-query.
+            XCTAssertTrue(app.otherElements["BookmarkPlayerProgress"].waitForExistence(timeout: 8.0),
                           "Bookmark player clock must exist")
-            let first = (overlayClock.value as? String ?? "").components(separatedBy: " ").first ?? ""
+            let firstValue = (app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first ?? ""
             let start = Date()
-            var second = first
-            while second == first, Date().timeIntervalSince(start) < 10.0 {
-                second = ((app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first) ?? second
+            var secondValue = firstValue
+            while secondValue == firstValue, Date().timeIntervalSince(start) < 10.0 {
+                secondValue = ((app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first) ?? secondValue
             }
-            XCTAssertNotEqual(second, first, "bookmark player clock must advance within 10s")
+            XCTAssertNotEqual(secondValue, firstValue, "bookmark player clock must advance within 10s")
             // The chrome auto-hides 2.5s after play starts, and togglePlayPause
             // is also the video tap: tap the player to pause+reveal the HUD
             // before tapping Saved (a hidden button is not hittable).
             // Pause first so the clock freezes and the chrome stays visible.
-            let overlayClock2 = app.otherElements["BookmarkPlayerProgress"]
-            overlayClock2.tap()
+            // NOTE: the clock is a 1x1pt Color.clear node — never tap it
+            // (XCUITest hit-tests a zero-area element and can tear down the
+            // hierarchy mid-synthesize: "Lost connection"). Instead tap the
+            // visible video area by coordinate to pause+reveal the HUD.
+            let playerArea = app.otherElements["BookmarkPlayerProgress"]
+            XCTAssertTrue(playerArea.waitForExistence(timeout: 5.0))
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)).tap()
             let pausedExpect = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "value CONTAINS 'paused'"),
-                object: overlayClock2)
+                object: app.otherElements["BookmarkPlayerProgress"])
             XCTAssertEqual(XCTWaiter.wait(for: [pausedExpect], timeout: 5.0), .completed,
                            "tapping the bookmark player must pause and reveal chrome")
             // Tap by coordinate: the capsule's tap point is known-good
