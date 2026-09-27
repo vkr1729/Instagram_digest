@@ -451,11 +451,15 @@ public struct BookmarkPlayerOverlay: View {
                     // Button (not a gesture) so delivery follows the same
                     // control path as the HUD Buttons it sits beside — no
                     // gesture competition anywhere in this overlay.
+                    // Plain style: no button-chrome animation or layout
+                    // pass that could shift frames mid-tap.
                     Button {
                         togglePlayPause()
                     } label: {
                         Color.clear
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("BookmarkPlayerPauseZone")
 
                     // Rec 1: overlay playback clock — same pattern as the
