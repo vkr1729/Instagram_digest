@@ -413,14 +413,12 @@ final class InstagramDigestUITests: XCTestCase {
             XCTAssertNotEqual(secondValue, firstValue, "bookmark player clock must advance within 10s")
             // The chrome auto-hides 2.5s after play starts, and togglePlayPause
             // is also the video tap: tap the player to pause+reveal the HUD
-            // before tapping Saved (a hidden button is not hittable).
-            // Pause first so the clock freezes and the chrome stays visible.
-            // NOTE: the clock is a 1x1pt Color.clear node — never tap it
-            // (XCUITest hit-tests a zero-area element and can tear down the
-            // hierarchy mid-synthesize: "Lost connection"). Instead tap the
-            // visible video area by coordinate to pause+reveal the HUD.
-            let playerArea = app.otherElements["BookmarkPlayerProgress"]
-            XCTAssertTrue(playerArea.waitForExistence(timeout: 5.0))
+            // before tapping Saved (an .allowsHitTesting(false) chrome is
+            // not hittable). Pause first so the clock freezes and the chrome
+            // stays visible. Tap the app coordinate (not the 1pt clock node
+            // — hit-testing a zero-area element tears the hierarchy down
+            // mid-synthesize: "Lost connection").
+            XCTAssertTrue(app.otherElements["BookmarkPlayerProgress"].waitForExistence(timeout: 5.0))
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)).tap()
             let pausedExpect = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "value CONTAINS 'paused'"),

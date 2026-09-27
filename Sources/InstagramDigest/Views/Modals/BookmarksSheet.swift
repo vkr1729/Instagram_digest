@@ -452,10 +452,15 @@ public struct BookmarkPlayerOverlay: View {
 
                     Spacer()
 
-                    // Rec 1: overlay playback clock (same contract as the
-                    // feed's PlaybackProgress): "<secs> playing|paused".
+                    // Rec 1: overlay playback clock — same pattern as the
+                    // feed's PlaybackProgress (identifier on a visible,
+                    // allowsHitTesting(false) node, "<secs> playing|paused"
+                    // in the VALUE). Zero hit-test footprint, so taps pass
+                    // through to the video/controls beneath it.
                     Color.clear
-                        .frame(width: 1, height: 1)
+                        .frame(height: 1)
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
                         .accessibilityIdentifier("BookmarkPlayerProgress")
                         .accessibilityValue(String(format: "%.1f %@", bookmarkCurrentTime, isPlaying ? "playing" : "paused"))
 
@@ -540,6 +545,7 @@ public struct BookmarkPlayerOverlay: View {
                     .padding(.bottom, 40)
                 }
                 .opacity(isChromeVisible ? 1.0 : 0.0)
+                .allowsHitTesting(isChromeVisible)
                 .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
             }
         }
