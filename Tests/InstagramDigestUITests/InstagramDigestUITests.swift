@@ -413,19 +413,25 @@ final class InstagramDigestUITests: XCTestCase {
             XCTAssertNotEqual(secondValue, firstValue, "bookmark player clock must advance within 10s")
             // The chrome auto-hides 2.5s after play starts: tap the
             // BookmarkPlayerPauseZone Button to pause+reveal the HUD before
-            // tapping Saved (an .allowsHitTesting(false) chrome is not
-            // hittable). A real Button tap — no coordinate guessing, no
-            // zero-area node hit-testing. Pause first so the clock freezes
-            // and the chrome stays visible.
-            let pauseZone = app.buttons["BookmarkPlayerPauseZone"]
-            XCTAssertTrue(pauseZone.waitForExistence(timeout: 5.0),
-                          "pause zone must exist in the bookmark player")
-            pauseZone.tap()
-            let pausedExpect = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "label CONTAINS 'paused'"),
-                object: app.staticTexts["BookmarkPlayerProgress"])
-            XCTAssertEqual(XCTWaiter.wait(for: [pausedExpect], timeout: 5.0), .completed,
-                           "tapping the bookmark player must pause and reveal chrome")
+            // tapping Saved. Pause first so the clock freezes and the chrome
+            // stays visible. The tap may land while the chrome is fading
+            // (opacity animating to 0, hit-testing off): retry the tap until
+            // the clock reads paused (max ~3 tries), re-querying fresh each
+            // time.
+            var paused = false
+            for _ in 0..<3 {
+                let pauseZone = app.buttons["BookmarkPlayerPauseZone"]
+                guard pauseZone.waitForExistence(timeout: 5.0) else { break }
+                pauseZone.tap()
+                let pausedProbe = XCTNSPredicateExpectation(
+                    predicate: NSPredicate(format: "label CONTAINS 'paused'"),
+                    object: app.staticTexts["BookmarkPlayerProgress"])
+                if XCTWaiter.wait(for: [pausedProbe], timeout: 5.0) == .completed {
+                    paused = true
+                    break
+                }
+            }
+            XCTAssertTrue(paused, "tapping the bookmark player must pause and reveal chrome")
             // Plain Button tap now: the capsule is a real Button again (the
             // gesture-capsule never delivered taps in CI), so no coordinate
             // tap workaround is needed.
