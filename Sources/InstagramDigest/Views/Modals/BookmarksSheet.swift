@@ -430,33 +430,32 @@ public struct BookmarkPlayerOverlay: View {
                             Spacer()
 
                             // Bookmark Toggle (Clicking removes it from bookmarks!)
-                            Button {
-                                handleUnsave(bookmark: bookmark)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "bookmark.fill")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.28))
-                                    Text("Saved")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(.white)
-                                }
-                                .padding(.horizontal, 10)
-                                .frame(height: 32)
-                                .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.28))
-                                .clipShape(Capsule())
-                                .overlay(
-                                    Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
-                                )
+                            // Plain HStack + gesture (NOT a Button): the cell's
+                            // full-screen pause onTapGesture claims touches over
+                            // the small capsule, so Button actions never fire
+                            // in CI (tap synthesized but undelivered, 4 runs).
+                            // A high-priority gesture wins the competition and
+                            // keeps VoiceOver/label semantics via the traits.
+                            HStack(spacing: 4) {
+                                Image(systemName: "bookmark.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.28))
+                                Text("Saved")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.white)
                             }
-                            .buttonStyle(.plain)
+                            .padding(.horizontal, 10)
+                            .frame(height: 32)
+                            .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.28))
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
+                            )
                             .contentShape(Rectangle())
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("BookmarkPlayerUnsaveButton")
+                            .accessibilityAddTraits(.isButton)
                             .highPriorityGesture(TapGesture().onEnded {
-                                // UAT hardening: the cell's full-screen
-                                // onTapGesture (pause) competes for the touch;
-                                // priority keeps the unsave action delivered.
                                 handleUnsave(bookmark: bookmark)
                             })
 
