@@ -654,16 +654,17 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func handleUnsave(bookmark: BookmarkItem) {
+        // Delete the row first: the sheet gates the player on
+        // !bookmarks.isEmpty, and the overlay's own onChange(count==0)
+        // performs the teardown+close once the @Query delete lands. Driving
+        // the dismissal from the data (not from the tap handler) keeps a
+        // single close path for tap-unsave, eviction and remote sync.
+        onDeleteBookmark(bookmark)
         let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
         if remaining.isEmpty {
-            // Last bookmark: park the overlay on the empty grid BEFORE the
-            // row delete. The sheet gates the player on !bookmarks.isEmpty,
-            // so deleting first tears the overlay down with the grid branch
-            // swap and takes the nav-bar identity with it (UAT). Closing
-            // first leaves the empty-state grid mounted under no player.
-            teardownPlayer()
-            onClose()
-            onDeleteBookmark(bookmark)
+            // Last bookmark: the overlay's onChange will close it. Pause
+            // now so no audio leaks in the gap.
+            player?.pause()
             return
         }
 
