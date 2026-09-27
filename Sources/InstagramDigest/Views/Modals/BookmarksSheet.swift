@@ -453,6 +453,8 @@ public struct BookmarkPlayerOverlay: View {
                             )
                             .contentShape(Rectangle())
                             .frame(minHeight: 44)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Saved")
                             .accessibilityIdentifier("BookmarkPlayerUnsaveButton")
                             .accessibilityAddTraits(.isButton)
                             .highPriorityGesture(TapGesture().onEnded {
