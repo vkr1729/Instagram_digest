@@ -447,19 +447,23 @@ public struct BookmarkPlayerOverlay: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 56)
 
-                    // Pause-on-video-tap: the whole middle area. A real
-                    // Button (not a gesture) so delivery follows the same
-                    // control path as the HUD Buttons it sits beside — no
-                    // gesture competition anywhere in this overlay.
-                    // Plain style + fixed frame: no button-chrome animation
-                    // or zero-size layout pass that XCUITest's
-                    // scroll-to-visible cannot complete on.
+                    // Pause control: a small visible capsule Button in the
+                    // chrome VStack flow (same layout pattern as the Saved /
+                    // Share capsules below it, so it always has a real,
+                    // tappable frame). A real Button, not a gesture, so
+                    // delivery follows the same control path as its HUD
+                    // siblings — no gesture competition anywhere in this
+                    // overlay, and XCUITest can scroll to and tap it.
                     Button {
                         togglePlayPause()
                     } label: {
-                        Color.clear
-                            .frame(maxWidth: .infinity, minHeight: 300)
-                            .contentShape(Rectangle())
+                        Text("Pause")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.14))
+                            .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("BookmarkPlayerPauseZone")
