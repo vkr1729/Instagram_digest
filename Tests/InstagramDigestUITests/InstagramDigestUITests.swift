@@ -427,15 +427,13 @@ final class InstagramDigestUITests: XCTestCase {
                 object: app.otherElements["BookmarkPlayerProgress"])
             XCTAssertEqual(XCTWaiter.wait(for: [pausedExpect], timeout: 5.0), .completed,
                            "tapping the bookmark player must pause and reveal chrome")
-            // Tap by coordinate: the capsule's tap point is known-good
-            // (XCUITest hit-test passes), but SwiftUI gesture delivery to the
-            // capsule is unreliable in CI (7 runs: synthesized, never
-            // delivered). A coordinate tap goes through the same hit-test
-            // without depending on the gesture recognizer chain.
+            // Plain Button tap now: the capsule is a real Button again (the
+            // gesture-capsule never delivered taps in CI), so no coordinate
+            // tap workaround is needed.
             let unsaveButton = app.buttons["BookmarkPlayerUnsaveButton"]
-            if unsaveButton.waitForExistence(timeout: 5.0) {
-                unsaveButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            }
+            XCTAssertTrue(unsaveButton.waitForExistence(timeout: 5.0),
+                          "unsave capsule must be visible after pause")
+            unsaveButton.tap()
             // The @Query delete can lag the tap (ledger/file work precedes
             // it); poll the empty state up to 20s.
             let emptyGone = XCTNSPredicateExpectation(

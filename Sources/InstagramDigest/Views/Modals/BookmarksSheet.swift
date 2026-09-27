@@ -363,17 +363,16 @@ public struct BookmarkPlayerOverlay: View {
                             Color.black
                             if (bookmark.reelID == scrolledReelID || (scrolledReelID == nil && index == currentIndex)), let p = player {
                                 BookmarkVideoContainer(player: p)
+                                    // The pause tap lives on the VIDEO view,
+                                    // not on a full-cell Color.clear: a cell-
+                                    // wide gesture competes with (and eats)
+                                    // the HUD Buttons above it. Scoped to the
+                                    // video frame, chrome taps pause while
+                                    // Saved/Share taps reach their Buttons.
+                                    .onTapGesture {
+                                        togglePlayPause()
+                                    }
                             }
-                            // Pause-on-video-tap lives on the video layer
-                            // itself (transparent, video frame only) — never
-                            // as a full-screen overlay, so it cannot claim
-                            // touches over the HUD capsules (UAT: unsave tap
-                            // synthesized but undelivered, 6 runs).
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    togglePlayPause()
-                                }
                         }
                         .containerRelativeFrame([.horizontal, .vertical])
                         .id(bookmark.reelID)
@@ -448,37 +447,35 @@ public struct BookmarkPlayerOverlay: View {
                             Spacer()
 
                             // Bookmark Toggle (Clicking removes it from bookmarks!)
-                            // Plain HStack + gesture (NOT a Button): the cell's
-                            // full-screen pause onTapGesture claims touches over
-                            // the small capsule, so Button actions never fire
-                            // in CI (tap synthesized but undelivered). The
-                            // gesture wins the competition; the guard inside
-                            // handleUnsave makes any double-delivery a no-op.
-                            // .isButton traits keep the UAT query resolving.
-                            HStack(spacing: 4) {
-                                Image(systemName: "bookmark.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.28))
-                                Text("Saved")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundColor(.white)
+                            // Real Button (matches the feed's Save control and
+                            // the sibling Share button): five CI runs proved
+                            // the HStack+onTapGesture capsule never delivers
+                            // the tap in CI (synthesized, never delivered) —
+                            // the cell-level pause gesture wins the
+                            // competition. A Button participates in the
+                            // normal control delivery path instead.
+                            Button {
+                                handleUnsave(bookmark: bookmark)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "bookmark.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(Color(red: 1.0, green: 0.78, blue: 0.28))
+                                    Text("Saved")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.white)
+                                }
+                                .padding(.horizontal, 10)
+                                .frame(height: 32)
+                                .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.28))
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
+                                )
                             }
-                            .padding(.horizontal, 10)
-                            .frame(height: 32)
-                            .background(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.28))
-                            .clipShape(Capsule())
-                            .overlay(
-                                Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
-                            )
                             .contentShape(Rectangle())
                             .frame(minHeight: 44)
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Saved")
                             .accessibilityIdentifier("BookmarkPlayerUnsaveButton")
-                            .accessibilityAddTraits(.isButton)
-                            .onTapGesture {
-                                handleUnsave(bookmark: bookmark)
-                            }
 
                             // Share Button
                             Button {
