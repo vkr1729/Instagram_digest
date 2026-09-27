@@ -184,10 +184,14 @@ public struct BookmarksSheet: View {
                     }
                 }
 
-                // Dedicated Sequential Bookmark Player Overlay.
-                // Gated on non-empty (not on idx < count) so an unsave that
-                // shrinks the grid can't yank the player mid-playback; the
-                // overlay clamps its own index via onChange below.
+                // Dedicated Sequential Bookmark Player Overlay. A ZStack-level
+                // sibling of the content VStack (NOT inside it): it must
+                // survive the grid's empty/non-empty branch swap when the
+                // last bookmark is unsaved, or the nav-bar title view tears
+                // down with the grid and the sheet loses its navigationBar
+                // identity (UAT). Gated on non-empty (not on idx < count) so
+                // an unsave that shrinks the grid can't yank the player
+                // mid-playback; the overlay clamps its own index via onChange.
                 if let idx = activePlaybackIndex, idx >= 0, !bookmarks.isEmpty {
                     BookmarkPlayerOverlay(
                         bookmarks: bookmarks,
@@ -203,7 +207,7 @@ public struct BookmarksSheet: View {
                     )
                     .ignoresSafeArea()
                     .transition(.opacity)
-                    .zIndex(20)
+                    .zIndex(30)
                 }
             }
             .navigationTitle("Saved Bookmarks")
