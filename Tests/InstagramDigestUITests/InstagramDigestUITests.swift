@@ -393,6 +393,17 @@ final class InstagramDigestUITests: XCTestCase {
                 second = ((app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first) ?? second
             }
             XCTAssertNotEqual(second, first, "bookmark player clock must advance within 10s")
+            // The chrome auto-hides 2.5s after play starts, and togglePlayPause
+            // is also the video tap: tap the player to pause+reveal the HUD
+            // before tapping Saved (a hidden button is not hittable).
+            // Pause first so the clock freezes and the chrome stays visible.
+            let overlayClock2 = app.otherElements["BookmarkPlayerProgress"]
+            overlayClock2.tap()
+            let pausedExpect = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "value CONTAINS 'paused'"),
+                object: overlayClock2)
+            XCTAssertEqual(XCTWaiter.wait(for: [pausedExpect], timeout: 5.0), .completed,
+                           "tapping the bookmark player must pause and reveal chrome")
             let unsaveButton = app.buttons["BookmarkPlayerUnsaveButton"]
             if unsaveButton.waitForExistence(timeout: 5.0) {
                 unsaveButton.tap()
