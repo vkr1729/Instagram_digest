@@ -1134,8 +1134,17 @@ def _run_full_sync(
                                 )
                                 break
                             except extractor.InstagramBlocked as challenge_err:
-                                logger.error("Instagram challenge during shortfall top-up: %s. "
-                                             "Keeping banked reels and aborting.", challenge_err)
+                                logger.warning("Instagram challenge during shortfall top-up: %s.", challenge_err)
+                                if len(ranked_reels) >= config.MIN_DEPLOY_ITEMS:
+                                    logger.warning(
+                                        "Shortfall top-up challenge-gated, but banked %d ranked reels >= MIN_DEPLOY_ITEMS (%d). "
+                                        "Proceeding with available ranked reels.",
+                                        len(ranked_reels), config.MIN_DEPLOY_ITEMS
+                                    )
+                                    session.close()
+                                    break
+                                logger.error("Keeping banked reels and aborting because ranked count (%d) < MIN_DEPLOY_ITEMS (%d).",
+                                             len(ranked_reels), config.MIN_DEPLOY_ITEMS)
                                 _alert_sync_abort("instagram challenge-gated", str(challenge_err))
                                 try:
                                     import notifier

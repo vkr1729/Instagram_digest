@@ -211,3 +211,22 @@ def test_blocked_nodata_streak_trips_gate(monkeypatch):
     with pytest.raises(extractor.InstagramChallenged):
         extractor.check_gate()
     extractor.reset_gate()
+
+
+def test_ytdlp_stderr_trips_gate_disambiguation():
+    """Verify yt-dlp generic 404/unavailable boilerplate does not trip the gate, while real challenges do."""
+    # Generic yt-dlp 404 / unavailable boilerplate
+    generic_404 = (
+        "ERROR: [Instagram] DdrRVpXgEuT: Requested content is not available, "
+        "rate-limit reached or login required. Use --cookies-from-browser or --cookies for the authentication."
+    )
+    assert not extractor._ytdlp_stderr_trips_gate(generic_404)
+
+    # Real checkpoint
+    checkpoint = "ERROR: [Instagram] checkpoint_required: https://www.instagram.com/challenge/"
+    assert extractor._ytdlp_stderr_trips_gate(checkpoint)
+
+    # Real rate-limit 429
+    rate_limit = "ERROR: [Instagram] HTTP Error 429: rate limit exceeded"
+    assert extractor._ytdlp_stderr_trips_gate(rate_limit)
+

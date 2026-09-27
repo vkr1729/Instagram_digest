@@ -63,6 +63,10 @@ _BLOCKED_NODATA_STREAK = 0
 
 def _ytdlp_stderr_trips_gate(stderr: str) -> bool:
     low = (stderr or "").lower()
+    # yt-dlp's generic message for deleted/404/unavailable media is:
+    # "Requested content is not available, rate-limit reached or login required."
+    # Strip this boilerplate first so a single 404 does not trip the account circuit breaker.
+    low = low.replace("requested content is not available, rate-limit reached or login required", "")
     return any(t in low for t in _YTDLP_GATE_TOKENS)
 
 DEFAULT_USER_AGENT = (
@@ -824,6 +828,11 @@ class InstagramSession:
                     _obj.close() if _step != "playwright" else _obj.stop()
             except Exception:
                 pass
+        try:
+            import asyncio
+            asyncio.set_event_loop(None)
+        except Exception:
+            pass
         self._page = None
         self._context = None
         self._browser = None
@@ -1302,13 +1311,37 @@ def extract_single_reel_metadata(
             except Exception:
                 pass
 
-        # Find direct progressive MP4 stream in HTML
+        # Find direct progressive MP4 stream in HTML or embedded JSON scripts
         candidates = [
             part.replace(r"\/", "/").replace(r"\u0026", "&")
             for part in html.split('"')
             if ".mp4" in part and "scontent" in part and "BaseURL" not in part and len(part) > 120
         ]
         video_cdn_url = candidates[0] if candidates else ""
+        if not video_cdn_url:
+            try:
+                scripts = page.query_selector_all('script[type="application/json"]')
+                for s in scripts:
+                    t = s.inner_text()
+                    if 'video_versions' in t:
+                        d = json.loads(t)
+                        stack = [d]
+                        while stack:
+                            curr = stack.pop()
+                            if isinstance(curr, dict):
+                                if curr.get('video_versions') and isinstance(curr['video_versions'], list):
+                                    v0 = curr['video_versions'][0]
+                                    if isinstance(v0, dict) and v0.get('url'):
+                                        video_cdn_url = v0['url']
+                                        break
+                                stack.extend(curr.values())
+                            elif isinstance(curr, list):
+                                stack.extend(curr)
+                        if video_cdn_url:
+                            break
+            except Exception:
+                pass
+
 
         if timestamp > 0:
             return {

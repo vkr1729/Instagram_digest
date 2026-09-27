@@ -386,7 +386,8 @@ def test_deep_link_specific_reel(built_site):
         page = context.new_page()
 
         # Open with 5th reel ID
-        digest_data = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+        digest_file = config.DIGEST_BATCH_FILE if config.DIGEST_BATCH_FILE.exists() else (ROOT_DIR / "data" / "top100_digest.json")
+        digest_data = json.loads(digest_file.read_text(encoding="utf-8"))
         target_id = digest_data["items"][4]["id"]
 
         page.goto(f"file://{built_site.resolve()}?reel={target_id}")

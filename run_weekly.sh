@@ -23,6 +23,9 @@ echo "=================================================================" >> "$LO
 
 cd "$APP_DIR"
 
+# 0. Clean up any orphaned browser processes from previous runs
+pkill -f "chrome-headless-shell.*ms-playwright" 2>/dev/null || true
+
 # 1. Refresh cookies from Chrome if exporter is available
 if [ -f "cookie_exporter.py" ]; then
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Refreshing Chrome cookies..." >> "$LOG_FILE"
