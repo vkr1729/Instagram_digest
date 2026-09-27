@@ -378,6 +378,17 @@ final class InstagramDigestUITests: XCTestCase {
         // landed and the UI settled).
         let saveButton = app.buttons["SaveBookmarkButton"]
         XCTAssertTrue(saveButton.waitForExistence(timeout: 8.0))
+        // Known-state start (same pattern as testBottomHudActions): a prior
+        // test in this run may have left this reel saved, in which case the
+        // tap below would UNSAVE (no sheet row appears and the rest of the
+        // test vacuously passes while asserting nothing). Normalize first.
+        if saveButton.label.contains("Saved") {
+            saveButton.tap()
+            let unsaved = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "label CONTAINS 'Save' AND NOT label CONTAINS 'Saved'"),
+                object: saveButton)
+            _ = XCTWaiter.wait(for: [unsaved], timeout: 3.0)
+        }
         saveButton.tap()
         let ownerKeyAlert = app.alerts["Link Cloudflare Owner Key"]
         if ownerKeyAlert.waitForExistence(timeout: 2.0) {
