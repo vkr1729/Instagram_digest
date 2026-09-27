@@ -380,7 +380,17 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
         let firstItem = app.buttons["BookmarkGridItem_0"]
         if firstItem.waitForExistence(timeout: 5.0) {
-            firstItem.tap()
+            // The grid tile tap can race the thumbnail load and land on a
+            // half-bound cell (player then never opens — "Lost connection"
+            // when the query resolves mid-teardown). Retry the tile tap
+            // until the player clock actually appears (max ~3 tries).
+            var clockAppeared = false
+            for _ in 0..<3 {
+                firstItem.tap()
+                let probe = app.otherElements["BookmarkPlayerProgress"]
+                if probe.waitForExistence(timeout: 8.0) { clockAppeared = true; break }
+            }
+            XCTAssertTrue(clockAppeared, "Bookmark player must open from the grid tile")
             // Rec 1: the bookmark player must actually play — its clock
             // advances on the seeded local copy (no network in CI).
             let overlayClock = app.otherElements["BookmarkPlayerProgress"]
