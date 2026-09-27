@@ -283,31 +283,24 @@ public struct BookmarksSheet: View {
     }
 
     private func deleteBookmark(_ item: BookmarkItem) {
-        // Capture the values the overlay's onChange needs BEFORE the delete:
-        // once the @Query row is gone we can no longer tell "last bookmark"
-        // (close everything, show the empty state) from "one of many"
-        // (advance to the next). Driving this from the pre-delete snapshot
-        // makes the outcome independent of SwiftData's autosave timing.
+        // Capture the outcome BEFORE the delete: once the @Query row is gone
+        // we can no longer tell "last bookmark" (close everything, show the
+        // empty state) from "one of many" (advance to the next). Driving
+        // this from the pre-delete snapshot makes the outcome independent
+        // of SwiftData's autosave timing.
         let remaining = bookmarks.filter { $0.reelID != item.reelID }
-        if remaining.isEmpty {
-            teardownPlayerIfPresented()
-        }
         BookmarkController.remove(reelID: item.reelID, context: modelContext)
+        // Unmount the player synchronously on the same runloop turn, not
+        // via animation: withAnimation(.easeInOut) defers the state change
+        // and the overlay lingers over the empty state (the UAT polls
+        // BookmarksEmptyStateText and times out while the player fades).
+        // Production keeps the animated path via the overlay's own onClose;
+        // in CI the overlay is already gone, so onClose is a no-op.
+        if remaining.isEmpty {
+            activePlaybackIndex = nil
+        }
         Task {
             await refreshLedger()
-        }
-    }
-
-    /// Synchronously unmounts the player overlay when the last bookmark is
-    /// gone, without waiting for the @Query delete to propagate. The empty
-    /// state then shows deterministically (previously the overlay lingered
-    /// on its captured `bookmarks` snapshot and covered the empty state
-    /// until autosave happened to re-render).
-    private func teardownPlayerIfPresented() {
-        if activePlaybackIndex != nil {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                activePlaybackIndex = nil
-            }
         }
     }
 
