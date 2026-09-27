@@ -464,18 +464,6 @@ public struct BookmarkPlayerOverlay: View {
 
                     Spacer()
 
-                    // Rec 1: overlay playback clock — same pattern as the
-                    // feed's PlaybackProgress (identifier on a visible,
-                    // allowsHitTesting(false) node, "<secs> playing|paused"
-                    // in the VALUE). Zero hit-test footprint, so taps pass
-                    // through to the video/controls beneath it.
-                    Color.clear
-                        .frame(height: 1)
-                        .frame(maxWidth: .infinity)
-                        .allowsHitTesting(false)
-                        .accessibilityIdentifier("BookmarkPlayerProgress")
-                        .accessibilityValue(String(format: "%.1f %@", bookmarkCurrentTime, isPlaying ? "playing" : "paused"))
-
                     // Bottom HUD (Channel, Caption, Unsave, Share)
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
@@ -512,6 +500,20 @@ public struct BookmarkPlayerOverlay: View {
                             .contentShape(Rectangle())
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("BookmarkPlayerPauseZone")
+
+                            // Rec 1: overlay playback clock, kept INSIDE the HUD
+                            // button row (same flow as Pause/Saved/Share) so
+                            // it always has a laid-out frame XCUITest can
+                            // resolve. Contract mirrors the feed's
+                            // PlaybackProgress: "<secs> playing|paused" in
+                            // the VALUE. Hidden from sight AND from
+                            // hit-testing (sight only) — taps pass through
+                            // to the controls around it.
+                            Text(String(format: "%.1f %@", bookmarkCurrentTime, isPlaying ? "playing" : "paused"))
+                                .font(.system(size: 1))
+                                .foregroundColor(.clear)
+                                .allowsHitTesting(false)
+                                .accessibilityIdentifier("BookmarkPlayerProgress")
 
                             // Bookmark Toggle (Clicking removes it from bookmarks!)
                             // Real Button (matches the feed's Save control and

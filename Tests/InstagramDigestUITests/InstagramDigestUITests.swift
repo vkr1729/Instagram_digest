@@ -393,7 +393,7 @@ final class InstagramDigestUITests: XCTestCase {
                 let tile = app.buttons["BookmarkGridItem_0"]
                 guard tile.waitForExistence(timeout: 5.0) else { break }
                 tile.tap()
-                let probe = app.otherElements["BookmarkPlayerProgress"]
+                let probe = app.staticTexts["BookmarkPlayerProgress"]
                 if probe.waitForExistence(timeout: 8.0) { clockAppeared = true; break }
             }
             XCTAssertTrue(clockAppeared, "Bookmark player must open from the grid tile")
@@ -402,13 +402,13 @@ final class InstagramDigestUITests: XCTestCase {
             // All queries below are fresh snapshots: the player tears down
             // and rebuilds across unsave, so a cached element reference can
             // point at a dead hierarchy ("Lost connection") — re-query.
-            XCTAssertTrue(app.otherElements["BookmarkPlayerProgress"].waitForExistence(timeout: 8.0),
+            XCTAssertTrue(app.staticTexts["BookmarkPlayerProgress"].waitForExistence(timeout: 8.0),
                           "Bookmark player clock must exist")
-            let firstValue = (app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first ?? ""
+            let firstValue = (app.staticTexts["BookmarkPlayerProgress"].label.components(separatedBy: " ").first) ?? ""
             let start = Date()
             var secondValue = firstValue
             while secondValue == firstValue, Date().timeIntervalSince(start) < 10.0 {
-                secondValue = ((app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first) ?? secondValue
+                secondValue = (app.staticTexts["BookmarkPlayerProgress"].label.components(separatedBy: " ").first) ?? secondValue
             }
             XCTAssertNotEqual(secondValue, firstValue, "bookmark player clock must advance within 10s")
             // The chrome auto-hides 2.5s after play starts: tap the
@@ -422,8 +422,8 @@ final class InstagramDigestUITests: XCTestCase {
                           "pause zone must exist in the bookmark player")
             pauseZone.tap()
             let pausedExpect = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "value CONTAINS 'paused'"),
-                object: app.otherElements["BookmarkPlayerProgress"])
+                predicate: NSPredicate(format: "label CONTAINS 'paused'"),
+                object: app.staticTexts["BookmarkPlayerProgress"])
             XCTAssertEqual(XCTWaiter.wait(for: [pausedExpect], timeout: 5.0), .completed,
                            "tapping the bookmark player must pause and reveal chrome")
             // Plain Button tap now: the capsule is a real Button again (the
