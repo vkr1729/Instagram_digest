@@ -408,7 +408,17 @@ final class InstagramDigestUITests: XCTestCase {
             if unsaveButton.waitForExistence(timeout: 5.0) {
                 unsaveButton.tap()
             }
-            // After removing the last bookmark the player must close (no crash, sheet visible).
+            // Unsaving the last bookmark closes the player synchronously via
+            // onDeleteBookmark (countBefore <= 1 clears activePlaybackIndex)
+            // — but the @Query-backed grid needs a runloop to empty, so poll
+            // for the player going away instead of asserting the nav bar that
+            // is already on screen (waitForExistence returns true instantly
+            // and proves nothing).
+            let playerGone = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == false"),
+                object: app.buttons["BookmarkPlayerUnsaveButton"])
+            XCTAssertEqual(XCTWaiter.wait(for: [playerGone], timeout: 8.0), .completed,
+                           "unsaving the last bookmark must close the player")
             XCTAssertTrue(app.navigationBars["Saved Bookmarks"].waitForExistence(timeout: 5.0))
         }
         app.buttons["BookmarksDoneButton"].tap()
