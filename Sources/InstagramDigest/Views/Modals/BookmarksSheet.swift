@@ -352,13 +352,19 @@ public struct BookmarkPlayerOverlay: View {
                             if (bookmark.reelID == scrolledReelID || (scrolledReelID == nil && index == currentIndex)), let p = player {
                                 BookmarkVideoContainer(player: p)
                             }
+                            // Pause-on-video-tap lives on the video layer
+                            // itself (transparent, video frame only) — never
+                            // as a full-screen overlay, so it cannot claim
+                            // touches over the HUD capsules (UAT: unsave tap
+                            // synthesized but undelivered, 6 runs).
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    togglePlayPause()
+                                }
                         }
                         .containerRelativeFrame([.horizontal, .vertical])
                         .id(bookmark.reelID)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            togglePlayPause()
-                        }
                     }
                 }
                 .scrollTargetLayout()
