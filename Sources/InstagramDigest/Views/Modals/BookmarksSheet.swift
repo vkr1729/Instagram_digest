@@ -449,9 +449,16 @@ public struct BookmarkPlayerOverlay: View {
                                     Capsule().stroke(Color(red: 0.95, green: 0.65, blue: 0.15).opacity(0.6), lineWidth: 0.8)
                                 )
                             }
+                            .buttonStyle(.plain)
                             .contentShape(Rectangle())
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("BookmarkPlayerUnsaveButton")
+                            .highPriorityGesture(TapGesture().onEnded {
+                                // UAT hardening: the cell's full-screen
+                                // onTapGesture (pause) competes for the touch;
+                                // priority keeps the unsave action delivered.
+                                handleUnsave(bookmark: bookmark)
+                            })
 
                             // Share Button
                             Button {
