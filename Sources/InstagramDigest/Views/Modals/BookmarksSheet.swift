@@ -447,15 +447,16 @@ public struct BookmarkPlayerOverlay: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 56)
 
-                    Spacer()
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            togglePlayPause()
-                        }
-
-                    // Pause-on-video-tap lives on the Spacer above (flexible:
-                    // fills the video area, bounded by the HUD VStack below so
-                    // it can never cover the Saved/Share buttons).
+                    // Pause-on-video-tap: the whole middle area. A real
+                    // Button (not a gesture) so delivery follows the same
+                    // control path as the HUD Buttons it sits beside — no
+                    // gesture competition anywhere in this overlay.
+                    Button {
+                        togglePlayPause()
+                    } label: {
+                        Color.clear
+                    }
+                    .accessibilityIdentifier("BookmarkPlayerPauseZone")
 
                     // Rec 1: overlay playback clock — same pattern as the
                     // feed's PlaybackProgress (identifier on a visible,

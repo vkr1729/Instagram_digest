@@ -411,15 +411,16 @@ final class InstagramDigestUITests: XCTestCase {
                 secondValue = ((app.otherElements["BookmarkPlayerProgress"].value as? String ?? "").components(separatedBy: " ").first) ?? secondValue
             }
             XCTAssertNotEqual(secondValue, firstValue, "bookmark player clock must advance within 10s")
-            // The chrome auto-hides 2.5s after play starts, and togglePlayPause
-            // is also the video tap: tap the player to pause+reveal the HUD
-            // before tapping Saved (an .allowsHitTesting(false) chrome is
-            // not hittable). Pause first so the clock freezes and the chrome
-            // stays visible. Tap the app coordinate (not the 1pt clock node
-            // — hit-testing a zero-area element tears the hierarchy down
-            // mid-synthesize: "Lost connection").
-            XCTAssertTrue(app.otherElements["BookmarkPlayerProgress"].waitForExistence(timeout: 5.0))
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)).tap()
+            // The chrome auto-hides 2.5s after play starts: tap the
+            // BookmarkPlayerPauseZone Button to pause+reveal the HUD before
+            // tapping Saved (an .allowsHitTesting(false) chrome is not
+            // hittable). A real Button tap — no coordinate guessing, no
+            // zero-area node hit-testing. Pause first so the clock freezes
+            // and the chrome stays visible.
+            let pauseZone = app.buttons["BookmarkPlayerPauseZone"]
+            XCTAssertTrue(pauseZone.waitForExistence(timeout: 5.0),
+                          "pause zone must exist in the bookmark player")
+            pauseZone.tap()
             let pausedExpect = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "value CONTAINS 'paused'"),
                 object: app.otherElements["BookmarkPlayerProgress"])
