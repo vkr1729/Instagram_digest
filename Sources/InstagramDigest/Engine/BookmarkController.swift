@@ -22,12 +22,14 @@ public enum BookmarkController {
         tasks[reelID]?.cancel()
         tasks[reelID] = Task {
             await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
-            await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
             guard !Task.isCancelled else { return }
             // Same -ui-testing seam as add: the CI simulator has no owner
             // key and no Worker route — the DELETE can never succeed and
-            // only stalls teardown (UAT empty-state wait).
+            // only stalls teardown (UAT empty-state wait). The ledger
+            // reconcile is also delete-path-only work; the row delete below
+            // is what the UI waits on, so don't gate it behind I/O.
             if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
+            await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
             _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
         }
         let descriptor = FetchDescriptor<BookmarkItem>(

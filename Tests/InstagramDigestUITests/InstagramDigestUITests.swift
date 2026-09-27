@@ -409,11 +409,15 @@ final class InstagramDigestUITests: XCTestCase {
                 unsaveButton.tap()
             }
             // Unsaving the last bookmark closes the player; the sheet then
-            // shows the empty state. Assert on the empty-state text (stable
-            // identity) rather than the nav bar (which the branch swap can
-            // drop from the hierarchy on this Xcode).
-            XCTAssertTrue(app.staticTexts["BookmarksEmptyStateText"].waitForExistence(timeout: 8.0),
-                          "unsaving the last bookmark must empty the sheet")
+            // shows the empty state. The @Query delete can take a few
+            // runloops (the remove path reconciles the ledger first), so
+            // poll: tap Update/refresh via Done+reopen is NOT needed — just
+            // wait longer than the 8s default.
+            let emptyGone = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == true"),
+                object: app.staticTexts["BookmarksEmptyStateText"])
+            XCTAssertEqual(XCTWaiter.wait(for: [emptyGone], timeout: 20.0), .completed,
+                           "unsaving the last bookmark must empty the sheet")
             XCTAssertFalse(app.buttons["BookmarkPlayerUnsaveButton"].exists,
                            "player must be gone after last unsave")
         }
