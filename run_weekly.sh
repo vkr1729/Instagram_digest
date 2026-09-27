@@ -26,20 +26,28 @@ cd "$APP_DIR"
 # 0. Clean up any orphaned browser processes from previous runs
 pkill -f "chrome-headless-shell.*ms-playwright" 2>/dev/null || true
 
-# 1. Refresh cookies from Chrome if exporter is available
-if [ -f "cookie_exporter.py" ]; then
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Refreshing Chrome cookies..." >> "$LOG_FILE"
-    /usr/bin/python3 cookie_exporter.py >> "$LOG_FILE" 2>&1 || true
+# 1. Refresh cookies from Chrome if exporter is available and not in cookie-free mode
+COOKIE_FREE_RESOLVED=$(.venv/bin/python -c "import config; print('1' if config.COOKIE_FREE_MODE else '0')" 2>/dev/null || echo "1")
+
+if [ "$COOKIE_FREE_RESOLVED" = "1" ]; then
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Pipeline is in cookie-free mode; skipping Chrome cookie refresh." >> "$LOG_FILE"
+    SYNC_MODE_FLAG="--cookie-free"
+else
+    SYNC_MODE_FLAG="--use-cookies"
+    if [ -f "cookie_exporter.py" ]; then
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Refreshing Chrome cookies..." >> "$LOG_FILE"
+        /usr/bin/python3 cookie_exporter.py >> "$LOG_FILE" 2>&1 || true
+    fi
 fi
 
 # 2. Run full sync and deployment
-echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running full pipeline (sync + deploy)..." >> "$LOG_FILE"
+echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running full pipeline (sync + deploy, $SYNC_MODE_FLAG)..." >> "$LOG_FILE"
 set +e
 # B7: exit 3 means another pipeline holds the lock — retry for up to 3 hours
 # instead of skipping the week with a false failure alert.
 EXIT_CODE=3
 for attempt in 1 2 3 4 5 6; do
-    .venv/bin/python main.py --sync --deploy >> "$LOG_FILE" 2>&1
+    .venv/bin/python main.py --sync --deploy $SYNC_MODE_FLAG >> "$LOG_FILE" 2>&1
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 3 ]; then break; fi
     if [ "$attempt" -lt 6 ]; then

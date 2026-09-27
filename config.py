@@ -101,6 +101,21 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse a bool env var defensively: accepts 1/true/yes/on (case-insensitive); garbage → default."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in ("1", "true", "yes", "on"):
+        return True
+    if val in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+COOKIE_FREE_MODE = _env_bool("COOKIE_FREE_MODE", True)
+
 SMTP_PORT = _env_int("SMTP_PORT", 587, 1, 65535)
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SMTP_USERNAME", "")).strip()
 SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("SMTP_PASSWORD", "")).strip().strip('"')

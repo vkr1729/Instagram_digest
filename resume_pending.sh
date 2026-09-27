@@ -128,8 +128,15 @@ notify "Resuming interrupted Instagram Digest run in the background…"
 # digest would "deploy" stale work and contradict the never-delete claim.
 SYNC_RC=0
 if [ "${#SYNC_PROGS[@]}" -gt 0 ]; then
-    log "Resuming weekly sync (or shortfall top-up): main.py --sync --resume --deploy"
-    "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --sync --resume --deploy >>"$LOG_FILE" 2>&1
+    LATEST_SYNC="${SYNC_PROGS[-1]}"
+    IS_CF=$("$APP_DIR/.venv/bin/python" -c "import json; data=json.load(open('$LATEST_SYNC')); print('1' if data.get('cookie_free') else '0')" 2>/dev/null || echo "1")
+    if [ "$IS_CF" = "1" ]; then
+        RESUME_MODE_FLAG="--cookie-free"
+    else
+        RESUME_MODE_FLAG="--use-cookies"
+    fi
+    log "Resuming weekly sync (or shortfall top-up): main.py --sync --resume --deploy $RESUME_MODE_FLAG"
+    "$APP_DIR/.venv/bin/python" "$APP_DIR/main.py" --sync --resume --deploy $RESUME_MODE_FLAG >>"$LOG_FILE" 2>&1
     SYNC_RC=$?
     log "Sync resume exited with code $SYNC_RC."
 fi

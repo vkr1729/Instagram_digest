@@ -221,12 +221,14 @@ def _persisted_digest_week() -> str:
 
 def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
                           since_timestamp: int | None, resume: bool,
-                          banked_age_days: int, kind: str | None = None) -> bool:
+                          banked_age_days: int, kind: str | None = None,
+                          cookie_free: bool = False) -> bool:
     """Resume gate: is this checkpoint this run's banked work?
 
     B5: resume runs exist to finish banked work — a drifted anchor is still
     the same operation, never a reason to retire hours of banked scraping.
     """
+    banked_cf = bool(loaded_sync.get("cookie_free", False))
     return (
         isinstance(loaded_sync, dict)
         and loaded_sync.get("version") == 1
@@ -235,6 +237,7 @@ def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
         # A FRESH run never adopts another kind's checkpoint (P1-6); a resume
         # finishes whatever kind is banked.
         and (resume or kind is None or loaded_sync.get("kind") in (None, kind))
+        and (banked_cf == cookie_free)
         and loaded_sync.get("stage") in RESUMABLE_SYNC_STAGES
         and banked_age_days <= MAX_SYNC_RESUME_AGE_DAYS
     )
@@ -810,11 +813,13 @@ def run_full_sync(
     since_timestamp: int | None = None,
     resume: bool = False,
     kind: str | None = None,
+    cookie_free: bool = False,
+    force: bool = False,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     try:
         with _pipeline_file_lock():
-            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume, kind)
+            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume, kind, cookie_free=cookie_free, force=force)
     except PipelineBusy as exc:
         logger.error("%s; refusing to start.", exc)
         return 3
@@ -828,27 +833,26 @@ def _run_full_sync(
     since_timestamp: int | None = None,
     resume: bool = False,
     kind: str | None = None,
+    cookie_free: bool = False,
+    force: bool = False,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     run_started_ts = time.time()
     if since_timestamp is not None:
-        logger.info("Starting Instagram Digest ad-hoc sync for week %s (since_ts=%d, days_back=%d, dry_run=%s)...",
-                    week_id, since_timestamp, days_back, dry_run)
+        logger.info("Starting Instagram Digest ad-hoc sync for week %s (since_ts=%d, days_back=%d, dry_run=%s, cookie_free=%s)...",
+                    week_id, since_timestamp, days_back, dry_run, cookie_free)
     else:
-        logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s)...",
-                    week_id, days_back, dry_run)
+        logger.info("Starting Instagram Digest weekly sync for week %s (days_back=%d, dry_run=%s, cookie_free=%s)...",
+                    week_id, days_back, dry_run, cookie_free)
 
     # 0. Session pre-check FIRST (before the multi-hour agy + scrape work):
     # a dead login must abort in seconds, not after burning a full run.
-    # Skipped on dry runs (no network phase to protect) and on --resume
+    # Skipped on dry runs (no network phase to protect), on --resume
     # (banked work must always be allowed to complete; the resume path
-    # revalidates before its own network phase).
-    if not dry_run and not resume:
-        # The probe session is closed inside _probe_session_once before
-        # extraction opens its own (a live probe's asyncio loop would kill
-        # the second start). The mid-extraction caller below passes its
-        # live session — never close that one.
+    # revalidates before its own network phase), and on cookie-free runs
+    # (anonymous scraping never requires an active login).
+    if not dry_run and not resume and not cookie_free:
         session_ok = _probe_session_once()
         if not session_ok:
             # Rec #4: fast fail with an actionable alert — the exact 5-minute
@@ -940,7 +944,8 @@ def _run_full_sync(
             except ValueError:
                 banked_age_days = 10**6
             if _sync_progress_usable(loaded_sync, limit_per_creator, since_timestamp,
-                                       resume, banked_age_days, kind=kind):
+                                       resume, banked_age_days, kind=kind,
+                                       cookie_free=cookie_free):
                 sync_progress = loaded_sync
                 kind = loaded_sync.get("kind") or kind
                 # P2-17: a resume keeps the ORIGINAL run start as the weekly
@@ -964,13 +969,32 @@ def _run_full_sync(
                     )
             else:
                 logger.warning(
-                    "Ignoring sync progress %s (parameters changed or banked work is %s days old); retiring it.",
+                    "Ignoring sync progress %s (parameters changed, mode mismatch, or banked work is %s days old); retiring it.",
                     sync_read_path.name, banked_age_days,
                 )
-                _retire_sync_file(sync_read_path, "parameters changed or stale")
+                _retire_sync_file(sync_read_path, "parameters changed, mode mismatch, or stale")
     if resume and not dry_run and sync_progress is None:
         # P1-6: --resume finishes banked work; it must never become an
         # unplanned full scrape (it already skipped the probe and cooldown).
+        # --force explicitly opts into a fresh start instead (mode switches,
+        # stale checkpoints). Without it, refuse loudly so a mode switch can
+        # never silently mix half cookie / half anonymous work.
+        explicit_refusal = False
+        if sync_read_path.exists():
+            try:
+                _banked_raw = json.loads(sync_read_path.read_text(encoding="utf-8"))
+                explicit_refusal = isinstance(_banked_raw, dict) and bool(_banked_raw.get("cookie_free", False)) != bool(cookie_free)
+            except Exception:
+                explicit_refusal = False
+        if explicit_refusal and not force:
+            logger.error(
+                "Checkpoint mode mismatch: banked cookie_free=%s but active invocation is cookie_free=%s. "
+                "Refusing to mix modes. Re-run with --force for a fresh start, or resume in the banked mode.",
+                (not cookie_free), cookie_free,
+            )
+            _alert_sync_abort("checkpoint mode mismatch",
+                              f"banked cookie_free={not cookie_free} vs active cookie_free={cookie_free}; refusing to mix")
+            return 2
         logger.warning("--resume: no usable banked sync work; not starting a fresh sync.")
         return 0
     # Rec #5: fresh gate per run — the dashboard server lives for days.
@@ -993,6 +1017,7 @@ def _run_full_sync(
             "version": 1, "week_id": week_id,
             "days_back": days_back, "limit_per_creator": limit_per_creator,
             "since_timestamp": since_timestamp, "stage": stage, "kind": kind,
+            "cookie_free": cookie_free,
             # P2-17: anchor resumes to the ORIGINAL run start, not the resume
             # moment — reels posted mid-run must not fall between two runs.
             "run_started_ts": run_started_ts,
@@ -1099,7 +1124,11 @@ def _run_full_sync(
     if resume_ranked is not None:
         ranked_reels = resume_ranked
     else:
-        with extractor.InstagramSession() as session:
+        try:
+            session_ctx = extractor.InstagramSession(cookie_free=cookie_free)
+        except TypeError:
+            session_ctx = extractor.InstagramSession()
+        with session_ctx as session:
             # If resuming from shortfall_paused / deficit, skip candidate extraction and ranking completely!
             if is_shortfall_resume:
                 deficit = config.TOP_DIGEST_COUNT - len(ranked_reels)
@@ -1117,7 +1146,9 @@ def _run_full_sync(
                         "(%d/%d external slots used).",
                         tier3_target, deficit, already_external, max_external,
                     )
-                if deficit > 0 and not dry_run and tier3_target > 0:
+                if cookie_free:
+                    logger.info("Cookie-free mode active: skipping Tier 3 feed top-up on shortfall resume.")
+                elif deficit > 0 and not dry_run and tier3_target > 0:
                     logger.info("Tier 3 Top-up: discovering up to %d external reels from feed (max %d evaluations)...",
                                 tier3_target, config.MAX_FEED_EVALUATIONS)
                     try:
@@ -1135,16 +1166,16 @@ def _run_full_sync(
                                 break
                             except extractor.InstagramBlocked as challenge_err:
                                 logger.warning("Instagram challenge during shortfall top-up: %s.", challenge_err)
-                                if len(ranked_reels) >= config.MIN_DEPLOY_ITEMS:
+                                if len(ranked_reels) >= MIN_DEPLOY_ITEMS:
                                     logger.warning(
                                         "Shortfall top-up challenge-gated, but banked %d ranked reels >= MIN_DEPLOY_ITEMS (%d). "
                                         "Proceeding with available ranked reels.",
-                                        len(ranked_reels), config.MIN_DEPLOY_ITEMS
+                                        len(ranked_reels), MIN_DEPLOY_ITEMS
                                     )
                                     session.close()
                                     break
                                 logger.error("Keeping banked reels and aborting because ranked count (%d) < MIN_DEPLOY_ITEMS (%d).",
-                                             len(ranked_reels), config.MIN_DEPLOY_ITEMS)
+                                             len(ranked_reels), MIN_DEPLOY_ITEMS)
                                 _alert_sync_abort("instagram challenge-gated", str(challenge_err))
                                 try:
                                     import notifier
@@ -1246,6 +1277,7 @@ def _run_full_sync(
                                 and cached.get("since_timestamp") == since_timestamp
                                 and cached.get("days_back") == days_back
                                 and cached.get("limit_per_creator") == limit_per_creator
+                                and bool(cached.get("cookie_free", False)) == cookie_free
                             )
                             if isinstance(cached_items, list) and params_match:
                                 candidates = [
@@ -1296,7 +1328,7 @@ def _run_full_sync(
                 visited_this_run = 0
                 if remaining_sources:
                     empty_streak = 0
-                    if not _ensure_valid_session(session):
+                    if not cookie_free and not _ensure_valid_session(session):
                         if candidates or done_map:
                             _write_sync_progress("extracting", {
                                 "done": done_map, "candidates": candidates,
@@ -1318,21 +1350,41 @@ def _run_full_sync(
                             # the run; login redirects re-raise at once (dead cookies
                             # won't heal by waiting). Heartbeats keep the dashboard
                             # progress file fresh during long sleeps.
-                            for attempt in range(len(RATE_LIMIT_WAITS_MIN) + 1):
+                            # In cookie-free mode, do not sleep 20/40/80m: single retry then soft skip.
+                            waits = () if cookie_free else RATE_LIMIT_WAITS_MIN
+                            for attempt in range(len(waits) + 1):
                                 try:
-                                    return extractor.extract_creator_reels(
-                                        handle=handle,
-                                        max_reels=max_candidate_reels,
-                                        days_back=days_back,
-                                        fast_mode=True,  # Fast discovery from reels tab
-                                        session=session,
-                                    )
+                                    try:
+                                        return extractor.extract_creator_reels(
+                                            handle=handle,
+                                            max_reels=max_candidate_reels,
+                                            days_back=days_back,
+                                            fast_mode=True,  # Fast discovery from reels tab
+                                            session=session,
+                                            cookie_free=cookie_free,
+                                        )
+                                    except TypeError:
+                                        return extractor.extract_creator_reels(
+                                            handle=handle,
+                                            max_reels=max_candidate_reels,
+                                            days_back=days_back,
+                                            fast_mode=True,
+                                            session=session,
+                                        )
                                 except extractor.InstagramChallenged:
-                                    # Never backoff-sleep a challenge: re-raise
-                                    # at once for the instant-abort handler.
+                                    if cookie_free:
+                                        logger.warning("Instagram challenge on @%s in cookie-free mode; soft-skipping creator.", handle)
+                                        return []
                                     raise
                                 except extractor.InstagramBlocked as exc:
                                     msg = str(exc)
+                                    if cookie_free:
+                                        if attempt == 0:
+                                            logger.warning("Block/rate limit on @%s in cookie-free mode (%s). Retrying once...", handle, msg)
+                                            time.sleep(3.0)
+                                            continue
+                                        logger.warning("Block persists on @%s in cookie-free mode; soft-skipping creator.", handle)
+                                        return []
                                     if "/accounts/login" in msg or "login_required" in msg:
                                         raise
                                     if attempt >= len(RATE_LIMIT_WAITS_MIN):
@@ -1389,54 +1441,57 @@ def _run_full_sync(
                         # Challenge-gated accounts abort instantly (no backoff
                         # sleeps: they never heal by waiting and grinding risks
                         # the account). Plain login/rate-limit paths keep the
-                        # existing backoff behavior below.
-                        if isinstance(exc, extractor.InstagramChallenged):
-                            logger.error("Instagram challenge on @%s (%s). "
-                                         "Aborting run with banked progress.", handle, exc)
+                        # existing backoff behavior below. Cookie-free runs never
+                        # reach here: _extract_with_backoff already soft-skipped
+                        # challenged/blocked creators inline, so fall through to
+                        # the viability gate instead of aborting the roster.
+                        if cookie_free:
+                            logger.warning("Instagram block in cookie-free mode escaped backoff (%s); continuing roster.", exc)
+                        else:
+                            if isinstance(exc, extractor.InstagramChallenged):
+                                logger.error("Instagram challenge on @%s (%s). "
+                                             "Aborting run with banked progress.", handle, exc)
+                                _write_sync_progress("extracting", {
+                                    "done": done_map, "candidates": candidates,
+                                    "extraction_complete": False,
+                                    "total_sources": extraction_total,
+                                })
+                                _alert_sync_abort("instagram challenge-gated", str(exc))
+                                try:
+                                    import notifier
+                                    notifier.send_cookie_alert_email()
+                                except Exception as alert_err:
+                                    logger.warning("Failed to send cookie alert email: %s", alert_err)
+                                try:
+                                    local_server.raise_cookie_attention(
+                                        pipeline="weekly-sync",
+                                        reason="Instagram challenge gate during creator extraction",
+                                    )
+                                except Exception as popup_err:
+                                    logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                                return 2
+                            logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
                             _write_sync_progress("extracting", {
                                 "done": done_map, "candidates": candidates,
                                 "extraction_complete": False,
                                 "total_sources": extraction_total,
                             })
-                            _alert_sync_abort("instagram challenge-gated", str(exc))
-                            try:
-                                import notifier
-                                notifier.send_cookie_alert_email()
-                            except Exception as alert_err:
-                                logger.warning("Failed to send cookie alert email: %s", alert_err)
-                            try:
-                                local_server.raise_cookie_attention(
-                                    pipeline="weekly-sync",
-                                    reason="Instagram challenge gate during creator extraction",
-                                )
-                            except Exception as popup_err:
-                                logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                            if "/accounts/login" in str(exc) or "login_required" in str(exc):
+                                try:
+                                    import notifier
+                                    notifier.send_cookie_alert_email()
+                                except Exception as alert_err:
+                                    logger.warning("Failed to send cookie alert email: %s", alert_err)
+                                try:
+                                    local_server.raise_cookie_attention(
+                                        pipeline="weekly-sync",
+                                        reason="Instagram session expired during creator extraction",
+                                    )
+                                except Exception as popup_err:
+                                    logger.warning("Failed raising cookie attention popup: %s", popup_err)
+                            else:
+                                _alert_sync_abort("Instagram session blocked", str(exc))
                             return 2
-                        logger.error("Instagram blocked the session (%s). Aborting run without touching digest/site.", exc)
-                        _write_sync_progress("extracting", {
-                            "done": done_map, "candidates": candidates,
-                            "extraction_complete": False,
-                            "total_sources": extraction_total,
-                        })
-                        if "/accounts/login" in str(exc) or "login_required" in str(exc):
-                            # Cookie death in the creator path (login redirect
-                            # surfaces as InstagramBlocked, not CookieExpired):
-                            # same email + popup treatment as the feed path.
-                            try:
-                                import notifier
-                                notifier.send_cookie_alert_email()
-                            except Exception as alert_err:
-                                logger.warning("Failed to send cookie alert email: %s", alert_err)
-                            try:
-                                local_server.raise_cookie_attention(
-                                    pipeline="weekly-sync",
-                                    reason="Instagram session expired during creator extraction",
-                                )
-                            except Exception as popup_err:
-                                logger.warning("Failed raising cookie attention popup: %s", popup_err)
-                        else:
-                            _alert_sync_abort("Instagram session blocked", str(exc))
-                        return 2
 
                     empty_total = sum(1 for was_empty in done_map.values() if was_empty)
                     if (len(candidates) < MIN_CANDIDATE_RATIO * expected_total
@@ -1471,6 +1526,7 @@ def _run_full_sync(
                             "since_timestamp": since_timestamp,
                             "days_back": days_back,
                             "limit_per_creator": limit_per_creator,
+                            "cookie_free": cookie_free,
                             "written_at": time.time(),
                             "candidates": candidates,
                         })
@@ -1515,14 +1571,25 @@ def _run_full_sync(
                             break
                         try:
                             logger.info("Tier 2: Extracting reels for recommended @%s (%s)...", h, rec.get("category", ""))
-                            rec_reels = extractor.extract_creator_reels(
-                                handle=h,
-                                max_reels=8,
-                                days_back=days_back,
-                                fast_mode=True,
-                                session=session,
-                                include_pinned=True,
-                            )
+                            try:
+                                rec_reels = extractor.extract_creator_reels(
+                                    handle=h,
+                                    max_reels=8,
+                                    days_back=days_back,
+                                    fast_mode=True,
+                                    session=session,
+                                    include_pinned=True,
+                                    cookie_free=cookie_free,
+                                )
+                            except TypeError:
+                                rec_reels = extractor.extract_creator_reels(
+                                    handle=h,
+                                    max_reels=8,
+                                    days_back=days_back,
+                                    fast_mode=True,
+                                    session=session,
+                                    include_pinned=True,
+                                )
                             done_map[h] = not rec_reels
                             visited_this_run += 1
                             for r in rec_reels:
@@ -1531,6 +1598,12 @@ def _run_full_sync(
                             mu, sigma, floor = CREATOR_PAUSE
                             extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
                         except extractor.InstagramBlocked as challenge_err:
+                            if cookie_free:
+                                logger.warning("Tier 2 challenge on recommended @%s in cookie-free mode (%s); soft-skipping.",
+                                               h, challenge_err)
+                                done_map[h] = True
+                                visited_this_run += 1
+                                continue
                             # Same instant-abort as Tier 1: a gated account
                             # must stop now, not grind 50 more creators.
                             logger.error("Instagram challenge on recommended @%s (%s). "
@@ -1616,10 +1689,10 @@ def _run_full_sync(
                     logger.info("Enriching shortlist of %d reels via media-info API first (cutoff_ts=%s)...", len(shortlist), cutoff_ts)
 
                 api_prefiltered: list[dict[str, Any]] = todo
-                if todo and not dry_run:
+                if todo and not dry_run and not cookie_free:
                     try:
                         api_prefiltered = extractor.enrich_candidates_via_media_api(
-                            todo, cutoff_timestamp=cutoff_ts)
+                            todo, cutoff_timestamp=cutoff_ts, cookie_free=cookie_free)
                         logger.info("media-info pre-filter: %d/%d shortlist reels fresh with full metadata.",
                                     len(api_prefiltered), len(todo))
                     except extractor.InstagramBlocked as challenge_err:
@@ -1654,6 +1727,8 @@ def _run_full_sync(
                     except Exception as api_err:
                         logger.warning("media-info pre-filter failed, falling back to per-reel: %s", api_err)
                         api_prefiltered = todo
+                elif todo and cookie_free:
+                    logger.info("Cookie-free mode active: media-info API bypassed; enriching %d shortlist reels via browser.", len(todo))
                 for r in api_prefiltered:
                     if r.get("id") and (r.get("timestamp") or enriched_by_id.get(r.get("id"), {}).get("timestamp")):
                         enriched_by_id[r["id"]] = r
@@ -1672,7 +1747,10 @@ def _run_full_sync(
                             mu, sigma, floor = ENRICH_PAUSE
                             if not dry_run:
                                 extractor.human_pause(mu=mu, sigma=sigma, floor=floor)
-                            m = extractor.extract_single_reel_metadata(r, session=session)
+                            try:
+                                m = extractor.extract_single_reel_metadata(r, session=session, cookie_free=cookie_free)
+                            except TypeError:
+                                m = extractor.extract_single_reel_metadata(r, session=session)
                             if not m:
                                 return None
                             # Pinned reels are exempt from cutoff date
@@ -1680,6 +1758,8 @@ def _run_full_sync(
                                 return None
                             return m
                         except extractor.InstagramBlocked:
+                            if cookie_free:
+                                return None
                             raise
                         except Exception as exc:
                             logger.debug("Enrichment error on reel %s: %s", r.get("id"), exc)
@@ -1701,6 +1781,9 @@ def _run_full_sync(
                                         "recommended_creators": recommended_creators,
                                     })
                         except extractor.InstagramBlocked as challenge_err:
+                            if cookie_free:
+                                logger.warning("Instagram challenge on reel in cookie-free mode: %s; continuing.", challenge_err)
+                                continue
                             challenged_reel = challenge_err
                             break
                         except Exception as exc:
@@ -1769,7 +1852,9 @@ def _run_full_sync(
                         "remainder stays a deficit for resume.",
                         tier3_target, deficit, config.MAX_EXTERNAL_SHARE * 100,
                     )
-                if deficit > 0 and not dry_run and tier3_target > 0:
+                if cookie_free:
+                    logger.info("Cookie-free mode active: skipping Tier 3 feed discovery.")
+                elif deficit > 0 and not dry_run and tier3_target > 0:
                     logger.info(
                         "Channels produced %d reels (%d below target %d). Discovering up to %d external high-signal reels from feed (eval cap %d)...",
                         len(ranked_reels), deficit, config.TOP_DIGEST_COUNT,
@@ -1933,11 +2018,19 @@ def _run_full_sync(
             # Download if not already cached
             if not local_video_path.exists():
                 logger.info("Downloading reel [%s] #%02d @%s: %s", reel_id, rank, handle, reel["url"])
-                success = extractor.download_reel_video(
-                    reel["url"],
-                    local_video_path,
-                    video_cdn_url=reel.get("video_cdn_url"),
-                )
+                try:
+                    success = extractor.download_reel_video(
+                        reel["url"],
+                        local_video_path,
+                        video_cdn_url=reel.get("video_cdn_url"),
+                        use_cookies=not cookie_free,
+                    )
+                except TypeError:
+                    success = extractor.download_reel_video(
+                        reel["url"],
+                        local_video_path,
+                        video_cdn_url=reel.get("video_cdn_url"),
+                    )
                 if not success:
                     logger.warning("Skipping upload for failed download %s", reel_id)
                     return (reel_id, None)
@@ -2846,7 +2939,24 @@ def main() -> int:
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
     parser.add_argument("--lock-status", action="store_true", help="Show which process holds data/.pipeline.lock, if any (read-only)")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--cookie-free", action="store_true", default=None,
+                            help="Force cookie-free anonymous operation (no cookies or account login used)")
+    mode_group.add_argument("--use-cookies", action="store_true", default=None,
+                            help="Force authenticated cookie-based operation (using cookies.json/cookies.txt)")
     args = parser.parse_args()
+
+    # Resolve cookie-free mode: CLI flag > config.COOKIE_FREE_MODE
+    if args.cookie_free:
+        cookie_free = True
+        mode_source = "--cookie-free"
+    elif args.use_cookies:
+        cookie_free = False
+        mode_source = "--use-cookies"
+    else:
+        cookie_free = bool(config.COOKIE_FREE_MODE)
+        mode_source = f"config.COOKIE_FREE_MODE (default={config.COOKIE_FREE_MODE})"
+    logger.info("Pipeline mode: %s (source: %s)", "cookie-free" if cookie_free else "cookie-based", mode_source)
 
     # Lock-holder readout: read-only, never touches the lock itself.
     if args.lock_status:
@@ -2864,6 +2974,11 @@ def main() -> int:
 
     # Expand mode
     if args.expand != 0:
+        if cookie_free:
+            logger.error("--expand (feed discovery) requires an authenticated account. Disable cookie-free mode to expand.")
+            _alert_sync_abort("expand refused (cookie-free)",
+                              "--expand feed discovery requires an authenticated account")
+            return 2
         if args.expand < 0:
             parser.error("--expand requires a positive reel count")
         return run_expand(target_count=args.expand, deploy=args.deploy)
@@ -2880,6 +2995,11 @@ def main() -> int:
 
     # Sync following on-demand
     if args.sync_following:
+        if cookie_free:
+            logger.error("Following sync requires an authenticated account. Disable cookie-free mode or omit --sync-following.")
+            _alert_sync_abort("sync-following refused (cookie-free)",
+                              "--sync-following requires an authenticated account")
+            return 2
         extractor.sync_following_accounts(force=True)
         return 0
 
@@ -2923,15 +3043,17 @@ def main() -> int:
     # Default to running full sync (or when --sync or --ad-hoc is specified).
     # The follow-cooldown guard refuses fresh-account follow-then-scrape
     # bursts unless --force overrides it. Resumes are exempt: banked work
-    # must always be allowed to complete.
-    if not args.resume and not _check_follow_cooldown(force=args.force):
-        _alert_sync_abort(
-            "follow cooldown active",
-            "recent mass-follow burst; refusing scrape. Re-run with --force to override.")
-        return 2
-    if _trust_warming_active():
-        logger.info("Trust warming active: doubling creator/enrich pacing for the young account.")
-    _apply_trust_warming_pacing()
+    # must always be allowed to complete. In cookie-free mode, there is no
+    # account identity to protect, so cooldown and trust warming are bypassed.
+    if not cookie_free:
+        if not args.resume and not _check_follow_cooldown(force=args.force):
+            _alert_sync_abort(
+                "follow cooldown active",
+                "recent mass-follow burst; refusing scrape. Re-run with --force to override.")
+            return 2
+        if _trust_warming_active():
+            logger.info("Trust warming active: doubling creator/enrich pacing for the young account.")
+        _apply_trust_warming_pacing()
     return run_full_sync(
         dry_run=args.dry_run,
         deploy=args.deploy,
@@ -2940,6 +3062,8 @@ def main() -> int:
         since_timestamp=since_ts,
         resume=args.resume,
         kind="ad-hoc" if args.ad_hoc else "weekly",
+        cookie_free=cookie_free,
+        force=args.force,
     )
 
 

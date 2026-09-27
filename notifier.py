@@ -409,8 +409,12 @@ def send_digest_email(
         return False
 
 
-def send_cookie_alert_email(retrigger_url: str = "http://localhost:8080/retrigger") -> bool:
+def send_cookie_alert_email(retrigger_url: str = "http://localhost:8080/retrigger", cookie_free: bool | None = None) -> bool:
     """Send high-priority alert email when Instagram session cookies are expired."""
+    is_cf = config.COOKIE_FREE_MODE if cookie_free is None else cookie_free
+    if is_cf:
+        logger.info("Pipeline is in cookie-free mode. Suppressing cookie alert email.")
+        return False
     if not is_email_configured():
         logger.info("SMTP email notifications are not configured. Skipping cookie alert email.")
         return False

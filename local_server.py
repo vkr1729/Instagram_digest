@@ -136,9 +136,11 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
         _SYNC_STATE["last_result"] = None
 
     def _worker():
+        cookie_free = bool(config.COOKIE_FREE_MODE)
         try:
-            logger.info("Background sync thread started: refreshing Chrome cookies...")
-            if not refresh_cookies_or_abort(pipeline="ad-hoc-sync"):
+            if cookie_free:
+                logger.info("Background sync thread started in cookie-free mode; skipping Chrome cookie refresh.")
+            elif not refresh_cookies_or_abort(pipeline="ad-hoc-sync"):
                 with _SYNC_LOCK:
                     _SYNC_STATE["is_running"] = False
                     _SYNC_STATE["status"] = "failed"
@@ -146,12 +148,15 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 return
 
             # P1-10: dashboard entry points honor the same guards as the CLI.
-            if not main_module._check_follow_cooldown():
-                with _SYNC_LOCK:
-                    _SYNC_STATE.update(is_running=False, status="failed",
-                                       last_error="follow cooldown active (recent mass-follow burst)")
-                return
-            main_module._apply_trust_warming_pacing()
+            # Cookie-free runs carry no account identity: no cooldown, no
+            # trust-warming multiplier (same bypass as main.py).
+            if not cookie_free:
+                if not main_module._check_follow_cooldown():
+                    with _SYNC_LOCK:
+                        _SYNC_STATE.update(is_running=False, status="failed",
+                                           last_error="follow cooldown active (recent mass-follow burst)")
+                    return
+                main_module._apply_trust_warming_pacing()
             last_run = main_module.get_last_run_info()
             since_ts = None
             days_back = 7
@@ -179,6 +184,7 @@ def trigger_adhoc_sync_task(deploy: bool = False) -> dict[str, Any]:
                 since_timestamp=since_ts,
                 kind="ad-hoc",
                 resume=any(config.DATA_DIR.glob("sync_progress_*.json")),
+                cookie_free=cookie_free,
             )
             with _SYNC_LOCK:
                 _SYNC_STATE["is_running"] = False
@@ -251,9 +257,11 @@ def trigger_sync_resume_task(deploy: bool = True) -> dict[str, Any]:
         _SYNC_STATE["last_result"] = None
 
     def _worker():
+        cookie_free = bool(config.COOKIE_FREE_MODE)
         try:
-            logger.info("Background resume sync thread started: refreshing Chrome cookies...")
-            if not refresh_cookies_or_abort(pipeline="weekly-sync-resume"):
+            if cookie_free:
+                logger.info("Background resume thread started in cookie-free mode; skipping Chrome cookie refresh.")
+            elif not refresh_cookies_or_abort(pipeline="weekly-sync-resume"):
                 with _SYNC_LOCK:
                     _SYNC_STATE["is_running"] = False
                     _SYNC_STATE["status"] = "failed"
@@ -261,13 +269,16 @@ def trigger_sync_resume_task(deploy: bool = True) -> dict[str, Any]:
                 return
 
             # P1-10: resumes skip the follow cooldown per CLI policy, but
-            # still honor trust-warming pacing.
-            main_module._apply_trust_warming_pacing()
+            # still honor trust-warming pacing (cookie mode only; anonymous
+            # runs have no account to warm).
+            if not cookie_free:
+                main_module._apply_trust_warming_pacing()
             ret = main_module.run_full_sync(
                 dry_run=False,
                 deploy=deploy,
                 resume=True,
                 kind="weekly",
+                cookie_free=cookie_free,
             )
             with _SYNC_LOCK:
                 _SYNC_STATE["is_running"] = False
@@ -451,6 +462,13 @@ def trigger_expand_task(count: int = 100, deploy: bool = True) -> dict[str, Any]
     def _worker():
         try:
             logger.info("Background expand thread started for +%d reels...", count)
+            if bool(config.COOKIE_FREE_MODE):
+                with _EXPAND_LOCK:
+                    _EXPAND_STATE["is_running"] = False
+                    _EXPAND_STATE["status"] = "failed"
+                    _EXPAND_STATE["last_error"] = "expand requires an authenticated account; disable cookie-free mode"
+                logger.error("Expand refused: feed discovery requires an authenticated account (cookie-free mode).")
+                return
             if not refresh_cookies_or_abort(pipeline="expand"):
                 with _EXPAND_LOCK:
                     _EXPAND_STATE["is_running"] = False
@@ -629,7 +647,7 @@ def _dashboard_url() -> str:
     return f"http://127.0.0.1:{_PUBLIC_PORT}/dashboard"
 
 
-def raise_cookie_attention(reason: str, pipeline: str) -> bool:
+def raise_cookie_attention(reason: str, pipeline: str, cookie_free: bool | None = None) -> bool:
     """Flag a cookie death for the dashboard banner and pop a browser tab.
 
     Called next to the cookie-alert email sites so an owner at the laptop sees
@@ -638,6 +656,10 @@ def raise_cookie_attention(reason: str, pipeline: str) -> bool:
     plus the persistent banner. Pops at most once per pending flag so repeated
     runs do not stack tabs. Returns True when a popup was attempted.
     """
+    is_cf = config.COOKIE_FREE_MODE if cookie_free is None else cookie_free
+    if is_cf:
+        logger.info("Pipeline is in cookie-free mode. Suppressing cookie attention popup.")
+        return False
     if cookie_attention_state() is not None:
         logger.info("Cookie attention already pending; skipping repeat popup.")
         return False
@@ -1959,6 +1981,15 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/sync-following":
             logger.info("On-demand following sync triggered via dashboard API.")
+            if config.COOKIE_FREE_MODE:
+                resp = {"success": False, "error": "Following sync requires an authenticated account. Server is in cookie-free mode."}
+                body = json.dumps(resp).encode("utf-8")
+                self.send_response(HTTPStatus.BAD_REQUEST)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
 
             global _FOLLOWING_RUNNING
             with _FOLLOWING_LOCK:

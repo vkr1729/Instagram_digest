@@ -29,6 +29,9 @@ $PY - <<'EOF' || fail "no Instagram login session in Chrome (log into instagram.
 import json, sys
 sys.path.insert(0, ".")
 import config
+if config.COOKIE_FREE_MODE:
+    print("ok: cookie-free mode active; skipping Chrome session check")
+    sys.exit(0)
 try:
     cdata = json.loads((config.DATA_DIR / "cookies.json").read_text())
 except Exception as e:

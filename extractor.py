@@ -237,8 +237,10 @@ def _cookie_python() -> str:
     return "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
 
 
-def get_cookie_args() -> list[str]:
+def get_cookie_args(cookie_free: bool = False) -> list[str]:
     """Determine best available cookie argument: cookies.txt or browser cookies."""
+    if cookie_free:
+        return []
     cookies_txt = config.ROOT_DIR / "cookies.txt"
     if cookies_txt.exists():
         return ["--cookies", str(cookies_txt)]
@@ -757,7 +759,8 @@ class InstagramSession:
 
     RECYCLE_EVERY = 40
 
-    def __init__(self) -> None:
+    def __init__(self, cookie_free: bool = False, **_ignored: Any) -> None:
+        self.cookie_free = cookie_free
         self._playwright = None
         self._browser = None
         self._context = None
@@ -778,7 +781,7 @@ class InstagramSession:
         self.close()
 
     def _inject_cookies(self) -> None:
-        if not self._context:
+        if self.cookie_free or not self._context:
             return
         cookies_file = config.DATA_DIR / "cookies.json"
         if cookies_file.exists():
@@ -810,7 +813,8 @@ class InstagramSession:
             self._context.add_init_script(_stealth_script_for_locale(self._locale))
         except Exception:
             pass
-        self._inject_cookies()
+        if not self.cookie_free:
+            self._inject_cookies()
         self._page = self._context.new_page()
         self._nav_count = 0
 
@@ -901,12 +905,14 @@ def discover_creator_reel_urls(
     max_reels: int = 10,
     session: InstagramSession | None = None,
     include_pinned: bool = False,
+    cookie_free: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Use headless Playwright to load creator's reels tab and extract recent reel URLs + view counts.
     Immune to broken yt-dlp profile extractors and API 429 blocks.
     """
-    check_gate()
+    if not cookie_free:
+        check_gate()
     clean_handle = handle.lstrip("@").strip().lower()
     target_url = f"https://www.instagram.com/{clean_handle}/reels/"
     reels_found: list[dict[str, Any]] = []
@@ -917,7 +923,7 @@ def discover_creator_reel_urls(
         if session:
             page = session.get_page()
         else:
-            local_session = InstagramSession()
+            local_session = InstagramSession(cookie_free=cookie_free)
             page = local_session.get_page()
 
         page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
@@ -1020,6 +1026,7 @@ def fetch_media_info_batch(
     shortcodes: list[str],
     pause_secs: float = 2.0,
     timeout: int = 15,
+    cookie_free: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Fetch full metadata for reel shortcodes via the media/{id}/info/ API.
 
@@ -1029,6 +1036,8 @@ def fetch_media_info_batch(
     rendering a page. 429s are honored with Retry-After backoff; failures
     return no entry so callers fall back to per-reel extraction.
     """
+    if cookie_free:
+        return {}
     check_gate()
     try:
         import requests as _rq
@@ -1147,6 +1156,7 @@ def fetch_media_info_batch(
 def enrich_candidates_via_media_api(
     candidates: list[dict[str, Any]],
     cutoff_timestamp: int = 0,
+    cookie_free: bool = False,
 ) -> list[dict[str, Any]]:
     """Batch-enrich discovery candidates via media/{id}/info/ (no browser).
 
@@ -1156,11 +1166,15 @@ def enrich_candidates_via_media_api(
     load. Entries the API misses keep their discovery fields for the
     per-reel fallback path. Pinned reels bypass the cutoff.
     Raises InstagramChallenged when the account is gated (callers abort).
+    In cookie-free mode the authenticated endpoint is never touched: the
+    input list is returned unchanged for the per-reel browser path.
     """
     if not candidates:
         return []
+    if cookie_free:
+        return list(candidates)
     shortcodes = [str(c.get("id") or "") for c in candidates if c.get("id")]
-    info_map = fetch_media_info_batch(shortcodes)
+    info_map = fetch_media_info_batch(shortcodes, cookie_free=cookie_free)
     if not info_map:
         logger.warning("media-info batch returned nothing; keeping candidates for per-reel fallback.")
         return list(candidates)
@@ -1193,6 +1207,8 @@ def extract_single_reel_metadata(
     reel_info: dict[str, Any],
     session: InstagramSession | None = None,
     page: Any = None,
+    cookie_free: bool = False,
+    **_ignored: Any,
 ) -> dict[str, Any] | None:
     """
     Extract full metadata and direct CDN progressive MP4 stream for an individual reel.
@@ -1201,7 +1217,8 @@ def extract_single_reel_metadata(
     reel_url = reel_info["url"]
     creator_handle = reel_info["creator_handle"]
     shortcode = reel_info.get("id", "")
-    check_gate()
+    if not cookie_free:
+        check_gate()
 
     # 1. Attempt high-speed Playwright extraction (bypasses broken yt-dlp & login walls)
     local_session = None
@@ -1211,7 +1228,7 @@ def extract_single_reel_metadata(
         elif session:
             page = session.get_page()
         else:
-            local_session = InstagramSession()
+            local_session = InstagramSession(cookie_free=cookie_free)
             page = local_session.get_page()
 
         page.goto(reel_url, wait_until="domcontentloaded", timeout=18000)
@@ -1367,12 +1384,13 @@ def extract_single_reel_metadata(
         if local_session:
             local_session.close()
 
-    # 2. Fallback to yt-dlp with cookies
-    try:
-        check_gate()
-    except InstagramChallenged:
-        raise
-    cookie_args = get_cookie_args()
+    # 2. Fallback to yt-dlp with cookies (or cookieless if cookie_free)
+    if not cookie_free:
+        try:
+            check_gate()
+        except InstagramChallenged:
+            raise
+    cookie_args = get_cookie_args(cookie_free=cookie_free)
     cmd = [
         "yt-dlp",
         *cookie_args,
@@ -1385,7 +1403,7 @@ def extract_single_reel_metadata(
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
-        if _ytdlp_stderr_trips_gate(res.stderr or ""):
+        if not cookie_free and _ytdlp_stderr_trips_gate(res.stderr or ""):
             trip_gate(f"yt-dlp metadata signal on {reel_url}")
         if res.returncode == 0:
             data = json.loads(res.stdout)
@@ -1439,6 +1457,7 @@ def extract_creator_reels(
     fast_mode: bool = False,
     session: InstagramSession | None = None,
     include_pinned: bool = False,
+    cookie_free: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Extract recent reels and metrics for a creator:
@@ -1446,18 +1465,25 @@ def extract_creator_reels(
     2. Fetches metadata and CDN streams (or fast_mode for dry-runs).
     3. Filters to posts within days_back window.
     """
-    check_gate()
+    if cookie_free:
+        use_cookies = False
+    else:
+        check_gate()
     clean_handle = handle.lstrip("@").strip()
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     cutoff_timestamp = int(cutoff_dt.timestamp())
 
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {"cookie_free": cookie_free}
     if session is not None:
         kwargs["session"] = session
     if include_pinned:
         kwargs["include_pinned"] = include_pinned
     try:
-        reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, **kwargs)
+        try:
+            reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, **kwargs)
+        except TypeError:
+            kwargs.pop("cookie_free", None)
+            reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels, **kwargs)
     except TypeError:
         reels_info = discover_creator_reel_urls(clean_handle, max_reels=max_reels)
     if not reels_info:
@@ -1484,9 +1510,15 @@ def extract_creator_reels(
             continue
 
         if session is not None:
-            meta = extract_single_reel_metadata(info, session=session)
+            try:
+                meta = extract_single_reel_metadata(info, session=session, cookie_free=cookie_free)
+            except TypeError:
+                meta = extract_single_reel_metadata(info, session=session)
         else:
-            meta = extract_single_reel_metadata(info)
+            try:
+                meta = extract_single_reel_metadata(info, cookie_free=cookie_free)
+            except TypeError:
+                meta = extract_single_reel_metadata(info)
         if not meta:
             continue
 
@@ -1540,6 +1572,8 @@ def download_reel_video(
     session: InstagramSession | None = None,
     use_cookies: bool = True,
     max_retries: int = 3,
+    cookie_free: bool = False,
+    **_ignored: Any,
 ) -> bool:
     """
     Download a single reel video to output_path.
@@ -1548,6 +1582,9 @@ def download_reel_video(
     3. Falls back to yt-dlp if direct stream fails.
     """
     import requests
+
+    if cookie_free:
+        use_cookies = False
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_suffix(".tmp.mp4")
@@ -1650,7 +1687,8 @@ def download_reel_video(
                 err_snippet = (res.stderr or "").strip()[-250:]
                 # P2-28: login/rate-limit signals trip the gate so every
                 # later fallback refuses instead of grinding a gated account.
-                if _ytdlp_stderr_trips_gate(res.stderr or ""):
+                # In cookie-free / anonymous mode, never trip the account gate.
+                if use_cookies and _ytdlp_stderr_trips_gate(res.stderr or ""):
                     trip_gate(f"yt-dlp signal on {reel_url}: {err_snippet[:80]}")
                 logger.warning("yt-dlp attempt %d failed (code %d): %s", attempt, res.returncode, err_snippet)
         except Exception as exc:

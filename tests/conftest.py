@@ -62,6 +62,7 @@ def _isolate_test_environment(monkeypatch, request):
     monkeypatch.setattr(config, "SMTP_USER", "")
     monkeypatch.setattr(config, "SMTP_PASS", "")
     monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "")
+    monkeypatch.setattr(config, "COOKIE_FREE_MODE", False)
 
     # For any test outside the dedicated email unit tests, mock notifier methods
     # to guarantee zero network traffic or external side effects.

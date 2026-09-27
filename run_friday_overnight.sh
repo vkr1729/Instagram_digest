@@ -75,7 +75,12 @@ else
 fi
 
 log "=== Friday evening chain starting: Instagram Digest first ==="
-prompt_chrome_check
+COOKIE_FREE_RESOLVED=$("$APP_DIR/.venv/bin/python" -c "import config; print('1' if config.COOKIE_FREE_MODE else '0')" 2>/dev/null || echo "1")
+if [ "$COOKIE_FREE_RESOLVED" = "1" ]; then
+    log "Pipeline is in cookie-free mode; skipping Chrome login prompt."
+else
+    prompt_chrome_check
+fi
 
 set +e
 "$APP_DIR/run_weekly.sh"

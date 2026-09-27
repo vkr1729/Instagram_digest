@@ -60,3 +60,6 @@ FINAL_*.md
 # iOS Build artifacts
 *.ipa
 build_ipa/
+
+# Tooling
+.commandcode/
