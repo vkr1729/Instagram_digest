@@ -198,13 +198,7 @@ public struct BookmarksSheet: View {
                             }
                         },
                         onDeleteBookmark: { item in
-                            let countBefore = bookmarks.count
                             deleteBookmark(item)
-                            if countBefore <= 1 {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    activePlaybackIndex = nil
-                                }
-                            }
                         }
                     )
                     .ignoresSafeArea()
@@ -657,11 +651,11 @@ public struct BookmarkPlayerOverlay: View {
 
     private func handleUnsave(bookmark: BookmarkItem) {
         let remaining = bookmarks.filter { $0.reelID != bookmark.reelID }
-        // Delete FIRST so the @Query grid is already empty when the player
-        // closes below — otherwise the sheet's `!bookmarks.isEmpty` gate
-        // stays true and the overlay never dismisses (UAT: playerGone poll).
-        onDeleteBookmark(bookmark)
         if remaining.isEmpty {
+            // Last bookmark: delete the row, then close the player outright.
+            // The sheet gates the overlay on !bookmarks.isEmpty, so the row
+            // must be gone when the player dismisses (UAT: playerGone poll).
+            onDeleteBookmark(bookmark)
             teardownPlayer()
             onClose()
             return
