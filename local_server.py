@@ -1755,6 +1755,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                         "name": s.get("name", h),
                         "category": s.get("category", "entertainment"),
                         "is_blacklisted": (h in blacklist),
+                        "is_favorite": s.get("favorite") is True,
                     }
 
             for bh in blacklist:
@@ -1922,6 +1923,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                             "name": name,
                             "category": cat,
                             "enabled": True,
+                            **({"favorite": True} if payload.get("favorite") is True else {}),
                         })
                         try:
                             _atomic_write_json(config.SOURCES_FILE, sources)
@@ -1930,6 +1932,10 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                             logger.error("Error writing sources.json: %s", e)
                     else:
                         existing[handle]["enabled"] = True
+                        if payload.get("favorite") is True:
+                            existing[handle]["favorite"] = True
+                        elif "favorite" in payload:
+                            existing[handle].pop("favorite", None)
                         try:
                             _atomic_write_json(config.SOURCES_FILE, sources)
                         except Exception:
@@ -2221,6 +2227,21 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                                 "category": "entertainment",
                                 "enabled": True
                             })
+                elif action == "favorite":
+                    for s in sources:
+                        if s.get("handle", "").lower().replace("@", "") in clean_handles:
+                            s["favorite"] = True
+                elif action == "unfavorite":
+                    for s in sources:
+                        if s.get("handle", "").lower().replace("@", "") in clean_handles:
+                            s.pop("favorite", None)
+
+                matched = sum(1 for s in sources
+                              if s.get("handle", "").lower().replace("@", "") in clean_handles) \
+                    if action in ("favorite", "unfavorite") else len(clean_handles)
+                if action in ("favorite", "unfavorite") and matched == 0:
+                    self.send_error(HTTPStatus.BAD_REQUEST, "No matching channels for favorite action")
+                    return
 
                 b_data["creators"] = sorted(list(blacklist))
                 try:
@@ -2235,7 +2256,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             resp = {
                 "success": True,
                 "action": action,
-                "modified_count": len(clean_handles),
+                "modified_count": matched,
                 "total_blacklisted": len(b_data["creators"]),
                 "total_sources": len(sources),
             }

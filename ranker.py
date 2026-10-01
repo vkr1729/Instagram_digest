@@ -96,6 +96,19 @@ def get_blacklisted_creators() -> set[str]:
     return set()
 
 
+def get_favorite_handles(sources: list[dict[str, Any]] | None) -> set[str]:
+    """Handles explicitly marked "favorite": true in sources (lowercase).
+
+    Strict `is True`: a manual edit of `"favorite": "false"` (truthy string)
+    must never promote a creator.
+    """
+    favs: set[str] = set()
+    for s in sources or []:
+        if isinstance(s, dict) and s.get("favorite") is True and s.get("handle"):
+            favs.add(str(s["handle"]).lower().replace("@", ""))
+    return favs
+
+
 CATEGORY_ALIASES = {
     "tech": "ai_tech",
     "explainer": "niche",
@@ -119,15 +132,50 @@ def rank_top_reels(
 ) -> list[dict[str, Any]]:
     """
     Execute Fair-Share Ranking with Category Ceiling & Deterministic Interleaving:
-    1. Calculate baseline per creator and viral scores.
+    1. Calculate baseline per creator and viral scores (favorites get a
+       score boost so non-viral taste-aligned reels still compete).
     2. Normalize category assignments across the thematic buckets.
-    3. Guarantee representation (at least 1 top reel for every active creator).
+    3. Guarantee representation (1 top reel per creator, FAVORITE_GUARANTEED_PICKS
+       for favorites).
     4. Fill remaining slots by pure viral score, respecting the per-creator
-       cap and the per-category ceiling (no fixed percentage targets).
+       cap (favorites get FAVORITE_MAX_PER_CREATOR) and the per-category
+       ceiling (no fixed percentage targets).
     5. Pseudo-randomly interleave/shuffle the final selected pool (using seed) so categories blend smoothly.
     6. Assign sequential ranks #01 to #N.
     """
     import random
+
+    favorites = get_favorite_handles(sources)
+    try:
+        fav_picks = max(1, int(getattr(config, "FAVORITE_GUARANTEED_PICKS", 2) or 2))
+    except (TypeError, ValueError):
+        fav_picks = 2
+    try:
+        fav_cap = max(1, int(getattr(config, "FAVORITE_MAX_PER_CREATOR", 8) or 8))
+    except (TypeError, ValueError):
+        fav_cap = 8
+    try:
+        fav_boost = float(getattr(config, "FAVORITE_SCORE_BOOST", 1.5) or 1.5)
+    except (TypeError, ValueError):
+        fav_boost = 1.5
+    if fav_boost <= 0:
+        fav_boost = 1.0
+
+    if isinstance(max_per_creator, dict) and favorites:
+        max_per_creator = {**max_per_creator,
+                           **{h: fav_cap for h in favorites if h not in max_per_creator}}
+
+    def _creator_cap(h: str) -> int:
+        if isinstance(max_per_creator, dict):
+            base = max_per_creator.get(h, config.MAX_PER_CREATOR)
+        else:
+            base = max_per_creator
+        if h in favorites:
+            return fav_cap
+        try:
+            return int(base)
+        except (TypeError, ValueError):
+            return config.MAX_PER_CREATOR
 
     blacklist = get_blacklisted_creators()
     if blacklist:
@@ -160,11 +208,16 @@ def rank_top_reels(
         category = CATEGORY_ALIASES.get(raw_category, raw_category)
 
         for reel in creator_reels:
-            score = compute_viral_score(reel, baseline)
+            base_score = compute_viral_score(reel, baseline)
             item = dict(reel)
             item["creator_name"] = creator_name
             item["category"] = category
-            item["viral_score"] = score
+            item["base_viral_score"] = base_score
+            if handle in favorites:
+                item["viral_score"] = round(base_score * fav_boost, 3)
+            else:
+                item["viral_score"] = base_score
+            item["is_favorite"] = handle in favorites
             scored_pool.append(item)
 
     # Sort each creator's reels descending by viral_score
@@ -176,10 +229,12 @@ def rank_top_reels(
     creator_counts: dict[str, int] = {h: 0 for h in creator_queues}
     used_ids: set[str] = set()
 
-    # Step 1: Guaranteed Representation — Pick #1 top reel for each active creator
+    # Step 1: Guaranteed Representation — 1 top reel per creator, fav_picks
+    # for favorites so taste-aligned creators always have a base presence.
     _first_picks: list[tuple[str, dict[str, Any]]] = []
     for handle, q in creator_queues.items():
-        if q:
+        picks = fav_picks if handle in favorites else 1
+        for _ in range(min(picks, len(q))):
             _first_picks.append((handle, q.pop(0)))
     # More creators than slots: keep the highest-score first-picks so the
     # digest never exceeds top_n (guarantee is best-effort past capacity).
@@ -192,11 +247,13 @@ def rank_top_reels(
         selected.append(top_pick)
         creator_counts[handle] += 1
         used_ids.add(top_pick["id"])
-    # Return unselected first-picks to their queues for the fill phase.
-    for handle, top_pick in _first_picks[top_n:]:
+    # Return unselected first-picks to their queues for the fill phase,
+    # preserving intra-creator score order (insert front in reverse).
+    for handle, top_pick in reversed(_first_picks[top_n:]):
         creator_queues[handle].insert(0, top_pick)
 
-    logger.info("Guaranteed representation selected %d reels (1 per creator).", len(selected))
+    logger.info("Guaranteed representation selected %d reels (1 per creator, %d for favorites).",
+                len(selected), fav_picks)
 
     # Step 2: Count guaranteed picks per category so the ceiling accounts for them
     ceiling = get_category_ceiling(top_n)
@@ -221,8 +278,7 @@ def rank_top_reels(
         if category_counts.get(cat, 0) >= ceiling:
             continue
         h = item["creator_handle"].lower().replace("@", "")
-        creator_cap = max_per_creator.get(h, config.MAX_PER_CREATOR) if isinstance(max_per_creator, dict) else max_per_creator
-        if creator_counts[h] < creator_cap and item["id"] not in used_ids:
+        if creator_counts[h] < _creator_cap(h) and item["id"] not in used_ids:
             selected.append(item)
             creator_counts[h] += 1
             category_counts[cat] = category_counts.get(cat, 0) + 1

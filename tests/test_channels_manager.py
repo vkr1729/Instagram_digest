@@ -13,6 +13,132 @@ import config
 import local_server
 
 
+def test_favorite_bulk_actions_toggle_flag(tmp_path, monkeypatch):
+    """bulk-unselect favorite/unfavorite actions set and clear the source flag."""
+    sources_file = tmp_path / "sources.json"
+    blacklist_file = tmp_path / "blacklist.json"
+    sources_file.write_text(json.dumps([
+        {"handle": "creator1", "name": "Creator One", "category": "tech", "enabled": True},
+        {"handle": "creator2", "name": "Creator Two", "category": "health", "enabled": True},
+    ]), encoding="utf-8")
+    blacklist_file.write_text(json.dumps({"creators": []}), encoding="utf-8")
+
+    monkeypatch.setattr(config, "SOURCES_FILE", sources_file)
+    monkeypatch.setattr(config, "BLACKLIST_FILE", blacklist_file)
+
+    from http.server import ThreadingHTTPServer
+    import threading
+    import urllib.request
+    import urllib.error
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), local_server.LocalDigestHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        def _post(payload):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/channels/bulk-unselect",
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as res:
+                return res.status, json.loads(res.read().decode("utf-8"))
+
+        status, data = _post({"creator_handles": ["creator1"], "action": "favorite"})
+        assert status == 200 and data["success"] is True
+        saved = json.loads(sources_file.read_text(encoding="utf-8"))
+        assert next(s for s in saved if s["handle"] == "creator1").get("favorite") is True
+        assert "favorite" not in next(s for s in saved if s["handle"] == "creator2")
+
+        status, data = _post({"creator_handles": ["creator1"], "action": "unfavorite"})
+        assert status == 200 and data["success"] is True
+        saved = json.loads(sources_file.read_text(encoding="utf-8"))
+        assert "favorite" not in next(s for s in saved if s["handle"] == "creator1")
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
+        server.server_close()
+
+
+def test_channels_listing_exposes_favorite_flag(tmp_path, monkeypatch):
+    """GET /api/channels surfaces is_favorite from sources.json."""
+    sources_file = tmp_path / "sources.json"
+    blacklist_file = tmp_path / "blacklist.json"
+    sources_file.write_text(json.dumps([
+        {"handle": "creator1", "name": "Creator One", "category": "tech", "enabled": True, "favorite": True},
+    ]), encoding="utf-8")
+    blacklist_file.write_text(json.dumps({"creators": []}), encoding="utf-8")
+
+    monkeypatch.setattr(config, "SOURCES_FILE", sources_file)
+    monkeypatch.setattr(config, "BLACKLIST_FILE", blacklist_file)
+
+    from http.server import ThreadingHTTPServer
+    import threading
+    import urllib.request
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), local_server.LocalDigestHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/channels", timeout=10) as res:
+            assert res.status == 200
+            data = json.loads(res.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
+        server.server_close()
+    row = next(c for c in data["channels"] if c["handle"] == "creator1")
+    assert row["is_favorite"] is True
+
+
+def test_favorite_unknown_handle_returns_400(tmp_path, monkeypatch):
+    """Bulk favorite on unknown/empty handles fails loudly instead of a false success."""
+    sources_file = tmp_path / "sources.json"
+    blacklist_file = tmp_path / "blacklist.json"
+    sources_file.write_text(json.dumps([
+        {"handle": "creator1", "name": "Creator One", "category": "tech", "enabled": True},
+    ]), encoding="utf-8")
+    blacklist_file.write_text(json.dumps({"creators": []}), encoding="utf-8")
+
+    monkeypatch.setattr(config, "SOURCES_FILE", sources_file)
+    monkeypatch.setattr(config, "BLACKLIST_FILE", blacklist_file)
+
+    from http.server import ThreadingHTTPServer
+    import threading
+    import urllib.request
+    import urllib.error
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), local_server.LocalDigestHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        def _post(payload):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/channels/bulk-unselect",
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as res:
+                    return res.status, json.loads(res.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read().decode("utf-8", "replace")
+
+        status, _ = _post({"creator_handles": ["ghost_handle"], "action": "favorite"})
+        assert status == 400
+        status, _ = _post({"creator_handles": [], "action": "favorite"})
+        assert status == 400
+    finally:
+        server.shutdown()
+        thread.join(timeout=10)
+        server.server_close()
+
+
 def test_channel_manager_api_routes(tmp_path, monkeypatch):
     """Test /channels page, /api/channels listing, and /api/channels/bulk-unselect."""
     # Setup isolated test data

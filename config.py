@@ -126,6 +126,14 @@ RETENTION_WEEKS = _env_int("RETENTION_WEEKS", 1, 1, 52)
 RETENTION_DAYS = _env_int("RETENTION_DAYS", RETENTION_WEEKS * 7 + 1, 1, 365)
 TOP_DIGEST_COUNT = _env_int("TOP_DIGEST_COUNT", 250, 1, 1000)
 MAX_PER_CREATOR = _env_int("MAX_PER_CREATOR", 4, 1, 50)
+# Favorites: creators whose taste aligns with the owner. Ranker guarantees
+# FAVORITE_GUARANTEED_PICKS base picks each (vs 1 for everyone else), raises
+# their per-creator cap to FAVORITE_MAX_PER_CREATOR, and multiplies their
+# viral scores by FAVORITE_SCORE_BOOST so non-viral reels still clear the
+# fill. Marked per-source via "favorite": true in sources.json.
+FAVORITE_GUARANTEED_PICKS = _env_int("FAVORITE_GUARANTEED_PICKS", 2, 1, 10)
+FAVORITE_MAX_PER_CREATOR = _env_int("FAVORITE_MAX_PER_CREATOR", 8, 1, 50)
+FAVORITE_SCORE_BOOST = _env_float("FAVORITE_SCORE_BOOST", 1.5)
 # Tier 3 (external feed discovery) guardrails. Fresh/low-trust accounts get
 # flagged for long discovery-feed scrolls, so Tier 3 fills at most
 # MAX_EXTERNAL_SHARE of the digest and stops after MAX_FEED_EVALUATIONS DOM

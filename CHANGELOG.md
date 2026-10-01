@@ -1,3 +1,17 @@
+# Changelog — Favorites + Tier 2 parity (2026-10-01)
+
+- Tier 2 parity (from weekly feedback): recommended creators now extract at
+  the same depth as followed (5/creator, 6 food), skip pinned reels, and cap
+  at MAX_PER_CREATOR (4) — so the mix shows current reels, not best-ever.
+- Favorites: creators marked `"favorite": true` in sources.json (☆ Fav button
+  on /channels) get FAVORITE_GUARANTEED_PICKS=2 base picks (vs 1),
+  FAVORITE_MAX_PER_CREATOR=8 cap (vs 4), and FAVORITE_SCORE_BOOST=1.5x viral
+  score so taste-aligned non-viral reels still clear the fill. All three
+  tunable via env.
+- Fixed (from weekly feedback): backfilled seen_reel_ids.json from all real
+  digest archives (933 IDs) — the ledger only existed since 09-19, so 09-06
+  and 09-11 reels resurfaced in 09-27 (50 repeats).
+
 # Changelog — Probe-session fix + recommendations batch (2026-09-26)
 
 - Fixed: step-0 session probe was never closed, so any run passing validation

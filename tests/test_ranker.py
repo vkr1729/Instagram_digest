@@ -198,3 +198,120 @@ def test_rank_top_reels_per_creator_cap_dict():
     assert counts["recommended_star"] == 8
     assert len(ranked) == 12
 
+
+def test_favorites_get_guarantee_cap_and_boost(monkeypatch):
+    """Favorites: 2 guaranteed base picks, cap up to FAVORITE_MAX, gentler scoring."""
+    import config
+    from collections import Counter
+
+    monkeypatch.setattr(config, "FAVORITE_GUARANTEED_PICKS", 2)
+    monkeypatch.setattr(config, "FAVORITE_MAX_PER_CREATOR", 8)
+    monkeypatch.setattr(config, "FAVORITE_SCORE_BOOST", 1.5)
+    monkeypatch.setattr(config, "MAX_CATEGORY_SHARE", 1.0)
+
+    sources = [
+        {"handle": "fav_creator", "name": "Fav", "category": "niche", "favorite": True},
+        {"handle": "normal_creator", "name": "Normal", "category": "niche"},
+    ]
+    candidates = []
+    for i in range(5):
+        candidates.append({
+            "id": f"fav_{i}",
+            "creator_handle": "fav_creator",
+            "view_count": 5000,
+            "like_count": 50,
+            "comment_count": 5,
+        })
+    for i in range(5):
+        candidates.append({
+            "id": f"norm_{i}",
+            "creator_handle": "normal_creator",
+            "view_count": 50000,
+            "like_count": 5000,
+            "comment_count": 200,
+        })
+
+    ranked = rank_top_reels(candidates, sources, top_n=10, max_per_creator=4, shuffle=False)
+    counts = Counter(r["creator_handle"] for r in ranked)
+    assert counts["fav_creator"] >= 2
+    assert all(r.get("is_favorite") for r in ranked if r["creator_handle"] == "fav_creator")
+    assert all(not r.get("is_favorite") for r in ranked if r["creator_handle"] == "normal_creator")
+
+    only_fav = [{"id": f"f{i}", "creator_handle": "fav_creator",
+                 "view_count": 50000 + i * 100, "like_count": 5000, "comment_count": 200}
+                for i in range(10)]
+    ranked2 = rank_top_reels(only_fav, sources, top_n=10, max_per_creator=4, shuffle=False)
+    assert len([r for r in ranked2 if r["creator_handle"] == "fav_creator"]) == 8
+
+
+def test_favorite_guarantee_respects_top_n(monkeypatch):
+    """More guaranteed picks than slots: digest never exceeds top_n."""
+    import config
+
+    monkeypatch.setattr(config, "FAVORITE_GUARANTEED_PICKS", 2)
+    monkeypatch.setattr(config, "MAX_CATEGORY_SHARE", 1.0)
+    sources = [{"handle": f"c{i}", "name": f"C{i}", "category": "niche", "favorite": True}
+               for i in range(5)]
+    candidates = [{"id": f"r{i}_{j}", "creator_handle": f"c{i}",
+                   "view_count": 10000, "like_count": 100, "comment_count": 10}
+                  for i in range(5) for j in range(2)]
+    ranked = rank_top_reels(candidates, sources, top_n=3, max_per_creator=8, shuffle=False)
+    assert len(ranked) == 3
+
+
+def test_favorite_guarantee_takes_top_scores_first(monkeypatch):
+    """Overflow truncation keeps the highest-score first-picks, not insertion order."""
+    import config
+
+    monkeypatch.setattr(config, "FAVORITE_GUARANTEED_PICKS", 2)
+    monkeypatch.setattr(config, "FAVORITE_SCORE_BOOST", 1.0)
+    monkeypatch.setattr(config, "MAX_CATEGORY_SHARE", 1.0)
+    sources = [
+        {"handle": "weak", "name": "Weak", "category": "niche", "favorite": True},
+        {"handle": "strong", "name": "Strong", "category": "niche", "favorite": True},
+    ]
+    candidates = [
+        {"id": "w0", "creator_handle": "weak", "view_count": 1000, "like_count": 1, "comment_count": 0},
+        {"id": "w1", "creator_handle": "weak", "view_count": 1000, "like_count": 1, "comment_count": 0},
+        {"id": "s0", "creator_handle": "strong", "view_count": 90000, "like_count": 9000, "comment_count": 400},
+        {"id": "s1", "creator_handle": "strong", "view_count": 80000, "like_count": 8000, "comment_count": 400},
+    ]
+    ranked = rank_top_reels(candidates, sources, top_n=2, max_per_creator=8, shuffle=False)
+    assert [r["id"] for r in ranked] == ["s0", "s1"]
+
+
+def test_favorite_boost_idempotent_across_passes(monkeypatch):
+    """Re-ranking pass-1 output (stamped is_favorite) must not compound the boost."""
+    import config
+
+    monkeypatch.setattr(config, "FAVORITE_GUARANTEED_PICKS", 2)
+    monkeypatch.setattr(config, "FAVORITE_MAX_PER_CREATOR", 8)
+    monkeypatch.setattr(config, "FAVORITE_SCORE_BOOST", 1.5)
+    monkeypatch.setattr(config, "MAX_CATEGORY_SHARE", 1.0)
+    sources = [{"handle": "fav", "name": "Fav", "category": "niche", "favorite": True}]
+    raw = [{"id": f"f{i}", "creator_handle": "fav",
+            "view_count": 20000, "like_count": 2000, "comment_count": 100} for i in range(4)]
+    once = rank_top_reels(raw, sources, top_n=4, max_per_creator=8, shuffle=False)
+    twice = rank_top_reels(once, sources, top_n=4, max_per_creator=8, shuffle=False)
+    assert [r["viral_score"] for r in once] == [r["viral_score"] for r in twice]
+
+
+def test_favorite_string_value_is_not_promoted(monkeypatch):
+    """A manual-edit "favorite": "false" string must not promote the creator."""
+    import config
+    from collections import Counter
+
+    monkeypatch.setattr(config, "FAVORITE_GUARANTEED_PICKS", 2)
+    monkeypatch.setattr(config, "MAX_CATEGORY_SHARE", 1.0)
+    sources = [
+        {"handle": "strfav", "name": "S", "category": "niche", "favorite": "false"},
+        {"handle": "plain", "name": "P", "category": "niche"},
+    ]
+    candidates = [{"id": f"{h}_{i}", "creator_handle": h,
+                   "view_count": 10000, "like_count": 100, "comment_count": 10}
+                  for h in ("strfav", "plain") for i in range(3)]
+    ranked = rank_top_reels(candidates, sources, top_n=10, max_per_creator=4, shuffle=False)
+    counts = Counter(r["creator_handle"] for r in ranked)
+    assert counts["strfav"] == counts["plain"] == 3
+    assert all(not r.get("is_favorite") for r in ranked)
+

@@ -1539,7 +1539,7 @@ def _run_full_sync(
                         "recommended_creators": recommended_creators,
                     })
 
-                # Tier 2: Recommended Creators (up to 8 reels per creator, pinned + unpinned)
+                # Tier 2: Recommended Creators (same depth as followed: unpinned current reels only)
                 # P1-11: a banked shortlist already contains Tier 2's output;
                 # enriched checkpoints carry no done map, so never re-scrape on resume.
                 if recommended_creators and banked_shortlist is None:
@@ -1571,24 +1571,25 @@ def _run_full_sync(
                             break
                         try:
                             logger.info("Tier 2: Extracting reels for recommended @%s (%s)...", h, rec.get("category", ""))
+                            rec_depth = 6 if rec.get("category") == "food" else min(limit_per_creator, 5)
                             try:
                                 rec_reels = extractor.extract_creator_reels(
                                     handle=h,
-                                    max_reels=8,
+                                    max_reels=rec_depth,
                                     days_back=days_back,
                                     fast_mode=True,
                                     session=session,
-                                    include_pinned=True,
+                                    include_pinned=False,
                                     cookie_free=cookie_free,
                                 )
                             except TypeError:
                                 rec_reels = extractor.extract_creator_reels(
                                     handle=h,
-                                    max_reels=8,
+                                    max_reels=rec_depth,
                                     days_back=days_back,
                                     fast_mode=True,
                                     session=session,
-                                    include_pinned=True,
+                                    include_pinned=False,
                                 )
                             done_map[h] = not rec_reels
                             visited_this_run += 1
@@ -1642,17 +1643,22 @@ def _run_full_sync(
                             "category": rec.get("category", "entertainment"),
                             "enabled": True,
                             "is_recommended": True,
+                            **({"favorite": True} if rec.get("favorite") is True else {}),
                         })
 
                 caps_map: dict[str, int] = {}
+                favs = set(ranker.get_favorite_handles(active_sources))
                 for s in active_sources:
                     h = s.get("handle", "").lower().replace("@", "")
                     if h:
-                        caps_map[h] = config.MAX_PER_CREATOR
+                        caps_map[h] = config.FAVORITE_MAX_PER_CREATOR if h in favs else config.MAX_PER_CREATOR
                 for rec in recommended_creators:
                     h = rec.get("handle", "").lower().replace("@", "")
-                    if h:
-                        caps_map[h] = 8
+                    if h and h not in caps_map:
+                        caps_map[h] = config.MAX_PER_CREATOR
+                    if h and rec.get("favorite") is True:
+                        favs.add(h)
+                        caps_map[h] = max(caps_map.get(h, 0), config.FAVORITE_MAX_PER_CREATOR)
 
                 # 4. Two-Pass Selection & Ranking (C3):
                 # Pass 1: Cheap reach-only ranking to shortlist (2x top digest size)
@@ -1667,7 +1673,6 @@ def _run_full_sync(
                         max_per_creator={h: cap + 2 for h, cap in caps_map.items()},
                         shuffle=False,
                     )
-
                 # Enrichment, media-API-first: one cheap media/{id}/info/ GET
                 # per shortlist reel returns timestamp + metrics + video URL
                 # AND applies the date cutoff up front, so stale reels never

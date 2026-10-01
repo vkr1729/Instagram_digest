@@ -369,6 +369,18 @@
       border-color: var(--danger);
       color: var(--danger);
     }
+    .btn-row-action.fav {
+      border-color: rgba(255, 214, 64, 0.45);
+      color: #ffd640;
+    }
+    .btn-row-action.fav:hover {
+      background: rgba(255, 214, 64, 0.15);
+      border-color: #ffd640;
+      color: #ffd640;
+    }
+    .btn-row-action.fav.is-fav {
+      background: rgba(255, 214, 64, 0.15);
+    }
     .btn-row-action.restore:hover {
       background: rgba(48, 209, 88, 0.2);
       border-color: var(--success);
@@ -601,6 +613,7 @@
         const catCls = String(catRaw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
         const isChecked = selectedHandles.has(c.handle);
         const initial = esc((c.handle[0] || '?').toUpperCase());
+        const isFav = !!c.is_favorite;
         return `
           <div class="channel-row ${c.is_blacklisted ? 'is-blacklisted' : ''}" data-handle="${h}">
             <input type="checkbox" class="row-checkbox" value="${h}" ${isChecked ? 'checked' : ''} onchange="toggleRowSelect(this.value, this.checked)">
@@ -609,9 +622,11 @@
               <div class="channel-handle-row">
                 <a href="https://instagram.com/${encodeURIComponent(c.handle)}" target="_blank" rel="noopener" class="channel-handle">@${h}</a>
                 <span class="cat-pill ${catCls}">${cat}</span>
+                ${isFav ? '<span class="cat-pill">⭐ fav</span>' : ''}
               </div>
               <div class="channel-name">${name}</div>
             </div>
+            <button class="btn-row-action fav ${isFav ? 'is-fav' : ''}" title="Favorite: guarantees 2 base picks, up to 8 reels, gentler scoring" onclick="toggleFavorite(this.closest('.channel-row').dataset.handle)">${isFav ? '★ Fav' : '☆ Fav'}</button>
             <span class="status-badge ${c.is_blacklisted ? 'muted' : 'active'}">
               ${c.is_blacklisted ? '🚫 Muted' : '✓ Active'}
             </span>
@@ -712,8 +727,15 @@
         const data = await res.json();
         if (data.success) {
           const c = allChannels.find(ch => ch.handle === handle);
-          if (c) c.is_blacklisted = (action === 'add');
-          showToast(`@${handle} ${action === 'add' ? 'muted' : 'restored'}`);
+          if (c) {
+            if (action === 'favorite') c.is_favorite = true;
+            else if (action === 'unfavorite') c.is_favorite = false;
+            else c.is_blacklisted = (action === 'add');
+          }
+          const word = action === 'favorite' ? 'marked as favorite ⭐'
+            : action === 'unfavorite' ? 'removed from favorites'
+            : (action === 'add' ? 'muted' : 'restored');
+          showToast(`@${handle} ${word}`);
           selectedHandles.delete(handle);
           updateCounts();
           applyFilters();
@@ -721,6 +743,12 @@
       } catch (err) {
         showToast('Operation failed');
       }
+    }
+
+    async function toggleFavorite(handle) {
+      const norm = h => String(h || '').trim().toLowerCase().replace(/^@+/, '');
+      const c = allChannels.find(ch => norm(ch.handle) === norm(handle));
+      await singleAction(handle, (c && c.is_favorite) ? 'unfavorite' : 'favorite');
     }
 
     async function checkAdhocStatus() {

@@ -63,3 +63,6 @@ build_ipa/
 
 # Tooling
 .commandcode/
+
+# Headless review artifacts (pre-push quality gate, never committed)
+.workflow/reviews/
