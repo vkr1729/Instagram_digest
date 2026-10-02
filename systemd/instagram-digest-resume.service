@@ -12,5 +12,3 @@ Type=oneshot
 Environment=INSTAGRAM_DIGEST_DIR=%h/Instagram_digest
 ExecStart=%h/Instagram_digest/resume_pending.sh
 
-[Install]
-WantedBy=default.target

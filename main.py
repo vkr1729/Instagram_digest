@@ -219,16 +219,30 @@ def _persisted_digest_week() -> str:
         return ""
 
 
+# Stalled job protection: any checkpoint older than 3 hours (e.g. from interrupted
+# test runs) must never be resumed automatically.
+MAX_CHECKPOINT_AGE_HOURS = 3.0
+
+
 def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
                           since_timestamp: int | None, resume: bool,
                           banked_age_days: int, kind: str | None = None,
-                          cookie_free: bool = False) -> bool:
+                          cookie_free: bool = False,
+                          banked_age_hours: float | None = None) -> bool:
     """Resume gate: is this checkpoint this run's banked work?
 
     B5: resume runs exist to finish banked work — a drifted anchor is still
     the same operation, never a reason to retire hours of banked scraping.
     """
     banked_cf = bool(loaded_sync.get("cookie_free", False))
+    if banked_age_hours is None and isinstance(loaded_sync, dict):
+        saved_at = loaded_sync.get("saved_at")
+        if isinstance(saved_at, (int, float)) and saved_at > 0:
+            banked_age_hours = (time.time() - saved_at) / 3600.0
+
+    if banked_age_hours is not None and banked_age_hours > MAX_CHECKPOINT_AGE_HOURS:
+        return False
+
     return (
         isinstance(loaded_sync, dict)
         and loaded_sync.get("version") == 1
@@ -943,9 +957,20 @@ def _run_full_sync(
                 ).days
             except ValueError:
                 banked_age_days = 10**6
+
+            saved_at = loaded_sync.get("saved_at") if isinstance(loaded_sync, dict) else None
+            if isinstance(saved_at, (int, float)) and saved_at > 0:
+                banked_age_hours = (time.time() - saved_at) / 3600.0
+            else:
+                try:
+                    banked_age_hours = (time.time() - sync_read_path.stat().st_mtime) / 3600.0
+                except OSError:
+                    banked_age_hours = 10**6
+
             if _sync_progress_usable(loaded_sync, limit_per_creator, since_timestamp,
                                        resume, banked_age_days, kind=kind,
-                                       cookie_free=cookie_free):
+                                       cookie_free=cookie_free,
+                                       banked_age_hours=banked_age_hours):
                 sync_progress = loaded_sync
                 kind = loaded_sync.get("kind") or kind
                 # P2-17: a resume keeps the ORIGINAL run start as the weekly
@@ -969,8 +994,8 @@ def _run_full_sync(
                     )
             else:
                 logger.warning(
-                    "Ignoring sync progress %s (parameters changed, mode mismatch, or banked work is %s days old); retiring it.",
-                    sync_read_path.name, banked_age_days,
+                    "Ignoring sync progress %s (parameters changed, mode mismatch, or banked work is stale: %.1f hours old > %.1fh TTL); retiring it.",
+                    sync_read_path.name, banked_age_hours, MAX_CHECKPOINT_AGE_HOURS,
                 )
                 _retire_sync_file(sync_read_path, "parameters changed, mode mismatch, or stale")
     if resume and not dry_run and sync_progress is None:
@@ -1021,6 +1046,8 @@ def _run_full_sync(
             # P2-17: anchor resumes to the ORIGINAL run start, not the resume
             # moment — reels posted mid-run must not fall between two runs.
             "run_started_ts": run_started_ts,
+            "saved_at": time.time(),
+            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
         }
         if extra:
             payload.update(extra)
@@ -2482,9 +2509,15 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             read_path = older[-1]
 
     def _write_checkpoint(items: list[dict[str, Any]]) -> None:
-        # Envelope carries the original target so unattended auto-resume can
-        # top up correctly without being told the count again.
-        payload = {"version": 1, "target_count": target_count, "reels": list(items)}
+        # Envelope carries the original target and timestamp so unattended auto-resume can
+        # top up correctly without being told the count again and respect TTL.
+        payload = {
+            "version": 1,
+            "target_count": target_count,
+            "reels": list(items),
+            "saved_at": time.time(),
+            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
         try:
             import atomic_io
             atomic_io.durable_write_json(checkpoint_file, payload)
@@ -2517,19 +2550,39 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
         except OSError:
             pass
 
-    def _read_checkpoint(path: Path) -> list[dict[str, Any]]:
+    def _read_checkpoint(path: Path) -> tuple[list[dict[str, Any]], float]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             _quarantine_corrupt(path, exc)
-            return []
+            return [], 10**6
+        saved_at = data.get("saved_at") if isinstance(data, dict) else None
+        if isinstance(saved_at, (int, float)) and saved_at > 0:
+            age_hours = (time.time() - saved_at) / 3600.0
+        else:
+            try:
+                age_hours = (time.time() - path.stat().st_mtime) / 3600.0
+            except OSError:
+                age_hours = 10**6
         raw = data.get("reels") if isinstance(data, dict) else data
         if not isinstance(raw, list):
-            return []
-        return [r for r in raw if isinstance(r, dict) and r.get("id")]
+            return [], age_hours
+        return [r for r in raw if isinstance(r, dict) and r.get("id")], age_hours
 
-    resumed: list[dict[str, Any]] = _read_checkpoint(read_path) if read_path.exists() else []
+    resumed: list[dict[str, Any]] = []
     if read_path.exists():
+        raw_reels, age_hours = _read_checkpoint(read_path)
+        if age_hours > MAX_CHECKPOINT_AGE_HOURS:
+            logger.warning(
+                "Ignoring stale expand checkpoint %s (%.1f hours old > %.1fh TTL); retiring it.",
+                read_path.name, age_hours, MAX_CHECKPOINT_AGE_HOURS,
+            )
+            try:
+                read_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raw_reels = []
+        resumed = raw_reels
         if resumed:
             # Drop banked reels an intervening sync already integrated so a
             # resume cannot append a duplicate id to the manifest.
@@ -2547,6 +2600,8 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
                 )
             else:
                 logger.info("Checkpoint reels already integrated; discovering fresh reels.")
+        elif not read_path.exists():
+            pass  # Already unlinked above as stale
         else:
             logger.warning("Ignoring unreadable expand checkpoint: %s", read_path.name)
             # _read_checkpoint already quarantined corrupt bytes; remove the
@@ -2925,7 +2980,29 @@ def _deploy_only() -> int:
     return 0 if site_builder.deploy_to_gh_pages() else 1
 
 
+def cleanup_transient_checkpoints(week_id: str | None = None) -> None:
+    """Clean up transient checkpoint and progress files created during an aborted run."""
+    try:
+        w = week_id or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        for pat in (f"sync_progress_{w}.json", f"expand_checkpoint_{w}.json", f"expand_progress_{w}.json"):
+            f = config.DATA_DIR / pat
+            if f.exists():
+                logger.info("Cleaning up transient checkpoint: %s", f.name)
+                f.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug("Failed cleaning transient checkpoints: %s", exc)
+
+
 def main() -> int:
+    try:
+        return _main_inner()
+    except KeyboardInterrupt:
+        logger.warning("\n[Instagram Digest] Process interrupted by user (SIGINT).")
+        cleanup_transient_checkpoints()
+        return 130
+
+
+def _main_inner() -> int:
     parser = argparse.ArgumentParser(description=f"Instagram Digest v{config.APP_VERSION} — Weekly High-Signal Reel Curator")
     parser.add_argument("--sync", action="store_true", help="Run full weekly extraction, ranking, and sync")
     parser.add_argument("--ad-hoc", action="store_true", help="Run ad-hoc midweek sync picking reels between now and the last run timestamp")
@@ -3073,4 +3150,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n[Instagram Digest] Process interrupted by user (SIGINT).")
+        cleanup_transient_checkpoints()
+        sys.exit(130)

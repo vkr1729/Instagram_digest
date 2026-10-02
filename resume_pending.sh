@@ -111,6 +111,22 @@ if [ "$_busy" -eq 1 ]; then
     exit 0
 fi
 
+# Checkpoint TTL guard: stalled jobs (> 3h old) created during testing or aborted runs
+# must be retired, not resumed.
+TTL_MINS=180
+
+# Retire expired sync progress files (> 3h old)
+while IFS= read -r -d '' stale_f; do
+    log "Retiring expired sync progress (> ${TTL_MINS}m old, likely stalled test): $(basename "$stale_f")"
+    rm -f "$stale_f"
+done < <(find "$APP_DIR/data" -maxdepth 1 -name "sync_progress_*.json" -mmin +"$TTL_MINS" -print0 2>/dev/null)
+
+# Retire expired expand checkpoints (> 3h old)
+while IFS= read -r -d '' stale_f; do
+    log "Retiring expired expand checkpoint (> ${TTL_MINS}m old, likely stalled test): $(basename "$stale_f")"
+    rm -f "$stale_f"
+done < <(find "$APP_DIR/data" -maxdepth 1 -name "expand_checkpoint_*.json" -mmin +"$TTL_MINS" -print0 2>/dev/null)
+
 shopt -s nullglob
 SYNC_PROGS=("$APP_DIR"/data/sync_progress_*.json)
 EXPAND_CKPTS=("$APP_DIR"/data/expand_checkpoint_*.json)
