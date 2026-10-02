@@ -111,21 +111,30 @@ if [ "$_busy" -eq 1 ]; then
     exit 0
 fi
 
-# Checkpoint TTL guard: stalled jobs (> 3h old) created during testing or aborted runs
-# must be retired, not resumed.
-TTL_MINS=180
+# Checkpoint TTL guard: stale checkpoints (> 24h default, configurable via CHECKPOINT_TTL_MINS)
+# are retired with a timestamped suffix for forensics, never permanently deleted.
+TTL_MINS="${CHECKPOINT_TTL_MINS:-1440}"
 
-# Retire expired sync progress files (> 3h old)
+# Retire expired sync progress files
 while IFS= read -r -d '' stale_f; do
-    log "Retiring expired sync progress (> ${TTL_MINS}m old, likely stalled test): $(basename "$stale_f")"
-    rm -f "$stale_f"
+    retire_target="${stale_f}.retired-$(date -u +%Y%m%dT%H%M%SZ)"
+    log "Retiring expired sync progress (> ${TTL_MINS}m old): $(basename "$stale_f") -> $(basename "$retire_target")"
+    mv "$stale_f" "$retire_target"
 done < <(find "$APP_DIR/data" -maxdepth 1 -name "sync_progress_*.json" -mmin +"$TTL_MINS" -print0 2>/dev/null)
 
-# Retire expired expand checkpoints (> 3h old)
+# Retire expired expand checkpoints
 while IFS= read -r -d '' stale_f; do
-    log "Retiring expired expand checkpoint (> ${TTL_MINS}m old, likely stalled test): $(basename "$stale_f")"
-    rm -f "$stale_f"
+    retire_target="${stale_f}.retired-$(date -u +%Y%m%dT%H%M%SZ)"
+    log "Retiring expired expand checkpoint (> ${TTL_MINS}m old): $(basename "$stale_f") -> $(basename "$retire_target")"
+    mv "$stale_f" "$retire_target"
 done < <(find "$APP_DIR/data" -maxdepth 1 -name "expand_checkpoint_*.json" -mmin +"$TTL_MINS" -print0 2>/dev/null)
+
+# Retire expired expand progress files
+while IFS= read -r -d '' stale_f; do
+    retire_target="${stale_f}.retired-$(date -u +%Y%m%dT%H%M%SZ)"
+    log "Retiring expired expand progress (> ${TTL_MINS}m old): $(basename "$stale_f") -> $(basename "$retire_target")"
+    mv "$stale_f" "$retire_target"
+done < <(find "$APP_DIR/data" -maxdepth 1 -name "expand_progress_*.json" -mmin +"$TTL_MINS" -print0 2>/dev/null)
 
 shopt -s nullglob
 SYNC_PROGS=("$APP_DIR"/data/sync_progress_*.json)

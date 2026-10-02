@@ -219,9 +219,9 @@ def _persisted_digest_week() -> str:
         return ""
 
 
-# Stalled job protection: any checkpoint older than 3 hours (e.g. from interrupted
-# test runs) must never be resumed automatically.
-MAX_CHECKPOINT_AGE_HOURS = 3.0
+# Stalled job protection: any checkpoint older than CHECKPOINT_TTL_HOURS (default 24h)
+# must never be resumed automatically.
+MAX_CHECKPOINT_AGE_HOURS = getattr(config, "CHECKPOINT_TTL_HOURS", 24.0)
 
 
 def _sync_progress_usable(loaded_sync: dict[str, Any], limit_per_creator: int,
@@ -688,11 +688,11 @@ def _alert_sync_abort(reason: str, detail: str) -> None:
 
     Alert delivery itself must never break the abort path, hence the guard.
     """
-    if os.getenv("SKIP_EMAIL", "").strip().lower() in ("1", "true", "yes") or getattr(config, "SKIP_EMAIL", False):
-        logger.info("Skipping abort alert email (SKIP_EMAIL / --skip-email active): %s — %s", reason, detail)
-        return
     try:
         import notifier
+        if notifier.email_suppressed():
+            logger.info("Skipping abort alert email (SKIP_EMAIL / --skip-email active): %s — %s", reason, detail)
+            return
         notifier.send_failure_alert_email(context=f"Sync aborted: {reason} — {detail}", exit_code=2)
     except Exception as alert_err:
         logger.warning("Failed to send abort alert email: %s", alert_err)
@@ -858,6 +858,9 @@ def _run_full_sync(
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     run_started_ts = time.time()
+    if skip_email or dry_run:
+        os.environ["SKIP_EMAIL"] = "1"
+        setattr(config, "SKIP_EMAIL", True)
     if since_timestamp is not None:
         logger.info("Starting Instagram Digest ad-hoc sync for week %s (since_ts=%d, days_back=%d, dry_run=%s, cookie_free=%s)...",
                     week_id, since_timestamp, days_back, dry_run, cookie_free)
@@ -2590,10 +2593,7 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
                 "Ignoring stale expand checkpoint %s (%.1f hours old > %.1fh TTL); retiring it.",
                 read_path.name, age_hours, MAX_CHECKPOINT_AGE_HOURS,
             )
-            try:
-                read_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _retire_sync_file(read_path, "stale")
             raw_reels = []
         resumed = raw_reels
         if resumed:
@@ -2994,14 +2994,14 @@ def _deploy_only() -> int:
 
 
 def cleanup_transient_checkpoints(week_id: str | None = None) -> None:
-    """Clean up transient checkpoint and progress files created during an aborted run."""
+    """Retire transient checkpoint and progress files created during an aborted run."""
     try:
         w = week_id or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         for pat in (f"sync_progress_{w}.json", f"expand_checkpoint_{w}.json", f"expand_progress_{w}.json"):
             f = config.DATA_DIR / pat
             if f.exists():
-                logger.info("Cleaning up transient checkpoint: %s", f.name)
-                f.unlink(missing_ok=True)
+                logger.info("Retiring transient checkpoint on interruption: %s", f.name)
+                _retire_sync_file(f, "interrupted")
     except Exception as exc:
         logger.debug("Failed cleaning transient checkpoints: %s", exc)
 
@@ -3016,6 +3016,18 @@ def main() -> int:
 
 
 def _main_inner() -> int:
+    import signal
+
+    def _sigterm_handler(signum, frame):
+        logger.warning("\n[Instagram Digest] Process terminated (SIGTERM).")
+        cleanup_transient_checkpoints()
+        sys.exit(143)
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+    except (ValueError, AttributeError):
+        pass
+
     parser = argparse.ArgumentParser(description=f"Instagram Digest v{config.APP_VERSION} — Weekly High-Signal Reel Curator")
     parser.add_argument("--sync", action="store_true", help="Run full weekly extraction, ranking, and sync")
     parser.add_argument("--ad-hoc", action="store_true", help="Run ad-hoc midweek sync picking reels between now and the last run timestamp")

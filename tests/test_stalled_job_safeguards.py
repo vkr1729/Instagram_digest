@@ -40,16 +40,16 @@ def _ckpt(stage="ranked", limit_per_creator=15, since_timestamp=1000,
 
 
 def test_sync_progress_ttl_rejection():
-    # Fresh within 1 hour: usable
-    fresh_ckpt = _ckpt(saved_at=time.time() - 3600)
+    # Fresh within 10 hours: usable (default TTL 24h)
+    fresh_ckpt = _ckpt(saved_at=time.time() - (10 * 3600))
     assert main._sync_progress_usable(fresh_ckpt, 15, 1000, True, 0, kind="weekly") is True
 
-    # Stale: 4 hours old (> 3.0h TTL): rejected
-    stale_ckpt = _ckpt(saved_at=time.time() - (4 * 3600))
+    # Stale: 26 hours old (> 24.0h TTL): rejected
+    stale_ckpt = _ckpt(saved_at=time.time() - (26 * 3600))
     assert main._sync_progress_usable(stale_ckpt, 15, 1000, True, 0, kind="weekly") is False
 
     # Explicit banked_age_hours argument
-    assert main._sync_progress_usable(_ckpt(), 15, 1000, True, 0, kind="weekly", banked_age_hours=3.5) is False
+    assert main._sync_progress_usable(_ckpt(), 15, 1000, True, 0, kind="weekly", banked_age_hours=25.0) is False
     assert main._sync_progress_usable(_ckpt(), 15, 1000, True, 0, kind="weekly", banked_age_hours=2.0) is True
 
 
@@ -58,7 +58,7 @@ def test_expand_checkpoint_ttl_discard(tmp_path):
     stale_file.write_text(json.dumps({
         "version": 1,
         "target_count": 3,
-        "saved_at": time.time() - (5 * 3600),  # 5 hours old
+        "saved_at": time.time() - (28 * 3600),  # 28 hours old (> 24h TTL)
         "reels": [{"id": "FAIL", "creator_handle": "nf", "url": "https://instagram.com/reel/FAIL/"}],
     }), encoding="utf-8")
 
@@ -100,7 +100,7 @@ def test_expand_checkpoint_ttl_discard(tmp_path):
         ret = main.run_expand(target_count=1, deploy=False)
 
     assert ret == 0
-    # Stale checkpoint must have been discarded/unlinked
+    # Stale checkpoint must have been retired (no longer active expand_checkpoint_*.json)
     assert stale_file.exists() is False
     # None of the stale "FAIL" reels should be included
     assert "FAIL" not in [r.get("id") for r in seen.get("items", [])]
@@ -119,9 +119,13 @@ def test_cleanup_transient_checkpoints(tmp_path):
 
         assert f1.exists() and f2.exists() and f3.exists()
         main.cleanup_transient_checkpoints(week)
+        # Active files removed
         assert not f1.exists()
         assert not f2.exists()
         assert not f3.exists()
+        # Retired files preserved for forensics
+        retired = list(tmp_path.glob("sync_progress_*.json.retired-*"))
+        assert len(retired) == 1
 
 
 def test_keyboard_interrupt_handling(tmp_path):
@@ -134,4 +138,23 @@ def test_keyboard_interrupt_handling(tmp_path):
             rc = main.main()
 
         assert rc == 130
-        assert not f1.exists(), "Transient progress file must be cleaned up on SIGINT"
+        assert not f1.exists(), "Active transient progress file must be retired on SIGINT"
+        assert len(list(tmp_path.glob("sync_progress_*.json.retired-*"))) == 1
+
+
+def test_email_suppression_predicates(monkeypatch):
+    import notifier
+    # Unset
+    monkeypatch.delenv("SKIP_EMAIL", raising=False)
+    monkeypatch.setattr(config, "SKIP_EMAIL", False)
+    assert notifier.email_suppressed() is False
+
+    # SKIP_EMAIL env var
+    for val in ("1", "true", "yes", "on", "TRUE", "Yes"):
+        monkeypatch.setenv("SKIP_EMAIL", val)
+        assert notifier.email_suppressed() is True
+
+    # config.SKIP_EMAIL attribute
+    monkeypatch.delenv("SKIP_EMAIL", raising=False)
+    monkeypatch.setattr(config, "SKIP_EMAIL", True)
+    assert notifier.email_suppressed() is True
