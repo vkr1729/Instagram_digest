@@ -22,7 +22,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 def is_email_configured() -> bool:
-    """Check if SMTP credentials and recipient email are configured."""
+    """Check if SMTP credentials and recipient email are configured and enabled."""
+    if os.getenv("SKIP_EMAIL", "").strip().lower() in ("1", "true", "yes"):
+        logger.info("Email notifications disabled via SKIP_EMAIL environment variable.")
+        return False
+    if getattr(config, "SKIP_EMAIL", False):
+        logger.info("Email notifications disabled via config.SKIP_EMAIL.")
+        return False
     return bool(config.SMTP_USER and config.NOTIFICATION_EMAIL and config.SMTP_PASS)
 
 

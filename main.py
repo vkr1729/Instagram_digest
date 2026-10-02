@@ -688,6 +688,9 @@ def _alert_sync_abort(reason: str, detail: str) -> None:
 
     Alert delivery itself must never break the abort path, hence the guard.
     """
+    if os.getenv("SKIP_EMAIL", "").strip().lower() in ("1", "true", "yes") or getattr(config, "SKIP_EMAIL", False):
+        logger.info("Skipping abort alert email (SKIP_EMAIL / --skip-email active): %s — %s", reason, detail)
+        return
     try:
         import notifier
         notifier.send_failure_alert_email(context=f"Sync aborted: {reason} — {detail}", exit_code=2)
@@ -829,11 +832,12 @@ def run_full_sync(
     kind: str | None = None,
     cookie_free: bool = False,
     force: bool = False,
+    skip_email: bool = False,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     try:
         with _pipeline_file_lock():
-            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume, kind, cookie_free=cookie_free, force=force)
+            return _run_full_sync(dry_run, deploy, days_back, limit_per_creator, since_timestamp, resume, kind, cookie_free=cookie_free, force=force, skip_email=skip_email)
     except PipelineBusy as exc:
         logger.error("%s; refusing to start.", exc)
         return 3
@@ -849,6 +853,7 @@ def _run_full_sync(
     kind: str | None = None,
     cookie_free: bool = False,
     force: bool = False,
+    skip_email: bool = False,
 ) -> int:
     """Execute complete end-to-end extraction, ranking, upload, and deployment pipeline."""
     week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -2411,6 +2416,14 @@ def _run_full_sync(
 
     if not dry_run:
         save_last_run_info(week_id, since_timestamp=since_timestamp, kind=kind, timestamp=run_started_ts)
+        should_skip_email = (
+            skip_email
+            or (os.getenv("SKIP_EMAIL", "").strip().lower() in ("1", "true", "yes"))
+            or getattr(config, "SKIP_EMAIL", False)
+        )
+        if should_skip_email:
+            logger.info("Sync completed successfully! Email delivery skipped (skip_email/SKIP_EMAIL). Local viewer ready at %s", local_index)
+            return 0
         # 10. Send notification email confirming weekly refresh
         try:
             import notifier
@@ -3020,6 +3033,7 @@ def _main_inner() -> int:
                         help="Finish parked uploads for WEEK (default: live digest week) without touching Instagram")
     parser.add_argument("--days-back", type=int, default=7, help="Candidate publication window in days (default: 7)")
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
+    parser.add_argument("--skip-email", action="store_true", help="Run pipeline but skip sending email notifications")
     parser.add_argument("--lock-status", action="store_true", help="Show which process holds data/.pipeline.lock, if any (read-only)")
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--cookie-free", action="store_true", default=None,
@@ -3027,6 +3041,12 @@ def _main_inner() -> int:
     mode_group.add_argument("--use-cookies", action="store_true", default=None,
                             help="Force authenticated cookie-based operation (using cookies.json/cookies.txt)")
     args = parser.parse_args()
+
+    # Disable emails if --skip-email or --dry-run is specified
+    if args.skip_email or args.dry_run:
+        os.environ["SKIP_EMAIL"] = "1"
+        setattr(config, "SKIP_EMAIL", True)
+        logger.info("Email notifications disabled for this run (dry_run=%s, skip_email=%s).", args.dry_run, args.skip_email)
 
     # Resolve cookie-free mode: CLI flag > config.COOKIE_FREE_MODE
     if args.cookie_free:
@@ -3146,6 +3166,7 @@ def _main_inner() -> int:
         kind="ad-hoc" if args.ad_hoc else "weekly",
         cookie_free=cookie_free,
         force=args.force,
+        skip_email=args.skip_email,
     )
 
 

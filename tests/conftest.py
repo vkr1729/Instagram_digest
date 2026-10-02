@@ -68,6 +68,8 @@ def _isolate_test_environment(monkeypatch, request):
     # to guarantee zero network traffic or external side effects.
     mod_name = request.module.__name__ if hasattr(request, "module") and request.module else ""
     if "test_notifier" not in mod_name and "test_failure_alerts" not in mod_name:
+        monkeypatch.setenv("SKIP_EMAIL", "1")
+        monkeypatch.setattr(config, "SKIP_EMAIL", True)
         monkeypatch.setattr(notifier, "send_digest_email", lambda *a, **kw: False)
         monkeypatch.setattr(notifier, "send_cookie_alert_email", lambda *a, **kw: False)
         monkeypatch.setattr(notifier, "send_failure_alert_email", lambda *a, **kw: False)

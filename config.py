@@ -120,6 +120,7 @@ SMTP_PORT = _env_int("SMTP_PORT", 587, 1, 65535)
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SMTP_USERNAME", "")).strip()
 SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("SMTP_PASSWORD", "")).strip().strip('"')
 NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", os.getenv("RECIPIENT_EMAIL", "")).strip()
+SKIP_EMAIL = _env_bool("SKIP_EMAIL", False)
 
 # Pipeline & Retention Limits (Default: 1 week rolling archive)
 RETENTION_WEEKS = _env_int("RETENTION_WEEKS", 1, 1, 52)

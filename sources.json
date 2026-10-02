@@ -9,7 +9,8 @@
     "handle": "_masalalab",
     "name": "Krish Ashok",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "_soniashenoy",
@@ -21,19 +22,15 @@
     "handle": "abhiswatchlist",
     "name": "Abhi",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "aevytvdaily",
     "name": "AevyTV",
     "category": "ai_tech",
-    "enabled": true
-  },
-  {
-    "handle": "airesearches",
-    "name": "AI researches | AI",
-    "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "alishabeotra",
@@ -69,25 +66,29 @@
     "handle": "chalchitratalks",
     "name": "Chalchitra Talks",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "charankotaru",
     "name": "Charan Kotaru",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "cinema.positivity",
     "name": "Cinema Positivity ➕",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "cleoabram",
     "name": "Cleo Abram (Huge If True)",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "codesensei.dev",
@@ -117,7 +118,8 @@
     "handle": "dr.samathatulla",
     "name": "Dr. Samatha Tulla MD",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "dr.sujit_telagamsetty",
@@ -171,19 +173,15 @@
     "handle": "idris_workout2",
     "name": "Idris | Online Fitness Coach",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "itsme_bhagavathi",
     "name": "Bhagavathi S",
     "category": "entertainment",
-    "enabled": true
-  },
-  {
-    "handle": "itsneerajanair",
-    "name": "Neeraja",
-    "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "itsnehasamuel",
@@ -213,7 +211,8 @@
     "handle": "madhu_gogulapati",
     "name": "Cassette & Tapes",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "madstryke",
@@ -231,7 +230,8 @@
     "handle": "monitormunchies",
     "name": "Murali Maddula",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "nonauppal",
@@ -279,7 +279,8 @@
     "handle": "rationalrahul123",
     "name": "Rational Rahul - Telugu",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "raydalio",
@@ -297,7 +298,8 @@
     "handle": "sandeepdasauthor",
     "name": "Sandeep Das",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "simonsinek",
@@ -411,13 +413,15 @@
     "handle": "ral.livezy",
     "name": "ral.livezy",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "stories_by_srilok",
     "name": "stories_by_srilok",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "matthewberman_ai",
@@ -459,7 +463,8 @@
     "handle": "glucosegoddess",
     "name": "Jessie Inchauspé",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "favorite": true
   },
   {
     "handle": "foodpharmer",
@@ -500,6 +505,84 @@
   {
     "handle": "adamgrant",
     "name": "Adam Grant",
+    "category": "niche",
+    "enabled": true
+  },
+  {
+    "handle": "realrileybrown",
+    "name": "Riley Brown",
+    "category": "ai_tech",
+    "enabled": true
+  },
+  {
+    "handle": "sabrina_ramonov",
+    "name": "Sabrina Ramonov",
+    "category": "ai_tech",
+    "enabled": true
+  },
+  {
+    "handle": "finshots.in",
+    "name": "Finshots",
+    "category": "finance",
+    "enabled": true
+  },
+  {
+    "handle": "iamradhikagupta",
+    "name": "Radhika Gupta",
+    "category": "finance",
+    "enabled": true
+  },
+  {
+    "handle": "prateek_learnapp",
+    "name": "Prateek Singh",
+    "category": "finance",
+    "enabled": true
+  },
+  {
+    "handle": "zerodhavarsity",
+    "name": "Zerodha Varsity",
+    "category": "finance",
+    "enabled": true
+  },
+  {
+    "handle": "the_plant_slant",
+    "name": "Liam Layton",
+    "category": "food",
+    "enabled": true
+  },
+  {
+    "handle": "nehadeepakshah",
+    "name": "Neha Deepak Shah",
+    "category": "food",
+    "enabled": true
+  },
+  {
+    "handle": "insulinresistant1",
+    "name": "Justin Richard",
+    "category": "food",
+    "enabled": true
+  },
+  {
+    "handle": "colorpalette.cinema",
+    "name": "Color Palette Cinema",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "screenplayed",
+    "name": "Screenplayed",
+    "category": "entertainment",
+    "enabled": true
+  },
+  {
+    "handle": "officialgaurangadas",
+    "name": "Gauranga Das",
+    "category": "niche",
+    "enabled": true
+  },
+  {
+    "handle": "jamesclear",
+    "name": "James Clear",
     "category": "niche",
     "enabled": true
   }

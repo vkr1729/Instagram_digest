@@ -65,11 +65,8 @@ if { [ "$dow" = "6" ] && [ "$hr" -ge 18 ]; } || [ "$dow" = "7" ]; then
         log "Sunday catch-up run (day=$dow hour=$hr) — shutdown will be skipped."
     fi
 else
-    # B25: a missed week must not vanish with only a log line — notify loudly
-    # (best-effort; never fails the script).
-    log "Stale trigger outside Sat-eve/weekend window (day=$dow hour=$hr) — alerting and exiting quietly."
+    log "Stale trigger outside Sat-eve/weekend window (day=$dow hour=$hr) — exiting quietly."
     notify-send "Instagram Digest" "Scheduled run skipped (stale trigger) — no digest this week unless run manually." 2>/dev/null || true
-    "$APP_DIR/.venv/bin/python" "$APP_DIR/notifier.py" --failure-alert --context "Saturday chain skipped (stale trigger day=$dow hour=$hr)" --exit-code 0 >>"$LOG_FILE" 2>&1 || true
     exit 0
 fi
 
