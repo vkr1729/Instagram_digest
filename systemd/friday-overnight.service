@@ -1,5 +1,5 @@
 [Unit]
-Description=Friday evening Instagram Digest + TubeLM chain with poweroff
+Description=Saturday evening Instagram Digest + TubeLM chain with poweroff
 
 [Service]
 Type=oneshot
