@@ -290,7 +290,8 @@ Every infrastructure component was selected to fit entirely within permanently f
 ## 🔒 Privacy & Security Posture
 
 * **No Credentials Stored:** Account passwords and authentication cookies are never persisted.
-* **No Trackers or Analytics:** Zero tracking scripts, tracking pixels, or third-party behavioral telemetry.
+* **Client-Side PIN Gate:** Obfuscated with PBKDF2 (200k iterations) in memory; deters casual scrapers from viewing video feeds or metadata. It is not access control — treat the Pages URL as public.
+* **Zero Analytics / Tracking:** No analytics SDKs, ad networks, or invasive trackers. (Google Fonts serves the typeface — the only third-party request.)
 * **Private Cloud Forwarding:** Bookmarked videos stream directly to your personal Telegram chat via encrypted bot tokens.
 
 ---
