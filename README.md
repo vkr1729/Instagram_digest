@@ -1,18 +1,22 @@
-<div align="center">
-  <img src="assets/icon-192.png" width="80" height="80" alt="Instagram Digest Logo" style="border-radius: 18px;" />
-  <h1>📱 The Anti-Doomscroll Briefing</h1>
-  <p><strong>An intentional, finite, ad-free weekly digest of Instagram Reels on native iOS & web.</strong></p>
-  <p>Replaces algorithmic doom-scrolling with a finite, curated media briefing. Stream high-bitrate video via Cloudflare R2 and sync permanent bookmarks to Telegram — <strong>100% free forever ($0.00/mo)</strong>.</p>
+<p align="center">
+  <img src="assets/icon-192.png" width="96" height="96" alt="Instagram Digest Logo" />
+</p>
 
-  <p>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-    <a href="#-native-ios-app-installation-primary"><img src="https://img.shields.io/badge/iOS_App-Swift_%26_SwiftUI-orange.svg" alt="Native iOS App" /></a>
-    <a href="#-web-pwa-backup-no-install"><img src="https://img.shields.io/badge/Web_PWA-Mobile_%26_Desktop-purple.svg" alt="Web PWA" /></a>
-    <a href="#-the-000-forever-zero-cost-architecture"><img src="https://img.shields.io/badge/Hosting_Cost-$0.00_Forever-success.svg" alt="Zero Cost" /></a>
-    <a href="#5-permanent-telegram-cloud-bookmarks"><img src="https://img.shields.io/badge/Bookmarks-Telegram_Bot_API-blue.svg" alt="Telegram Sync" /></a>
-    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+" /></a>
-  </p>
-</div>
+<h1 align="center">📱 The Anti-Doomscroll Briefing</h1>
+
+<p align="center">
+  <strong>An intentional, finite, ad-free weekly digest of Instagram Reels on native iOS & web.</strong><br>
+  Replaces algorithmic doom-scrolling with a finite, curated media briefing. Stream high-bitrate video via Cloudflare R2 and sync permanent bookmarks to Telegram — <strong>100% free forever ($0.00/mo)</strong>.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="#-native-ios-app-installation-primary"><img src="https://img.shields.io/badge/iOS_App-Swift_%26_SwiftUI-orange.svg" alt="Native iOS App" /></a>
+  <a href="#-web-pwa-backup-no-install"><img src="https://img.shields.io/badge/Web_PWA-Mobile_%26_Desktop-purple.svg" alt="Web PWA" /></a>
+  <a href="#-the-000-forever-zero-cost-architecture"><img src="https://img.shields.io/badge/Hosting_Cost-$0.00_Forever-success.svg" alt="Zero Cost" /></a>
+  <a href="#5-permanent-telegram-cloud-bookmarks"><img src="https://img.shields.io/badge/Bookmarks-Telegram_Bot_API-blue.svg" alt="Telegram Sync" /></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+" /></a>
+</p>
 
 ---
 
@@ -42,13 +46,13 @@ Here is how **The Anti-Doomscroll Briefing** directly dismantles every single tr
 
 | # | Trap from the Video | The Psychological Trap | How This Repo Solves It | Status |
 |---|---|---|---|:---:|
-| 1 | **Infinite Scroll** | Eliminates natural stopping cues so the brain never decides to exit. | **Hard Weekly Cap:** Finite batch of 250 curated reels, followed by an explicit celebratory *"You're All Caught Up! 🎉"* milestone. No endless feed. | **Solved** |
+| 1 | **Infinite Scroll** | Eliminates natural stopping cues so the brain never decides to exit. | **Hard Weekly Cap:** Finite batch of customizable reels (ex: 150), followed by an explicit celebratory *"You're All Caught Up! 🎉"* milestone. No endless feed. | **Solved** |
 | 2 | **The Red Colour Trap** | Red notification dots exploit primal threat/urgency reflexes to compel clicks. | **Quiet-Luxury Aesthetics:** Zero red notification badges or alarm dots. Frosted OLED slate tones and a 1-tap **Hardware Grayscale Mode**. | **Solved** |
 | 3 | **Gamified Social Obligation** | Streaks, interaction scores, and follow ratios exploit fear of social rejection. | **Zero Social Graph:** Completely severed social graph. No follower counts, streaks, or social debt loops. | **Solved** |
 | 4 | **Variable Reward (Casino Logic)** | Pull-to-refresh roulette; unpredictability triggers dopamine spikes like a slot machine. | **Deterministic Static Digest:** Predictable curated score ranking or pure chronological sort. Zero pull-to-refresh roulette. | **Solved** |
 | 5 | **Filtered Reality & Envy** | Hyper-curated algorithmic feeds optimize for envy, drama, and artificial lifestyle comparisons. | **Channel Archetypes:** Whitelist ingestion balancing intentional categories (`Educational`, `Craft`, `Lifestyle`, `Vlog`) with strict fair-share creator caps. | **Solved** |
 | 6 | **Social Validation Metrics** | Like counts, view tallies, and comment threads hijack the brain's validation circuitry. | **Metrics Stripped:** Like counts, views, and comment threads are completely removed. Includes a **Neutrality Mode** to hide even rank badges (`#01`, `#02`). | **Solved** |
-| 7 | **Artificial Urgency (FOMO)** | 24-hour disappearing stories and live pings force compulsive daily checking. | **Asynchronous Weekly Batch:** Published once a week (Saturdays 18:00); reels remain permanently accessible offline with zero disappearing FOMO feeds. | **Solved** |
+| 7 | **Artificial Urgency (FOMO)** | 24-hour disappearing stories and live pings force compulsive daily checking. | **Asynchronous Weekly Batch:** Published once a week on your schedule (ex: Saturdays 18:00); reels remain permanently accessible offline with zero disappearing FOMO feeds. | **Solved** |
 | 8 | **Hypnotic Trance State** | Frictionless 0-effort autoplay lulls the prefrontal cortex into a passive zombie state. | **Active Playback Friction:** Choose between Auto mode (0.5s pause) and Manual advance (swiping required to proceed), plus optional **3-second inter-reel breathers**. | **Solved** |
 | 9 | **Sensory & Dopamine Overload** | Hyper-saturated colors and aggressive jump cuts trigger continuous neural stimulation. | **1-Tap Grayscale Detox:** Hardware-accelerated monochrome filter strips all saturation from video and interface with zero latency. | **Solved** |
 | 10 | **The Buzz (Frictionless Re-entry)** | Push notifications and vibration pings pull you back into the loop multiple times per day. | **Pull-Only Architecture & Hard PIN Lockout:** Zero push notifications. Configurable daily watch-time quotas (10/20/30/45m) backed by a hard **4-digit PIN lockout**. | **Solved** |
@@ -81,7 +85,7 @@ Here is how **The Anti-Doomscroll Briefing** directly dismantles every single tr
 ### 4. Channels You Actually Value & Zero-Cookie Import
 * **Additive Creator Onboarding (`--import-following`):** Log in once via an interactive, headed browser window to import creators you follow. Pre-existing channels are safely preserved — no wiped lists, zero stored passwords, zero saved cookies.
 * **Intentional Archetypes:** Categorize creators into `Educational`, `Craft`, `Lifestyle`, and `Vlog`. The fair-share ranking engine ensures no single creator dominates your feed.
-* **High-Density 3-Column Explore Grid:** Tap `⊞` (or press `V` on desktop) to browse all 250 reels at once with instant search by creator handle or caption keywords.
+* **High-Density 3-Column Explore Grid:** Tap `⊞` (or press `V` on desktop) to browse all curated reels at once with instant search by creator handle or caption keywords.
 
 ### 5. Permanent Telegram Cloud Bookmarks
 * **Permanent Cloud Saving:** Tap `🔖 Save` on any reel to bookmark it forever.
@@ -101,7 +105,7 @@ flowchart TD
     end
 
     subgraph Storage ["2. Zero-Egress Cloudflare Storage"]
-        D -->|Upload Top 250 MP4s & Posters| E[(Cloudflare R2 Bucket)]
+        D -->|Upload Curated MP4s & Posters| E[(Cloudflare R2 Bucket)]
     end
 
     subgraph Hosting ["3. Static Manifest & Site Compilation"]
@@ -238,7 +242,7 @@ Once deployment completes, enable GitHub Pages in your repository under **Settin
 
 To update your digest every week automatically, add a cron job on your computer or server (`crontab -e`):
 ```cron
-# Runs every Saturday at 18:00
+# Runs weekly on your preferred schedule (ex: Saturdays 18:00)
 0 18 * * 6 cd /path/to/Instagram_digest && ./run_weekly.sh >> logs/cron.log 2>&1
 ```
 
