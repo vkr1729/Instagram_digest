@@ -13,8 +13,7 @@
       --bg-card: #12131a;
       --bg-card-hover: #191a24;
       --border-subtle: rgba(255, 255, 255, 0.1);
-      --border-focus: rgba(240, 148, 51, 0.5);
-      --ig-gradient: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+      --border-focus: rgba(255, 255, 255, 0.35);
       --text-main: #f5f5f7;
       --text-muted: #8e8e93;
       --danger: #ff453a;
@@ -127,7 +126,7 @@
       outline: none;
       transition: border-color 0.15s ease;
     }
-    .search-input:focus { border-color: #f09433; }
+    .search-input:focus { border-color: #e8e8ea; }
     .search-icon {
       position: absolute;
       left: 14px;
@@ -186,7 +185,7 @@
     .select-all-label input[type="checkbox"] {
       width: 17px;
       height: 17px;
-      accent-color: #f09433;
+      accent-color: #e8e8ea;
       cursor: pointer;
     }
     .selection-counter {
@@ -270,7 +269,7 @@
     .row-checkbox {
       width: 18px;
       height: 18px;
-      accent-color: #f09433;
+      accent-color: #e8e8ea;
       cursor: pointer;
       flex-shrink: 0;
     }
@@ -304,7 +303,7 @@
       color: #fff;
       text-decoration: none;
     }
-    .channel-handle:hover { text-decoration: underline; color: #f09433; }
+    .channel-handle:hover { text-decoration: underline; color: #e8e8ea; }
     .channel-name {
       font-size: 12px;
       color: var(--text-muted);
@@ -446,7 +445,7 @@
           Syncs reels published between now and your last run date/time.
         </div>
       </div>
-      <button id="adhocSyncBtn" onclick="triggerAdhocSync()" style="background: var(--ig-gradient); border: none; color: #fff; font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+      <button id="adhocSyncBtn" onclick="triggerAdhocSync()" style="background: #ffffff; border: none; color: #000; font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
         <span>⚡ Sync Midweek Now</span>
       </button>
     </div>
@@ -470,6 +469,37 @@
       </button>
     </div>
 
+    <!-- Interactive Following Import Card (local server only) -->
+    <div class="adhoc-card" id="importCard" style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 14px 18px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        <div style="font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+          <span>📥 Import Following</span>
+          <span id="importStatusBadge" style="font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,0.1); color: #a1a1aa;">Idle</span>
+        </div>
+        <div id="importResultText" style="font-size: 12px; color: var(--text-muted);">
+          Compare your Instagram following against channels, review, and merge additively.
+        </div>
+      </div>
+      <button id="importBtn" onclick="openImportReview()" style="background: #ffffff; border: none; color: #000; font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 20px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+        <span>📥 Import Following</span>
+      </button>
+    </div>
+
+    <!-- Import Review Modal -->
+    <div id="importModal" style="display:none; position:fixed; inset:0; z-index:200; background:rgba(0,0,0,0.75); align-items:center; justify-content:center; padding:16px;" onclick="if(event.target===this)closeImportReview()">
+      <div style="background:#12131a; border:1px solid rgba(255,255,255,0.12); border-radius:16px; max-width:560px; width:100%; max-height:82vh; display:flex; flex-direction:column; overflow:hidden;">
+        <div style="padding:16px 18px; border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="font-weight:700; font-size:15px;">📥 Review Following Import</div>
+          <div id="importSummaryText" style="font-size:12px; color:var(--text-muted); margin-top:4px;">Loading…</div>
+        </div>
+        <div id="importListEl" style="overflow-y:auto; padding:12px 18px; display:flex; flex-direction:column; gap:8px;"></div>
+        <div style="padding:14px 18px; border-top:1px solid rgba(255,255,255,0.08); display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
+          <button onclick="closeImportReview()" style="background:transparent; border:1px solid var(--border-subtle); color:#fff; font-size:13px; font-weight:600; padding:8px 16px; border-radius:12px; cursor:pointer;">Cancel</button>
+          <button id="importConfirmBtn" onclick="confirmImport()" style="background:#ffffff; border:none; color:#000; font-size:13px; font-weight:700; padding:8px 18px; border-radius:12px; cursor:pointer;">Import Selected</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Controls Card (Sticky) -->
     <div class="controls-card">
       <form id="addChannelForm" onsubmit="return addChannelFromForm(event)" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
@@ -484,7 +514,7 @@
           <option value="health">🏋️ Health</option>
           <option value="food">🥗 Food</option>
         </select>
-        <button type="submit" id="addChannelBtn" style="background: var(--ig-gradient); border: none; color: #fff; font-size: 13px; font-weight: 700; padding: 9px 18px; border-radius: 10px; cursor: pointer;">Add</button>
+        <button type="submit" id="addChannelBtn" style="background: #ffffff; border: none; color: #000; font-size: 13px; font-weight: 700; padding: 9px 18px; border-radius: 10px; cursor: pointer;">Add</button>
         <span id="addChannelStatus" style="font-size: 12px; color: var(--text-muted); width: 100%;" aria-live="polite"></span>
       </form>
       <div class="search-input-wrapper">
@@ -502,6 +532,15 @@
         <button class="filter-pill" data-filter="niche" onclick="setCategoryFilter('niche')">🧠 Niche</button>
         <button class="filter-pill" data-filter="health" onclick="setCategoryFilter('health')">🏋️ Health</button>
         <button class="filter-pill" data-filter="food" onclick="setCategoryFilter('food')">🥗 Food</button>
+      </div>
+
+      <div class="filter-pills" id="archetypePills" style="margin-top:8px;">
+        <button class="filter-pill active" data-archetype="all" onclick="setArchetypeFilter('all')">All Types</button>
+        <button class="filter-pill" data-archetype="educational" onclick="setArchetypeFilter('educational')">📚 Educational</button>
+        <button class="filter-pill" data-archetype="craft" onclick="setArchetypeFilter('craft')">🛠️ Craft</button>
+        <button class="filter-pill" data-archetype="lifestyle" onclick="setArchetypeFilter('lifestyle')">🎬 Lifestyle</button>
+        <button class="filter-pill" data-archetype="vlog" onclick="setArchetypeFilter('vlog')">📹 Vlog</button>
+        <button class="filter-pill" data-archetype="untagged" onclick="setArchetypeFilter('untagged')">❔ Untagged</button>
       </div>
 
       <div class="action-toolbar">
@@ -534,6 +573,7 @@
     let allChannels = [];
     let selectedHandles = new Set();
     let currentCategoryFilter = 'all';
+    let currentArchetypeFilter = 'all';
 
     // Escape Instagram-sourced strings (display name, handle, category)
     // before interpolating into innerHTML. Handles flow from
@@ -576,8 +616,16 @@
 
     function setCategoryFilter(filter) {
       currentCategoryFilter = filter;
-      document.querySelectorAll('.filter-pill').forEach(b => {
+      document.querySelectorAll('.filter-pills .filter-pill[data-filter]').forEach(b => {
         b.classList.toggle('active', b.dataset.filter === filter);
+      });
+      applyFilters();
+    }
+
+    function setArchetypeFilter(filter) {
+      currentArchetypeFilter = filter;
+      document.querySelectorAll('#archetypePills .filter-pill').forEach(b => {
+        b.classList.toggle('active', b.dataset.archetype === filter);
       });
       applyFilters();
     }
@@ -588,10 +636,14 @@
         const matchSearch = !q || c.handle.toLowerCase().includes(q) || (c.name && c.name.toLowerCase().includes(q));
         if (!matchSearch) return false;
 
-        if (currentCategoryFilter === 'all') return true;
-        if (currentCategoryFilter === 'active') return !c.is_blacklisted;
-        if (currentCategoryFilter === 'blacklisted') return c.is_blacklisted;
-        return (c.category && c.category.toLowerCase() === currentCategoryFilter);
+        if (currentCategoryFilter === 'all') {} // fall through to archetype check
+        else if (currentCategoryFilter === 'active') { if (c.is_blacklisted) return false; }
+        else if (currentCategoryFilter === 'blacklisted') { if (!c.is_blacklisted) return false; }
+        else if (!(c.category && c.category.toLowerCase() === currentCategoryFilter)) return false;
+
+        if (currentArchetypeFilter === 'all') return true;
+        if (currentArchetypeFilter === 'untagged') return !c.archetype;
+        return (c.archetype || '').toLowerCase() === currentArchetypeFilter;
       });
     }
 
@@ -768,7 +820,7 @@
           if (badge) {
             badge.textContent = 'Syncing in background...';
             badge.style.background = 'rgba(240, 148, 51, 0.2)';
-            badge.style.color = '#f09433';
+            badge.style.color = '#e8e8ea';
           }
           if (btn) {
             btn.disabled = true;
@@ -795,7 +847,7 @@
       if (btn) btn.disabled = true;
       if (badge) {
         badge.textContent = 'Starting...';
-        badge.style.color = '#f09433';
+        badge.style.color = '#e8e8ea';
       }
       try {
         const res = await fetch('/api/sync-adhoc', { method: 'POST' });
@@ -908,7 +960,7 @@
       window._quietHandles = [];
       if (badge) {
         badge.textContent = 'Checking…';
-        badge.style.color = '#f09433';
+        badge.style.color = '#e8e8ea';
       }
       try {
         const res = await fetch('/api/channels/audit');
@@ -919,7 +971,7 @@
           if (badge) {
             const drift = missing.length + unfollowed.length;
             badge.textContent = drift === 0 ? 'In sync ✓' : drift + ' drifted';
-            badge.style.color = drift === 0 ? '#30d158' : '#f09433';
+            badge.style.color = drift === 0 ? '#30d158' : '#e8e8ea';
           }
           if (resultText) {
             const bits = [];
@@ -975,6 +1027,92 @@
       } catch (e) {
         showToast('Operation failed');
         if (quietBtn) quietBtn.disabled = false;
+      }
+    }
+
+    // ---- Interactive Following Import (local dashboard, additive review) ----
+    let importCandidates = [];
+
+    async function openImportReview() {
+      const modal = document.getElementById('importModal');
+      const listEl = document.getElementById('importListEl');
+      const summaryEl = document.getElementById('importSummaryText');
+      const badge = document.getElementById('importStatusBadge');
+      const resultText = document.getElementById('importResultText');
+      if (modal) modal.style.display = 'flex';
+      if (listEl) listEl.innerHTML = '<div class="empty-state"><h3>Loading following…</h3></div>';
+      if (summaryEl) summaryEl.textContent = 'Loading…';
+      if (badge) badge.textContent = 'Checking…';
+      try {
+        const res = await fetch('/api/channels/reconcile-following');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'reconcile failed');
+        importCandidates = (data.missing || []).filter(c => c && c.handle);
+        const present = data.already_present || [];
+        if (summaryEl) {
+          summaryEl.textContent = `${data.missing_count || 0} new · ${data.already_present_count || 0} already present (preserved)`;
+        }
+        if (badge) {
+          badge.textContent = (data.missing_count || 0) === 0 ? 'In sync ✓' : (data.missing_count + ' new');
+          badge.style.color = (data.missing_count || 0) === 0 ? '#30d158' : '#e8e8ea';
+        }
+        if (!importCandidates.length) {
+          if (listEl) listEl.innerHTML = '<div class="empty-state"><h3>Nothing new to import</h3><p>All followed channels are already in your list.</p></div>';
+          return;
+        }
+        if (listEl) {
+          listEl.innerHTML = importCandidates.map((c, i) => {
+            const h = esc(c.handle);
+            const nm = esc(c.name || c.handle);
+            const cat = esc(c.category || 'niche');
+            const arch = esc(c.archetype || 'untagged');
+            const isPresent = present.some(p => String(p.handle || '').toLowerCase() === String(c.handle).toLowerCase());
+            return `<label style="display:flex; align-items:center; gap:10px; background:#090a0d; border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:10px 12px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" class="import-check" data-idx="${i}" checked ${isPresent ? 'disabled' : ''} style="width:16px; height:16px; accent-color:#fff;">
+              <span style="flex:1; min-width:0;"><strong>@${h}</strong> <span style="color:#8e8e93;">${nm}</span><br>
+              <span style="font-size:11px; color:#a1a1aa;">${cat} · ${arch}${isPresent ? ' · Already Present' : ''}</span></span>
+            </label>`;
+          }).join('');
+        }
+      } catch (e) {
+        if (summaryEl) summaryEl.textContent = 'Could not load following. Is the local server running?';
+        if (listEl) listEl.innerHTML = '<div class="empty-state"><h3>Import unavailable</h3><p>Run `python main.py --import-following` from the terminal instead.</p></div>';
+        if (badge) badge.textContent = 'Error';
+        if (resultText) resultText.textContent = 'Import failed to load.';
+      }
+    }
+
+    function closeImportReview() {
+      const modal = document.getElementById('importModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    async function confirmImport() {
+      const checks = Array.from(document.querySelectorAll('.import-check:checked:not(:disabled)'));
+      const idxs = checks.map(el => parseInt(el.dataset.idx, 10)).filter(n => Number.isFinite(n));
+      const handles = idxs.map(i => importCandidates[i] && importCandidates[i].handle).filter(Boolean);
+      const candidates = idxs.map(i => importCandidates[i]).filter(Boolean);
+      const badge = document.getElementById('importStatusBadge');
+      const resultText = document.getElementById('importResultText');
+      if (!handles.length) { showToast('No channels selected'); return; }
+      try {
+        const res = await fetch('/api/channels/import-following', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handles, candidates })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Imported ${data.added_count} channels ✓`);
+          if (badge) { badge.textContent = 'Imported ✓'; badge.style.color = '#30d158'; }
+          if (resultText) resultText.textContent = `Imported ${data.added_count} new channels.`;
+          closeImportReview();
+          loadChannels();
+        } else {
+          showToast('Import failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) {
+        showToast('Import failed');
       }
     }
 

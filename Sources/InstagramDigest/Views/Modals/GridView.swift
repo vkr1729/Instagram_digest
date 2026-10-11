@@ -9,6 +9,7 @@ public struct GridView: View {
     public var weekID: String = "default_week"
     /// Rec 2 freshness caption, e.g. "Week of Sep 26 · updated 2 h ago".
     public var freshnessCaption: String = ""
+    public var hideRanks: Bool = false
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [
@@ -16,6 +17,19 @@ public struct GridView: View {
         GridItem(.flexible(), spacing: 2),
         GridItem(.flexible(), spacing: 2)
     ]
+    /// Chrono (newest-first by takenAt) or rank order. Rank is the default
+    /// fair-share feed order; chrono is the neutrality-mode override.
+    public var sortOrder: String = "rank"
+
+    private var displayReels: [(offset: Int, reel: ReelItem)] {
+        let indexed = Array(reels.enumerated()).map { (offset: $0.offset, reel: $0.element) }
+        if sortOrder == "chrono" {
+            return indexed.sorted {
+                ($0.reel.takenAt ?? .distantPast) > ($1.reel.takenAt ?? .distantPast)
+            }
+        }
+        return indexed
+    }
 
     public init(
         reels: [ReelItem],
@@ -23,6 +37,8 @@ public struct GridView: View {
         watchedReelIDs: Set<String>,
         weekID: String = "default_week",
         freshnessCaption: String = "",
+        hideRanks: Bool = false,
+        sortOrder: String = "rank",
         onSelectReel: @escaping (Int) -> Void
     ) {
         self.reels = reels
@@ -30,6 +46,8 @@ public struct GridView: View {
         self.watchedReelIDs = watchedReelIDs
         self.weekID = weekID
         self.freshnessCaption = freshnessCaption
+        self.hideRanks = hideRanks
+        self.sortOrder = sortOrder
         self.onSelectReel = onSelectReel
     }
 
@@ -40,7 +58,7 @@ public struct GridView: View {
 
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 2) {
-                        ForEach(Array(reels.enumerated()), id: \.element.id) { index, reel in
+                        ForEach(displayReels, id: \.reel.id) { index, reel in
                             let isWatched = watchedReelIDs.contains(reel.id)
                             let isCurrent = index == currentIndex
 
@@ -65,13 +83,15 @@ public struct GridView: View {
                                     // Content overlays
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack {
-                                            Text(reel.rankDisplay)
-                                                .font(.system(size: 11, weight: .bold))
-                                                .foregroundColor(.white)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(isCurrent ? Color.cyan : Color.black.opacity(0.6))
-                                                .clipShape(Capsule())
+                                            if !hideRanks {
+                                                Text(reel.rankDisplay)
+                                                    .font(.system(size: 11, weight: .bold))
+                                                    .foregroundColor(.white)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(isCurrent ? Color.cyan : Color.black.opacity(0.6))
+                                                    .clipShape(Capsule())
+                                            }
 
                                             Spacer()
 

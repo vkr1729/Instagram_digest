@@ -76,6 +76,19 @@ def compute_viral_score(reel: dict[str, Any], baseline_views: float) -> float:
     return round(score, 3)
 
 
+def _coerce_timestamp(value: Any) -> int | float:
+    """Coerce a timestamp to a numeric epoch (garbage/None -> 0).
+
+    A non-numeric timestamp would otherwise flow into feed.html
+    data-timestamp and break chrono-sort comparisons downstream.
+    """
+    try:
+        num = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return num if num == num and abs(num) != float("inf") else 0
+
+
 def get_blacklisted_creators() -> set[str]:
     """Retrieve set of blacklisted creator handles (lowercase)."""
     if hasattr(config, "BLACKLIST_FILE") and config.BLACKLIST_FILE.exists():
@@ -178,9 +191,11 @@ def rank_top_reels(
             return config.MAX_PER_CREATOR
 
     blacklist = get_blacklisted_creators()
+    sources = [s for s in (sources or []) if isinstance(s, dict)]
+    candidates = [c for c in (candidates or []) if isinstance(c, dict)]
     if blacklist:
-        candidates = [c for c in candidates if c.get("creator_handle", "").lower().replace("@", "") not in blacklist]
-        sources = [s for s in sources if s.get("handle", "").lower().replace("@", "") not in blacklist]
+        candidates = [c for c in candidates if str(c.get("creator_handle", "")).lower().replace("@", "") not in blacklist]
+        sources = [s for s in sources if str(s.get("handle", "")).lower().replace("@", "") not in blacklist]
 
     if not candidates:
         logger.warning("No candidate reels provided to ranker.")
@@ -212,6 +227,10 @@ def rank_top_reels(
             item = dict(reel)
             item["creator_name"] = creator_name
             item["category"] = category
+            item["archetype"] = src.get("archetype") or ("lifestyle" if category == "entertainment" else "educational")
+            item["timestamp"] = _coerce_timestamp(reel.get("timestamp"))
+            if isinstance(reel.get("taken_at"), (int, float)) and reel.get("taken_at"):
+                item["taken_at"] = _coerce_timestamp(reel.get("taken_at"))
             item["base_viral_score"] = base_score
             if handle in favorites:
                 item["viral_score"] = round(base_score * fav_boost, 3)

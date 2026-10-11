@@ -180,20 +180,20 @@ def test_center_double_tap_routes_to_native_fullscreen_toggle(mobile_page: Page)
     mobile_page.evaluate("""() => {
         const v = document.querySelector('.reel-card .reel-video');
         Object.defineProperty(v, 'duration', { value: 30, writable: true });
-        v.currentTime = 15;
+        v.currentTime = 5;
     }""")
     feed.click(position={"x": 350, "y": 400})
     feed.click(position={"x": 350, "y": 400})
     mobile_page.wait_for_timeout(100)
     curr_time = mobile_page.evaluate("() => document.querySelector('.reel-card .reel-video').currentTime")
-    assert abs(curr_time - 15) < 1.0
+    assert abs(curr_time - 5) < 1.0
     assert mobile_page.evaluate("() => window.__toggleCalls") == 1
 
     feed.click(position={"x": 50, "y": 400})
     feed.click(position={"x": 50, "y": 400})
     mobile_page.wait_for_timeout(100)
     curr_time = mobile_page.evaluate("() => document.querySelector('.reel-card .reel-video').currentTime")
-    assert abs(curr_time - 15) < 1.0
+    assert abs(curr_time - 5) < 1.0
     assert mobile_page.evaluate("() => window.__toggleCalls") == 1
 
     # Ripple elements are gone entirely.

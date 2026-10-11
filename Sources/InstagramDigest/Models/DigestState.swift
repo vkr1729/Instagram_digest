@@ -89,21 +89,30 @@ public final class BookmarkItem {
     }
 }
 
-/// Tracks daily viewing velocity for mindful usage reminders (50/day completion modal).
+/// Tracks daily viewing velocity for mindful usage reminders (time quota and completion modal).
 @Model
 public final class DailyProgress {
     @Attribute(.unique) public var dateString: String = "" // "YYYY-MM-DD" local calendar date
     public var viewedCount: Int = 0
     public var snoozeUntil: Date? = nil
+    public var watchDurationSeconds: Double = 0.0
+    public var targetMinutes: Int = 20
+    public var enforcementMode: String = "gentle" // "gentle" or "hard"
 
     public init(
         dateString: String,
         viewedCount: Int = 0,
-        snoozeUntil: Date? = nil
+        snoozeUntil: Date? = nil,
+        watchDurationSeconds: Double = 0.0,
+        targetMinutes: Int = 20,
+        enforcementMode: String = "gentle"
     ) {
         self.dateString = dateString
         self.viewedCount = viewedCount
         self.snoozeUntil = snoozeUntil
+        self.watchDurationSeconds = watchDurationSeconds
+        self.targetMinutes = targetMinutes
+        self.enforcementMode = enforcementMode
     }
 }
 

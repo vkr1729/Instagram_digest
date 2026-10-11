@@ -89,6 +89,15 @@ public final class AVPlayerPool: ObservableObject {
     @Published public var currentDuration: Double = 0.0
     @Published public var currentTime: Double = 0.0
 
+    public enum AdvanceMode: String {
+        case auto = "auto"
+        case manual = "manual"
+    }
+    @Published public var advanceMode: AdvanceMode = .auto
+    @Published public var breatherEnabled: Bool = false
+    @Published public var isGrayscale: Bool = false
+    @Published public var hideRanks: Bool = false
+
     /// Watchdog and strike tracking
     private var reelStrikes: [String: Int] = [:]
     private var localStallCount: [String: Int] = [:]
@@ -97,15 +106,19 @@ public final class AVPlayerPool: ObservableObject {
     /// a pause/background/interruption that lands mid-load must not be
     /// overridden when the load finishes (ghost audio).
     private var wantsPlayback: Bool = true
+    /// Pending breather delay between reels. Cancelled on any navigation so
+    /// a swipe-away during the 3s pause cannot auto-advance from a stale reel.
+    private var breatherTask: Task<Void, Never>?
 
     /// Active index in playlist
     public private(set) var currentIndex: Int = -1
     public private(set) var currentItems: [ReelItem] = []
     public var currentWeekID: String = ""
 
-    /// Callback hooks for watched events and stall alerts
+    /// Callback hooks for watched events, stall alerts, and playback time ticks
     public var onWatchedMilestone: (@MainActor (ReelItem) -> Void)?
     public var onStallWatchdogTriggered: (@MainActor () -> Void)?
+    public var onPlaybackTick: (@MainActor (Double) -> Void)?
 
     private var memoryPressureObserver: NSObjectProtocol?
     private var backgroundObserver: NSObjectProtocol?
@@ -278,6 +291,10 @@ public final class AVPlayerPool: ObservableObject {
             return
         }
         wantsPlayback = true // navigation is an explicit "play this" gesture
+        // A pending breather belongs to the departed reel: cancel it so the
+        // stale delay cannot auto-advance after the user already moved on.
+        breatherTask?.cancel()
+        breatherTask = nil
         // Failure ladder counts per visit: a fresh navigation gets a clean slate.
         reelStrikes[currentItems[newIndex].id] = nil
         localStallCount[currentItems[newIndex].id] = nil
@@ -586,16 +603,32 @@ public final class AVPlayerPool: ObservableObject {
             }
             return
         }
-        if currentIndex + 1 < currentItems.count {
-            onAutoAdvanceToNext?()
+        if advanceMode == .manual {
+            isPlaying = false
+            return
+        }
+        if breatherEnabled {
+            breatherTask?.cancel()
+            breatherTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { return }
+                guard let self = self, self.slotCurrent === slot else { return }
+                if self.currentIndex + 1 < self.currentItems.count {
+                    self.onAutoAdvanceToNext?()
+                }
+            }
         } else {
-            // Last item: replay only after the seek completes, otherwise play()
-            // can resume at the end position and re-fire DidPlayToEnd in a tight loop.
-            slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak slot] _ in
-                guard let self = self, let s = slot, self.slotCurrent === s else { return }
-                // B2: replaying the last item is playback — honor intent.
-                if self.wantsPlayback {
-                    s.player.rate = self.effectiveRate
+            if currentIndex + 1 < currentItems.count {
+                onAutoAdvanceToNext?()
+            } else {
+                // Last item: replay only after the seek completes, otherwise play()
+                // can resume at the end position and re-fire DidPlayToEnd in a tight loop.
+                slot.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak slot] _ in
+                    guard let self = self, let s = slot, self.slotCurrent === s else { return }
+                    // B2: replaying the last item is playback — honor intent.
+                    if self.wantsPlayback {
+                        s.player.rate = self.effectiveRate
+                    }
                 }
             }
         }
@@ -662,6 +695,8 @@ public final class AVPlayerPool: ObservableObject {
             // collapse the hairline bar layout (width NaN).
             let progress = cur.isFinite ? max(0.0, min(1.0, cur / duration)) : 0.0
             self.currentProgress = progress
+
+            self.onPlaybackTick?(0.5)
 
             // 80% progress milestone trigger with once-per-reel latch
             if progress >= 0.80 && !self.watchedLatchedReelIDs.contains(reel.id) {

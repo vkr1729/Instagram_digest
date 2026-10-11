@@ -1,212 +1,75 @@
-# Frontier Plan Review — Cookie-Free Implementation Plan
+# Frontier Plan Review — Rebranding & Anti-Doomscroll Engine
 
 ## 0. Scale Anchor (non-negotiable)
-- Target stays single-user personal CLI / weekly cron. No contextvars/thread-local
-  predicate machinery, no new micro-layers, no separate anonymous extractor module.
-- Control surface stays: one bool (`COOKIE_FREE_MODE`, env-read, default `False`) +
-  two CLI flags (`--cookie-free` / `--use-cookies`, mutually exclusive, CLI wins,
-  neither → config). One log line at startup: `mode=cookie-free (source: --cookie-free)`.
-- Verdict on the plan as written: direction is right, but it names a file that does
-  not exist, a helper that does not exist, and a state mechanism that will rot.
-  Findings below are ordered by blast radius, each with a concrete fix.
 
-## P0. Plan references `downloader.py` — the code lives in `extractor.py`
-- **Pitfall:** IMPLEMENTATION_PLAN Phase 2 puts `get_cookie_args()` in
-  `downloader.py`. There is no `downloader.py` in the repo. The real function is
-  `extractor.get_cookie_args()` (`extractor.py:240`, zero-arg) with two live call
-  sites: the yt-dlp metadata fallback (`extractor.py:1375`,
-  `cookie_args = get_cookie_args()`) and the download fallback
-  (`extractor.py:1627`, `cookie_args = get_cookie_args() if use_cookies else []`).
-  Implementing Phase 2 as written edits a nonexistent file and leaves both real
-  leak paths open while appearing to work.
-- **Fix:** rewrite Phase 2 to target `extractor.py`: add an explicit
-  `cookie_free: bool = False` parameter to `get_cookie_args()` (return `[]`
-  immediately when true, before the `cookies.txt` / `--cookies-from-browser`
-  fallback), and thread it through both call sites. Note the download path
-  already has the `use_cookies` pattern — follow it, don't invent a new one.
-- **Sequencing:** this is the first code change after config, because every later
-  phase assumes cookie-less yt-dlp.
+- Target stays single-person personal use. No backend, no OAuth server, no cross-device quota sync, no microservices. Control surface stays file-local: `sources.json` + `localStorage` (Web PWA) / SwiftData `DailyProgress`+`AppState` (iOS), mirrored schema — not live sync.
+- Per taste: functional single-user fit over stringent gates. If a UAT fails >~3 rounds without a crash/data-loss signal, relax the UAT or add a test seam and move on.
+- Note: this review supersedes the prior cookie-free review formerly in this file (preserved in git history). REQUIREMENTS.md already incorporates the prior requirements review (counting rule, local-day boundary, per-platform-local enforcement, Gentle-default, `shortfall_paused` + `--limit-per-creator`, additive `archetype`, display-only neutrality). Remaining risks below are implementation-level.
 
-## P0. `is_cookie_free()` with "thread/context state" is the wrong mechanism
-- **Pitfall:** Phase 1 proposes `config.is_cookie_free()` that "respects global
-  config override or runtime thread/context state." A module-global mutable flag
-  read deep inside `extractor.py` is untestable and racy: `local_server.py`
-  runs pipelines in worker threads (`:141`, `:256`, `:454` call
-  `refresh_cookies_or_abort` then `main_module.run_full_sync`/`run_expand`), and
-  a global leaks mode across concurrent dashboard operations and across tests.
-  This is the over-engineering center of the plan — contextvars for a
-  single-user cron tool.
-- **Fix:** no global predicate, no context state. Resolve the mode once in
-  `main()` and thread it as an explicit parameter: `run_full_sync(...,
-  cookie_free: bool)`, `InstagramSession(cookie_free=...)`,
-  `extract_creator_reels(..., cookie_free=...)`,
-  `download_reel_video(..., use_cookies=not cookie_free)`. Pure, greppable,
-  testable. `config.COOKIE_FREE_MODE` remains a dumb env-read default only.
-- **Exception (narrow):** the alert-suppression guard (P2 below) is the one place
-  a central check is justified, because there are 10 email + 13 popup sites.
+## P0. Phase 4 names three files that do not exist — parity work lands nowhere
 
-## P0. `_env_bool` does not exist — plan assumes it
-- **Pitfall:** Phase 1 writes `COOKIE_FREE_MODE: bool = _env_bool(...)`, but
-  `config.py` only defines `_env_int` (`:83`) and `_env_float` (`:96`). Small,
-  but it means Phase 1 as written does not run.
-- **Fix:** add a `_env_bool` helper (accept `1/true/yes/on`, case-insensitive;
-  garbage → default, matching the defensive style of `_env_int`) in the same
-  config change that adds `COOKIE_FREE_MODE`.
+- **Pitfall:** IMPLEMENTATION_PLAN §4.1 names `Sources/InstagramDigest/Models/DailyProgress.swift`. No such file exists. `DailyProgress` lives in `Sources/InstagramDigest/Models/DigestState.swift:94-108` (`viewedCount`, `snoozeUntil`). §4.2 names `Sources/InstagramDigest/Engine/FeedPlayerCoordinator.swift`. No such file exists. The real auto-advance lives in `Sources/InstagramDigest/Engine/AVPlayerPool.swift` (`handlePlaybackEnded:573`, `onAutoAdvanceToNext:568`, 0.5 s time observer `attachTimeObserver:649`). §4.2/4.3 name `Sources/InstagramDigest/Views/Feed/FeedView.swift`. No such file exists. The real views are `Views/Feed/ReelCardView.swift` + `Views/Feed/FeedPagerView.swift` (+ `StoryCategoryBarView.swift`, `HeaderBarView.swift`). Implementing §4 as written edits nonexistent files while the real count-based modal, real DidPlayToEnd advance, and real feed views keep shipping.
+- **Fix:** rewrite §4 to target `DigestState.swift` (extend `DailyProgress`), `AVPlayerPool.swift` (`advanceMode` enum + branch in `handlePlaybackEnded`), `FeedPagerView.swift`/`ReelCardView.swift` (swipe affordance, grayscale, rank-hide, chrono toggles), `Views/Modals/` (replace `MindfulDailyModalView`, add `ManifestoSheetView`). Grep-verify every Swift path before implementation starts — same class of error as the old `downloader.py` vs `extractor.py` miss.
+- **Sequencing:** freeze web semantics first (`advance_mode` enum, quota counting rule, breather exclusion), then mirror the enum in Swift from day one. Half-migration (web stops, iOS advances) breaks the parity matrix silently.
 
-## P1. Anonymous failures must bypass the backoff sleeps, not just the gate
-- **Pitfall:** Phase 3 says "soft-skip creator after single retry" but never
-  touches the actual sleep machinery: `_extract_with_backoff`
-  (`main.py:1316-1357`) sleeps `RATE_LIMIT_WAITS_MIN = (20, 40, 80)` minutes per
-  creator, and the feed path sleeps `FEED_RETRY_WAIT_MIN = 20` min
-  (`main.py:1185`, `:1828`). In cookie-free mode anonymous 429s/empty grids are
-  routine — reusing this path turns every anonymous rate-limit into a multi-hour
-  stall that sleeps through the overnight cron window. Suppressing `_GATE`
-  alone does not fix this; the sleeps happen before any gate trip.
-- **Fix:** in cookie-free mode, replace `_extract_with_backoff` with a bounded
-  single-retry-then-skip (no `time.sleep` beyond normal pacing), and skip the
-  `cooling_down` checkpoint writes. Keep `CREATOR_PAUSE`/`ENRICH_PAUSE` pacing
-  (IP rate-limits are real when anonymous) but force the trust-warming
-  multiplier to 1 — `_apply_trust_warming_pacing` (`main.py:654`) doubles
-  pauses for a young *account*, and there is no account here.
-- **Keep the viability gates as-is** (`MIN_CANDIDATE_RATIO`,
-  `MAX_EMPTY_CREATOR_RATIO`, `main.py:37-38`); they will fail more often
-  anonymous, and that failure correctly routes to `shortfall_paused`, not to
-  relaxed thresholds.
+## P0. Count→seconds migration is not atomic — two trackers will compete
 
-## P1. `_GATE` and yt-dlp gate-trip paths need explicit cookie-free bypass
-- **Pitfall:** `check_gate()` is called at the top of every extraction entry
-  point, and `download_reel_video` trips the gate on yt-dlp stderr signals
-  (`extractor.py:1653-1654`); the metadata fallback does the same (`:1388-1389`).
-  In a dashboard process that previously ran a cookie mode trip, `reset_gate()`
-  ordering matters, and anonymous 429s must never latch the account-safety gate
-  (there is no account to protect).
-- **Fix:** never call `trip_gate` for anonymous-origin errors in cookie-free
-  mode (guard the two `_ytdlp_stderr_trips_gate` sites + `check_gate`
-  semantics), and always `reset_gate()` at run start regardless of mode. State
-  this in the plan — currently Phase 3 mentions the breaker only in passing.
+- **Pitfall:** `templates/partials/player.js:84-153` runs a 50-reel/day counter (`DAILY_SET_KEY`, `DAILY_SNOOZE_KEY`, `updateDailyCounterBadge`, `recordDailyView`, `checkDailyLimitTrigger`, `dailyLimitModal`). `DigestState.swift` + `InstagramDigestApp.swift:72,610,742,802` (four `DailyProgress(...)` init sites) + `MindfulDailyModalView` run the same count on iOS. The plan adds `daily_watch_seconds` without deleting the 50-count path, leaving two badges (`🎯 0/50` in `header.html:6` vs new `⏱️ 8m/20m` pill), two modals, and four iOS init sites that break the moment the model gains `watchDurationSeconds/targetMinutes/enforcementMode`.
+- **Fix:** one commit per platform: web deletes the `DAILY_SET_KEY` path + `dailyCounterBadge` 50-copy + `dailyLimitModal` 50-copy and replaces with seconds accumulator; iOS updates all four init sites + retires `viewedCount/snoozeUntil` (or keeps as deprecated no-op with a comment) + replaces `MindfulDailyModalView`. SwiftData addition must be optional-with-default so lightweight migration applies. Document forgot-PIN policy in the same commit (local clear/reinstall accepted, no recovery server).
+- **Accumulator spec to lock:** delta-based (last-tick timestamps, not +1 per `timeupdate`), counting only while `!paused && !ended && document.visibilityState==='visible'` (web) / `timeControlStatus==.playing && scenePhase==.active` (iOS). Reuse the existing 0.5 s observer in `AVPlayerPool:649` — no second observer. Pause the accumulator during the breather overlay. Scrub-replay double-counts; accept and document.
 
-## P1. Tier-3 skip has three call sites, plan names one; `run_expand` is missing
-- **Pitfall:** `extract_external_reels_from_feed` is invoked from the shortfall
-  resume path (`main.py:1128`), the main Tier-3 path (`main.py:1784`), and
-  `run_expand` (`main.py:2498`). Making the extractor function "raise or return
-  `[]`" without updating callers leaves the shortfall-resume path computing a
-  deficit against a top-up that can never arrive, and leaves `run_expand`
-  (pure feed discovery — inherently authenticated) runnable under a flag that
-  promises anonymity.
-- **Fix:** skip Tier 3 explicitly at both `run_full_sync` call sites with a
-  clear log line (don't rely on the callee returning `[]`), and refuse
-  `run_expand` in cookie-free mode with the same style of error as
-  `--sync-following`. Cover all three in tests.
+## P1. Archetype + `taken_at` data plumbing is missing end-to-end
 
-## P2. Alert suppression: central guard, not 23 scattered `if`s
-- **Pitfall:** Phase 4 says "guard `send_cookie_alert_email()` and
-  `raise_cookie_attention()`" at the call sites. There are 10 email and 13
-  popup sites (`tests/test_dashboard.py:381-383` pins these counts), plus
-  `_ensure_valid_session`, `_probe_session_once`, `refresh_cookies_or_abort`,
-  and `healthcheck.sh` step 2. Scattered `if not cookie_free` checks rot; the
-  next contributor adds site #14 unguarded.
-- **Fix:** put the suppression *inside* `notifier.send_cookie_alert_email`
-  (early-return `False` when the resolved cookie-free flag is set) and inside
-  `local_server.raise_cookie_attention` (early-return `False`), threaded from
-  the same explicit parameter — not a global. Keep the call sites untouched so
-  the count-pinning test keeps passing, and add one unit test per guard
-  asserting no email/popup escapes in cookie-free mode. Separately: bypass
-  `_ensure_valid_session`/`_probe_session_once`/follow-cooldown/exporter in
-  `main.py`, bypass `refresh_cookies_or_abort` in the three `local_server.py`
-  workers, skip `healthcheck.sh` step 2 (sessionid check) when the mode is
-  cookie-free, and skip the `run_weekly.sh` step-1 cookie refresh.
+- **Pitfall:** `sources.json` (100+ entries, verified) has no `archetype` field. `main.py` sets internal `timestamp` (`:170,:1773,:1797`) and `rank_display`, but `site_builder.py:469-476` passes `items` through without guaranteeing `archetype`/`timestamp` survive, `templates/partials/feed.html:3` emits `data-id/category/index` with no `data-archetype`/`data-timestamp`, and `ReelItem.swift:56-85` (`CodingKeys`) has no `takenAt`/`archetype` — decoding drops them. Phase 3 chrono-sort and archetype filters then have no data to operate on. The plan assumes `taken_at` is in the viewer; it is not.
+- **Fix:** thread both fields explicitly: `main.py`/`ranker.py` → digest JSON → `site_builder.py` preserve → `feed.html` `data-archetype` + `data-timestamp` attributes → `data.json` keys → `ReelItem.swift` optional `takenAt: Date?` / `archetype: String?` (`decodeIfPresent`, harmless to old archives). Land this before any filter/sort UI. Missing timestamps sort last with a stable rank tiebreak; document chrono gaps from dateless drops (cookie-free pipeline drops timestamp-less reels by cutoff).
+- **Ranker scope decision (required):** archetype filtering must be viewer display-only like neutrality mode, not a ranker inclusion rewrite. Two-axis constraint solving (category ceiling via `get_category_ceiling` + `MAX_CATEGORY_SHARE` + `FAVORITE_GUARANTEED_PICKS` in `ranker.py:119-284` crossed with archetype) breaks guaranteed representation the moment a filter matches few creators. Filter the rendered Top-250 set client-side; never re-run selection.
 
-## P2. `--sync-following` refusal must cover the dashboard endpoint too
-- **Pitfall:** Phase 4 gates only the `main.py --sync-following` CLI. The same
-  operation is reachable via `local_server.py:1980`
-  (`/api/sync-following` → `extractor.sync_following_accounts(force=True)`),
-  which reads `data/cookies.json` and runs the exporter subprocess
-  (`extractor.py:414-420`).
-- **Fix:** refuse with a clear error at the API handler as well when the
-  server is in cookie-free mode (or document that the dashboard always runs
-  cookie mode — but then say so explicitly).
+## P1. Tier-3 strip has three call sites, misnamed config flags, and an undefined `--expand`
 
-## P2. Shell scripts and healthcheck are unmentioned dependency-order risks
-- **Pitfall:** `run_weekly.sh` unconditionally refreshes Chrome cookies (step 1)
-  and invokes `main.py --sync --deploy` with no mode flags; `resume_pending.sh`
-  resumes with `--sync --resume --deploy` inheriting whatever env it has. If
-  these ship unchanged, cron silently defeats cookie-free mode (exporter run +
-  authenticated resume of an anonymous checkpoint, or vice versa).
-- **Fix (same commit as CLI resolution, not a follow-up):** `run_weekly.sh`
-  skips the exporter step and passes the mode flag through when cookie-free;
-  `resume_pending.sh` passes the banked/resolved mode through; `healthcheck.sh`
-  step 2 becomes a soft skip with a logged line in cookie-free mode. These are
-  the highest silent-mixing risks in the whole change.
+- **Pitfall:** `extract_external_reels_from_feed` (`extractor.py:1704`) is called from `main.py:1194` (shortfall resume), `main.py:1882-1909` (main Tier-3), and `main.py:2668` (`run_expand`), plus `scripts/topup_digest.py`. The plan names only the extractor function. Deleting it without updating all callers + ~10 test mocks (`test_sync_resume`, `test_expand_resume`, `test_upload_ordering`, `test_fable_audit_fixes`, `test_durability`, e2e) breaks the suite in the same commit. `config.py` has no `TIER3_*` variables — only `MAX_EXTERNAL_SHARE:143`, `MAX_FEED_EVALUATIONS:144`, `MIN_EXTERNAL_LIKES:148`, `MIN_EXTERNAL_COMMENTS:149`. "Clean up `TIER3_*`" is a no-op that hides the real question (keep `MAX_EXTERNAL_SHARE` as dead config or remove + update `test_enhancements.py:107-124`). `run_expand` after Tier-3 removal is undefined: pure feed discovery was inherently authenticated — does `--expand` now refuse (like `--sync-following` in cookie-free) or repurpose to deeper per-creator depth?
+- **Fix:** skip Tier-3 explicitly at all three `main.py` sites with a log line (don't rely on callee returning `[]`), define `--expand` behavior explicitly (recommend refuse-with-clear-error, same style as `--sync-following`), keep `MAX_EXTERNAL_SHARE` etc. as deprecated-unused or remove with test updates in the same commit, update `scripts/topup_digest.py` + all mocks atomically. Keep `MIN_DEPLOY_ITEMS` (module-local in `main.py:39`, `int(TOP_DIGEST_COUNT*0.6)`) as the hard floor; below floor → existing `shortfall_paused`, zero R2 mutation. Dry-run yield check before removal so thin-week impact is measured, not assumed.
 
-## P3. Checkpoint contract must land atomically with resolution
-- **Pitfall:** `_write_sync_progress` (`main.py:989`), `_sync_progress_usable`
-  (`main.py:222`), and the `candidates_cache.json` `params_match` gate
-  (`main.py:1243-1249`) must all learn `cookie_free` in the same commit as CLI
-  resolution. A staggered landing (stamp now, gate later) produces checkpoints
-  that claim a mode no reader enforces, i.e. the exact silent-mixing bug the
-  stamp exists to prevent.
-- **Fix:** one commit: resolve → stamp (`sync_progress_<week>.json` +
-  candidates cache) → refuse-on-mismatch unless `--force` (fresh start,
-  banked work retired) or `--resume` adopting banked mode. Also define the
-  CLI conflict: `--cookie-free` + `--use-cookies` together should be an
-  `argparse` mutually-exclusive error, not a silent precedence rule.
+## P1. Manual/breather interaction with the existing playback machine is undefined
 
-## P3. `ANON_REELS_PER_CREATOR_DEPTH` is a new knob for a solved problem
-- **Pitfall (over-engineering):** Phase 1 adds `ANON_REELS_PER_CREATOR_DEPTH`
-  (`_env_int`, clamp 5–50) to "compensate for skipping Tier 3." But discovery
-  depth is already controlled by `--limit-per-creator` / `limit_per_creator`,
-  capped at `min(limit_per_creator, 5)` (6 for food) in `main.py:1286`, with
-  final caps via `caps_map`/`MAX_PER_CREATOR`. A second depth knob interacts
-  with all three and needs its own wiring through `per_source`, Tier 2
-  (`max_reels=8`), and ranker caps — new config surface for a single-user tool.
-- **Fix:** drop the new env var. In cookie-free mode, raise the effective
-  discovery depth by reusing `limit_per_creator` (e.g. treat the cap as the
-  existing `--limit-per-creator` default of 15 instead of 5). One knob, zero
-  new config, same compensation. Revisit only if anonymous yields miss 150
-  twice in a row.
-- **Related cost to state honestly:** with the media-API prefilter skipped,
-  every shortlist reel pays the ~7s per-reel Playwright fallback for its
-  timestamp. Deeper discovery multiplies enrichment time — the plan should name
-  this tradeoff instead of implying depth is free.
+- **Pitfall:** `player.js` auto-advances 500 ms after end (`handleVideoEnd:1450-1464`, `navGen` guard, `endedHandled` flag at `:1519` + `:1599`), plus `IntersectionObserver` autoplay (`:1872`), `MANUAL_PAUSE_COOLDOWN_MS:76`, hold-2x latch, 80% watched rule (`:1514`), swipe-up marks-watched, and `countdown-toast` copy ("Next reel in 0.5s...", `feed.html:5`). The plan's `advance_mode` + `breather_enabled` never states: does manual disable observer auto-play on scroll-through (else scroll leaks past the stopped reel)? Does breather delay advance in `auto` too, or is it manual-only (plan vs prior requirements review disagree)? Does tap skip breather? Does the toast copy change in manual mode? Wedge risk: tap-debounce + `manualPause` cooldown fighting the new stopped-at-end state (the codebase already documents one such wedge at `:1550-1554`).
+- **Fix:** lock semantics before coding: `advance_mode:'auto'|'manual'` persisted, default `auto`. Manual: `ended` pauses on final frame, shows "Swipe for next ↓", never calls `advanceToNextReel`; swipe/`goToCard` plays next explicitly; observer must not auto-resume a manually-stopped card. Breather: single definition (recommend: works in both modes as a skippable 3 s delay, default off, timer excluded from quota — or adopt requirements-review manual-only; pick one and update both docs). Hide/retitle the countdown toast in manual mode. Mirror the enum in `AVPlayerPool` from day one (§P0).
 
-## P3. Don't hardcode 150 — reference `MIN_DEPLOY_ITEMS`
-- **Pitfall:** Phase 4 and the verification plan hardcode "150." The real floor
-  is `MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)` (`main.py:39`),
-  and `TOP_DIGEST_COUNT` is env-tunable. Hardcoding 150 in code or tests breaks
-  the moment anyone tunes the digest size.
-- **Fix:** always compare against `MIN_DEPLOY_ITEMS` (150 is just its current
-  default value); tests assert against the imported constant.
+## P1. Quota settings have no UI surface — header is already crowded
 
-## P3. Verification plan needs hardening
-1. The "anonymous Playwright extraction on a known public shortcode" test hits
-   live Instagram — mark it integration-only (skip by default, never gate CI),
-   or anonymous 429s will red the suite nondeterministically.
-2. Add the regression test FRONTIER_REQUIREMENTS_REVIEW Q3 already asks for:
-   with the flag on, assert no `cookies.json`/`cookies.txt` read and no
-   `--cookies-from-browser` arg construction (patch `pathlib.exists` /
-   `subprocess.run` and inspect).
-3. Add a checkpoint-mismatch test (bank cookie mode, resume cookie-free
-   without `--force` → refusal; with `--force` → fresh start).
-4. Add a shell-level assertion that `run_weekly.sh` skips the exporter step in
-   cookie-free mode (even a grep test beats nothing).
-5. Keep the "full suite passes" gate, but update `test_dashboard.py:381-383`
-   counts only if call sites actually change — under the central-guard
-   recommendation they should not.
+- **Pitfall:** the plan adds a quota picker (10/20/30/45, default 20), Gentle/Hard mode switch, and a 4-digit PIN setup, plus grayscale / advance / breather / rank-hide / chrono toggles — ~7 new controls. `header.html` already holds daily badge, jump, grid, offline, bookmarks, dashboard, channels, and week selector. There is no settings sheet in the viewer today (only jump/grid/offline/bookmarks modals in `modals.html`). Cramming toggles into the header overflows mobile; scattering them across modals rots.
+- **Fix:** one settings sheet (new modal on web, new sheet on iOS) hosting quota picker + enforcement mode + PIN + advance/breather + grayscale + neutrality. Header keeps only the session pill (`⏱️ 8m/20m`, replacing `🎯 0/50`) and a single settings gear. PIN = local salted hash only (SHA-256 + salt is fine for one user; no bcrypt-in-browser theater, no recovery server). Storage keys date-keyed (`YYYY-MM-DD` local) + extend the existing `pruneOldWeeks` regex in `player.js:156-163` to the new keys, else quota keys accumulate forever. Private-mode `localStorage` failure = quota silently disabled; document, don't build a fallback backend.
+
+## P2. Onboarding duplicates `audit_channels.py` and contradicts itself on defaults
+
+- **Pitfall:** `audit_channels.py` already merges follows into `sources.json` (`import_missing:235`, category fallback `entertainment`, `/api/channels/audit:914`, `/api/channels/add:868`, dashboard hint at `channels.html:938`). New `interactive_onboarding.py` adds a second merge path. Three default-category answers exist: plan says new imports default `archetype:"educational"` (no `category` stated), prior requirements review said `category:"niche"` for triage, `audit_channels` uses `entertainment`. First import picks a winner at random. Unspecified: 2FA/checkpoint handling, 500+ follow pagination + selector resilience (Instagram DOM churn = same brittleness class the Tier-3 strip kills), proof of no cookie persistence (which files asserted), and how `--import-following` (headed login allowed) coexists with the cookie-free `--sync-following` refusal (`local_server.py:1988`, UAT-OR-01) — a naive guard blocks the new command too.
+- **Fix:** reuse `audit_channels.import_missing` merge (lowercased-handle dedupe, preserve `favorite`/`category`/`enabled`) with one locked default for truly-new handles (recommend `category:"niche"`, `archetype:null` → shows in All, triaged in `/channels`); checkbox review reuses the existing channels table, no new modal component. CLI is canonical; `/api/import-following` only when server-side `is_local` (client-side `window.__IS_LOCAL` hide in `auth.html:34` is not enforcement), refuses when a pipeline lock is held, never writes `cookies.json`/`cookies.txt`/browser-profile outside a temp dir deleted on exit (assert in tests). Keep CSV/handle-paste as fallback input to the same merge — DOM scraping will break first. Explicitly exempt `--import-following` from the cookie-free refusal with a comment pointing at it.
+
+## P2. Icon + palette scope is under-scoped — neon remnants will survive
+
+- **Pitfall:** plan lists three CSS selectors, but neon leaks across files: `channels.html:449,487` inline `var(--ig-gradient)`, `modals.html:27` offline progress bar, `player.js:104-105` badge colors (`#f09433`), `styles.css` `--ig-gradient:5`, `.story-ring:389-407`, `.jump-submit-btn:309`, `.reset-btn:853`, plus celebration/grid/discovery pills. A three-selector edit ships a half-rebrand. PNG rendering is unspecified (which tool, which sizes for `AppIcon.appiconset`, PWA `apple-touch-icon`/`icon-192`/`icon-512`); `site/icon.svg` + `assets/icon.svg` both exist and must stay in sync. No manifest was found (`**/manifest*.json` empty) — if icons rename, `templates/sw.js` cache + any hardcoded icon paths 404 offline.
+- **Fix:** pre-work grep for `#f09433|#dc2743|#bc1888|#e6683c|#cc2366|conic-gradient|--ig-gradient` across `templates/`, `site_builder.py`, `player.js`, `channels.html`, `dashboard.html`; replace with slate/monochrome tokens in one commit. Single SVG source + checked-in render script (document tool + sizes). Bump `sw.js` cache version atomically with PNGs. Verify `Resources/Assets.xcassets/AppIcon.appiconset` contents before claiming "all dimensions."
+
+## P2. Grayscale + chrono-sort each hide a platform spike
+
+- **Pitfall (grayscale):** web `filter:grayscale(100%)` on 250 `<video>` elements forces repaint on scroll on some mobile browsers — scope the class to the feed container with `will-change` care, not per-video, and smoke-test scroll jank on-device. iOS `.grayscale(1.0)` on an `AVPlayerLayer`-backed `UIViewRepresentable` may not affect the underlying `CALayer` at all — likely needs a `CIFilter`/overlay instead. The parity matrix states the modifier as fact; treat as spike, verify on simulator before committing to it.
+- **Pitfall (chrono):** the feed is server-rendered (`site_builder.py:100` → `viewer.html` Jinja loop). Client-side chrono means DOM reorder of 250 cards + `data-index` rewrite + observer/virtual-loader (`data-src`) + `goToCard` order + grid renderer (`player.js:2741-2800`, which reads `.rank-pill` text for search/rank badges) all moving together. Rank-hide must cover `.rank-pill` (`feed.html:28`), `.grid-card-rank` (`styles.css:1381`), header `#currentRankDisplay`, and search — or ranks leak through the "unranked" mode. Define scope (pills-only vs all rank surfaces) before building.
+
+## P2. Archetype taxonomy overhang — two filters will be empty on day one
+
+- **Pitfall:** migration maps everything to `educational`/`lifestyle`; `craft`/`vlog` start at zero members. A filter that returns an empty briefing looks broken, and `null` (untagged) semantics under an active filter are unstated. Four archetypes for ~100 handles is over-categorization for one user.
+- **Fix:** `archetype` stays additive-optional, `null` = shows in All, excluded only when a filter is active. Seed only `educational`/`lifestyle` via the migration; add `craft`/`vlog` members by hand in `/channels` before exposing those filter pills (or hide empty pills until non-empty). Never replace `category` — chips, rings, `MAX_CATEGORY_SHARE`, and `filterByCategory` (`AVPlayerPool:244`, `player.js` category filter) all key off it.
+
+## P3. Hardcoded 150, hardcoded Top-250, verification over-gating
+
+- **Pitfall:** plan writes `MIN_DEPLOY_ITEMS = 150` and "Top 250 pool" literally. The floor is `int(TOP_DIGEST_COUNT*0.6)` (`main.py:39`, `TOP_DIGEST_COUNT` env-tunable in `config.py:129`). Tests must assert against the imported constant, never 150. Same for chrono scope (Top-N, not 250).
+- **Verification:** Phase 5 stages (`cmd -t -p` frontier gates, maker/autonomous-audit stages) are process boilerplate, not repo-actionable. For one user: `pytest tests/` + PWA smoke (clean build, no console errors, playback + quota seam) + `build-ipa.yml` unit tests as gate; full XCUITest suite advisory (90-min runner, simulator-boot flaky — don't red the rebrand on it). Add: (1) no-`cookies` assertion on the onboarding path, (2) checkpoint/shortfall untouched (no R2 mutation below floor), (3) migration check (old count keys ignored, new seconds keys date-rollover at local midnight), (4) Pages-vs-local onboarding matrix, (5) ranker ceiling + favorite guarantees unchanged under display-only filters. Time-based UAT needs a seam (`?quota_test=` override or tercel minutes) or it becomes the >3-round sink taste warns about.
 
 ## Suggested Phase Reordering (dependency-safe)
-1. `config.py`: `_env_bool` + `COOKIE_FREE_MODE` (dumb default, no predicate).
-2. `main.py` CLI: mutually-exclusive `--cookie-free` / `--use-cookies`,
-   resolution (CLI > env > `False`), startup log line. Defines the
-   `cookie_free` parameter contract every later phase threads.
-3. `extractor.py` identity isolation: `get_cookie_args(cookie_free)`,
-   `InstagramSession(cookie_free)` skipping `_inject_cookies`,
-   `fetch_media_info_batch` bypass, both yt-dlp call sites, no-`trip_gate`
-   on anonymous errors.
-4. `main.py` orchestration: probe/cooldown/exporter bypass, backoff bypass +
-   single-retry skip, Tier-3 skips (both `run_full_sync` sites) +
-   `run_expand` refusal, checkpoint stamp + resume gate, central alert guards.
-5. `local_server.py` workers + `/api/sync-following` refusal +
-   `run_weekly.sh` / `resume_pending.sh` / `healthcheck.sh` passthrough.
-   Ships in the same release as (4) — never a follow-up.
-6. Tests: unit (precedence, stamp/refusal, guards, no-cookie-construction) +
-   integration-marked anonymous scrape + full suite.
+
+1. Data plumbing: `archetype` + `timestamp`/`taken_at` end-to-end (`sources.json` → digest JSON → `site_builder.py` → `feed.html` data-attrs + `data.json` → `ReelItem.swift` optionals). Blocks all filter/sort UI.
+2. Pipeline: Tier-3 skips at all three `main.py` sites + `run_expand` decision + `scripts/topup_digest.py` + mock updates, with pre-removal yield dry-run. Same commit as config deprecation decision.
+3. Web quota + advance/breather semantics frozen (counting rule, breather scope, manual/observer contract, toast copy) + settings sheet surface + storage-hygiene regex. Deletes old 50-count path atomically.
+4. Web grayscale / rank-hide scope / client chrono reorder + palette sweep (full grep, not three selectors) + icon SVG/PNGs + `sw.js` bump + `#manifestoModal` copy.
+5. Onboarding CLI first (reuse `audit_channels` merge, temp profile, no-cookie assertion, `--import-following` vs cookie-free exemption), dashboard endpoint second with pipeline-lock + server-side `is_local` guard. CSV fallback in the same release.
+6. iOS mirror after web semantics freeze (corrected file targets, four init sites, observer reuse, grayscale spike resolved, `ManifestoSheetView`).
+7. Tests: unit (precedence, merge/dedupe, guards, no-cookie-construction, checkpoint/shortfall) + integration-marked anonymous/live scrapes never gating CI + full suite.

@@ -17,6 +17,7 @@ public struct ReelCardOverlayView: View {
     public let isPlaying: Bool
     public let showBookmarkPop: Bool
     public let isCaptionExpanded: Bool
+    public var hideRanks: Bool = false
     public var onTogglePlayPause: () -> Void
     public var onTriggerBookmark: () -> Void
     public var onTriggerShare: () -> Void
@@ -34,6 +35,7 @@ public struct ReelCardOverlayView: View {
         isPlaying: Bool = false,
         showBookmarkPop: Bool = false,
         isCaptionExpanded: Bool = false,
+        hideRanks: Bool = false,
         onTogglePlayPause: @escaping () -> Void = {},
         onTriggerBookmark: @escaping () -> Void = {},
         onTriggerShare: @escaping () -> Void = {},
@@ -50,6 +52,7 @@ public struct ReelCardOverlayView: View {
         self.isPlaying = isPlaying
         self.showBookmarkPop = showBookmarkPop
         self.isCaptionExpanded = isCaptionExpanded
+        self.hideRanks = hideRanks
         self.onTogglePlayPause = onTogglePlayPause
         self.onTriggerBookmark = onTriggerBookmark
         self.onTriggerShare = onTriggerShare
@@ -171,18 +174,20 @@ public struct ReelCardOverlayView: View {
                         .foregroundColor(.white)
                         .accessibilityIdentifier("ReelCreatorHandle")
 
-                    // #rank Badge (Orange)
-                    Text(reel.rankDisplay)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.20))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.22))
-                        .clipShape(Capsule())
-                        .overlay(
-                            Capsule().stroke(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.6), lineWidth: 0.8)
-                        )
-                        .accessibilityIdentifier("ReelRankBadge")
+                    // #rank Badge (Orange) — hidden in neutrality mode
+                    if !hideRanks {
+                        Text(reel.rankDisplay)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.20))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.22))
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule().stroke(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.6), lineWidth: 0.8)
+                            )
+                            .accessibilityIdentifier("ReelRankBadge")
+                    }
 
                     Spacer()
 

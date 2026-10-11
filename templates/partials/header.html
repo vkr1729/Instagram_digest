@@ -1,9 +1,14 @@
     <div class="top-chrome" id="topChrome">
       <!-- Top Header -->
       <header class="top-header" id="topHeader">
-        <div class="brand-logo">Instagram</div>
+        <div class="brand-group">
+          <div class="brand-logo">Instagram</div>
+          <div class="brand-sub">The Anti-Doomscroll Briefing</div>
+        </div>
         <div class="header-controls">
-          <span id="dailyCounterBadge" class="week-pill" style="font-size: 11px; font-weight: 600; color: #a1a1aa; border-color: rgba(255,255,255,0.15);" title="Daily Mindful Check-in (50/day target)">🎯 0/50</span>
+          <button class="icon-btn info-btn" id="manifestoBtn" onclick="openModal('manifestoModal')" title="The 10 Traps Manifesto & Philosophy">ℹ️</button>
+          <span id="dailyCounterBadge" class="week-pill time-pill" style="font-size: 11px; font-weight: 600; color: #a1a1aa; border-color: rgba(255,255,255,0.15);" title="Daily Mindful Watch Quota">⏱️ <span id="dailyWatchTimeText">0m</span>/<span id="dailyQuotaTargetText">20m</span></span>
+          <button class="icon-btn" id="settingsBtn" onclick="openModal('settingsModal')" title="Anti-Doomscroll Settings">⚙️</button>
           <button class="jump-btn" id="jumpBtn" onclick="openJumpModal()" title="Jump to Reel # (or press G)">#<span id="currentRankDisplay">1</span>/{{ items|length }}</button>
           <button class="icon-btn" id="gridToggleBtn" onclick="toggleGridView(true)" title="Browse all {{ items|length }} Reels in Grid View">⊞</button>
           <button class="icon-btn" id="offlineDownloadBtn" onclick="openModal('offlineModal')" title="Offline Cache & Download All">📥</button>

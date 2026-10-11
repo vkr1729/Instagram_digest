@@ -315,3 +315,15 @@ def test_favorite_string_value_is_not_promoted(monkeypatch):
     assert counts["strfav"] == counts["plain"] == 3
     assert all(not r.get("is_favorite") for r in ranked)
 
+
+def test_rank_top_reels_tolerates_none_inputs():
+    """sources=None / malformed rows never raise; garbage timestamps coerce to 0."""
+    ranked = rank_top_reels(
+        candidates=[{"creator_handle": "h", "id": "1", "timestamp": "abc"}, "junk", None, {}],
+        sources=None, top_n=5, shuffle=False)
+    assert len(ranked) == 1
+    assert ranked[0]["timestamp"] == 0
+    assert ranked[0]["category"] == "entertainment"
+    assert ranked[0]["archetype"] == "lifestyle"
+    assert rank_top_reels(candidates=[], sources=None) == []
+

@@ -15,7 +15,8 @@ public struct StoryCategoryItem: Identifiable, Sendable {
 
 /// Horizontal story circles bar strictly conforming to Mock 2 (Mobile PWA Standard).
 /// Displays all 7 categories in a single edge-to-edge row without horizontal clipping.
-/// Rings are 42px with conic-gradient borders and active dot indicators.
+/// Rings are 42px frosted slate (active = solid white, inactive = translucent)
+/// with active dot indicators — zero neon gradients per quiet-luxury spec.
 public struct StoryCategoryBarView: View {
     public let categories: [StoryCategoryItem]
     public let selectedCategoryId: String
@@ -49,16 +50,6 @@ public struct StoryCategoryBarView: View {
         self.onSelectCategory = onSelectCategory
     }
 
-    private let ringGradient = AngularGradient(
-        gradient: Gradient(colors: [
-            Color(red: 0.95, green: 0.60, blue: 0.20), // #f09433
-            Color(red: 0.88, green: 0.15, blue: 0.28), // #dc2743
-            Color(red: 0.74, green: 0.10, blue: 0.55), // #bc1888
-            Color(red: 0.95, green: 0.60, blue: 0.20)
-        ]),
-        center: .center
-    )
-
     public var body: some View {
         VStack(spacing: 2) {
             // Rec 4: offline chip — visible only while the offline filter
@@ -85,12 +76,11 @@ public struct StoryCategoryBarView: View {
                         ZStack {
                             if isSelected {
                                 Circle()
-                                    .stroke(ringGradient, lineWidth: 2.2)
+                                    .stroke(Color.white, lineWidth: 2.0)
                                     .frame(width: 44, height: 44)
-                                    .shadow(color: Color(red: 0.9, green: 0.2, blue: 0.4).opacity(0.55), radius: 4)
                             } else {
                                 Circle()
-                                    .stroke(Color.white.opacity(0.35), lineWidth: 1.2)
+                                    .stroke(Color.white.opacity(0.14), lineWidth: 1.2)
                                     .frame(width: 44, height: 44)
                             }
 

@@ -1,6 +1,6 @@
     <main class="feed-container" id="feedContainer"{% if pin_hash %} style="display:none"{% endif %}>
       {% for item in items %}
-      <article class="reel-card" data-id="{{ item.id }}" data-category="{{ item.category }}" data-index="{{ loop.index0 }}">
+      <article class="reel-card" data-id="{{ item.id }}" data-category="{{ item.category }}" data-archetype="{{ item.archetype }}" data-timestamp="{{ item.timestamp }}" data-index="{{ loop.index0 }}">
         <div class="reel-progress"><div class="reel-progress-fill"></div></div>
         <div class="countdown-toast">Next reel in 0.5s...</div>
         <div class="mute-pill" onclick="unmuteFromPill(this, event)">🔇 Tap for sound</div>

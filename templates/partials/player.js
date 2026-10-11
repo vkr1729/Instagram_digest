@@ -81,26 +81,62 @@
     const LAST_WATCHED_KEY = 'ig_digest_last_watched_id_' + currentWeekId;
     const LAST_ACTIVE_KEY = 'ig_digest_last_active_id_' + currentWeekId;
 
-    // Daily Mindful Limit Tracking (50 reels/day goal)
+    // Daily Mindful Time Quota Tracking (Default 20 min/day)
     function localDateStr(d = new Date()) {
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
     const todayStr = localDateStr();
-    const DAILY_SET_KEY = 'ig_digest_daily_viewed_' + todayStr;
+    const DAILY_WATCH_KEY = 'ig_digest_daily_watch_secs_' + todayStr;
     const DAILY_SNOOZE_KEY = 'ig_digest_daily_snooze_' + todayStr;
-    let dailyViewedSet = new Set();
-    try {
-      dailyViewedSet = new Set(JSON.parse(localStorage.getItem(DAILY_SET_KEY) || '[]'));
-    } catch (e) {}
+    const DAILY_SET_KEY = 'ig_digest_daily_viewed_' + todayStr;
+
+    // Configurable Settings Keys
+    const SETTING_QUOTA_KEY = 'ig_digest_quota_minutes';
+    const SETTING_ENFORCEMENT_KEY = 'ig_digest_enforcement_mode';
+    const SETTING_ADVANCE_KEY = 'ig_digest_advance_mode';
+    const SETTING_BREATHER_KEY = 'ig_digest_breather_enabled';
+    const SETTING_GRAYSCALE_KEY = 'ig_digest_grayscale_mode';
+    const SETTING_HIDE_RANKS_KEY = 'ig_digest_hide_ranks_mode';
+    const SETTING_SORT_ORDER_KEY = 'ig_digest_sort_order';
+    const SETTING_PIN_KEY = 'ig_digest_lockout_pin';
+
+    const ALLOWED_QUOTAS = [10, 20, 30, 45];
+    let quotaMinutes = parseInt(localStorage.getItem(SETTING_QUOTA_KEY) || '20', 10);
+    if (!ALLOWED_QUOTAS.includes(quotaMinutes)) quotaMinutes = 20;
+    let enforcementMode = localStorage.getItem(SETTING_ENFORCEMENT_KEY) || 'gentle';
+    if (enforcementMode !== 'gentle' && enforcementMode !== 'hard') enforcementMode = 'gentle';
+    let advanceMode = localStorage.getItem(SETTING_ADVANCE_KEY) || 'auto';
+    if (advanceMode !== 'auto' && advanceMode !== 'manual') advanceMode = 'auto';
+    let breatherEnabled = localStorage.getItem(SETTING_BREATHER_KEY) === 'true';
+    let grayscaleMode = localStorage.getItem(SETTING_GRAYSCALE_KEY) === 'true';
+    let hideRanksMode = localStorage.getItem(SETTING_HIDE_RANKS_KEY) === 'true';
+    let sortOrder = localStorage.getItem(SETTING_SORT_ORDER_KEY) || 'rank';
+
+    let todayWatchSeconds = parseFloat(localStorage.getItem(DAILY_WATCH_KEY) || '0');
+    if (!Number.isFinite(todayWatchSeconds) || todayWatchSeconds < 0) todayWatchSeconds = 0;
+
+    let watchTickerInterval = null;
+    let lastWatchTimestamp = null;
+    let isBreatherActive = false;
+    let lockoutCountdownInterval = null;
 
     function updateDailyCounterBadge() {
       const badge = document.getElementById('dailyCounterBadge');
-      const modalCount = document.getElementById('modalDailyCount');
-      const cnt = dailyViewedSet.size;
-      if (modalCount) modalCount.textContent = cnt;
+      const timeText = document.getElementById('dailyWatchTimeText');
+      const quotaText = document.getElementById('dailyQuotaTargetText');
+      const modalWatch = document.getElementById('modalDailyWatchTime');
+      const modalTarget = document.getElementById('modalDailyTargetTime');
+      const reachText = document.getElementById('dailyTargetReachedText');
+
+      const currentMins = Math.floor(todayWatchSeconds / 60);
+      if (timeText) timeText.textContent = `${currentMins}m`;
+      if (quotaText) quotaText.textContent = `${quotaMinutes}m`;
+      if (modalWatch) modalWatch.textContent = `${currentMins}m`;
+      if (modalTarget) modalTarget.textContent = `${quotaMinutes}m`;
+      if (reachText) reachText.textContent = `${quotaMinutes}-minute`;
+
       if (badge) {
-        badge.textContent = `🎯 ${cnt}/50`;
-        if (cnt >= 50) {
+        if (todayWatchSeconds >= quotaMinutes * 60) {
           badge.style.color = '#f09433';
           badge.style.borderColor = 'rgba(240, 148, 51, 0.4)';
         } else {
@@ -111,22 +147,135 @@
     }
 
     function recordDailyView(reelId) {
-      if (!reelId) return;
-      if (!dailyViewedSet.has(reelId)) {
-        dailyViewedSet.add(reelId);
-        try {
-          localStorage.setItem(DAILY_SET_KEY, JSON.stringify(Array.from(dailyViewedSet)));
-        } catch (e) {}
-        updateDailyCounterBadge();
-        checkDailyLimitTrigger();
+      // Retired count tracker (replaced by the time-based daily_watch_seconds
+      // accumulator). Kept as a no-op so any cached/older bundle referencing
+      // it cannot throw; the legacy ig_digest_daily_viewed_* keys are still
+      // pruned by pruneOldWeeks below.
+    }
+
+    function accumulateWatchSeconds(delta) {
+      todayWatchSeconds += delta;
+      try {
+        localStorage.setItem(DAILY_WATCH_KEY, Math.floor(todayWatchSeconds));
+      } catch (e) {}
+      updateDailyCounterBadge();
+      checkDailyLimitTrigger();
+    }
+
+    function startWatchTicker() {
+      if (watchTickerInterval) return;
+      lastWatchTimestamp = performance.now();
+      watchTickerInterval = setInterval(() => {
+        if (!currentActiveCard) return;
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v && !v.paused && !v.ended && document.visibilityState === 'visible' && !isBreatherActive) {
+          const now = performance.now();
+          const delta = (now - (lastWatchTimestamp || now)) / 1000;
+          lastWatchTimestamp = now;
+          if (delta > 0 && delta < 5) {
+            accumulateWatchSeconds(delta);
+          }
+        } else {
+          lastWatchTimestamp = performance.now();
+        }
+      }, 1000);
+    }
+
+    function stopWatchTicker() {
+      if (watchTickerInterval) {
+        clearInterval(watchTickerInterval);
+        watchTickerInterval = null;
       }
+      lastWatchTimestamp = null;
     }
 
     function checkDailyLimitTrigger() {
-      if (dailyViewedSet.size >= 50) {
+      const quotaSecs = quotaMinutes * 60;
+      if (todayWatchSeconds >= quotaSecs) {
         const snoozed = localStorage.getItem(DAILY_SNOOZE_KEY) === 'true';
         if (!snoozed) {
-          openModal('dailyLimitModal');
+          if (enforcementMode === 'hard') {
+            triggerHardLockout();
+          } else {
+            triggerGentlePause();
+          }
+        }
+      }
+    }
+
+    function triggerGentlePause() {
+      if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v && !v.paused) v.pause();
+      }
+      openModal('dailyLimitModal');
+    }
+
+    function triggerHardLockout() {
+      if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v && !v.paused) v.pause();
+      }
+      stopWatchTicker();
+      const overlay = document.getElementById('lockoutOverlay');
+      if (overlay) overlay.style.display = 'flex';
+      updateLockoutCountdown();
+      if (!lockoutCountdownInterval) {
+        lockoutCountdownInterval = setInterval(updateLockoutCountdown, 30000);
+      }
+    }
+
+    function updateLockoutCountdown() {
+      const cdEl = document.getElementById('lockoutCountdown');
+      if (!cdEl) return;
+      const now = new Date();
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+      const diffMs = midnight - now;
+      if (diffMs <= 0) {
+        if (lockoutCountdownInterval) {
+          clearInterval(lockoutCountdownInterval);
+          lockoutCountdownInterval = null;
+        }
+        const overlay = document.getElementById('lockoutOverlay');
+        if (overlay) overlay.style.display = 'none';
+        todayWatchSeconds = 0;
+        updateDailyCounterBadge();
+        return;
+      }
+      const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+      const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      cdEl.textContent = `Resets in ${diffHrs}h ${diffMins}m`;
+    }
+
+    function submitLockoutPinOverride() {
+      const pinInput = document.getElementById('lockoutPinInput');
+      const enteredPin = pinInput ? pinInput.value.trim() : '';
+      const expectedPin = localStorage.getItem(SETTING_PIN_KEY) || '';
+      // No PIN configured: refuse with guidance instead of comparing
+      // against a guessable hardcoded fallback.
+      if (!expectedPin) {
+        showToast('Set a lockout PIN in ⚙️ Settings first 🔑');
+        return;
+      }
+      if (enteredPin === expectedPin) {
+        try { localStorage.setItem(DAILY_SNOOZE_KEY, 'true'); } catch (e) {}
+        const overlay = document.getElementById('lockoutOverlay');
+        if (overlay) overlay.style.display = 'none';
+        if (lockoutCountdownInterval) {
+          clearInterval(lockoutCountdownInterval);
+          lockoutCountdownInterval = null;
+        }
+        if (pinInput) pinInput.value = '';
+        showToast('Lockout overridden for today 🌿');
+        if (currentActiveCard) {
+          playCardVideo(currentActiveCard);
+        }
+      } else {
+        showToast('Incorrect PIN ❌');
+        if (pinInput) {
+          pinInput.value = '';
+          pinInput.style.borderColor = '#ff4d4f';
+          setTimeout(() => { pinInput.style.borderColor = ''; }, 1000);
         }
       }
     }
@@ -150,7 +299,161 @@
         playCardVideo(currentActiveCard);
       }
     }
+
+    // Settings Updaters
+    function updatePinSetting(val) {
+      const pin = String(val || '').trim();
+      // 4-6 digits: short enough to remember, long enough to not be a tap.
+      if (!/^\d{4,6}$/.test(pin)) {
+        showToast('PIN must be 4-6 digits 🔑');
+        syncSettingsUI();
+        return;
+      }
+      try { localStorage.setItem(SETTING_PIN_KEY, pin); } catch (e) {}
+      const pinInput = document.getElementById('settingPinInput');
+      if (pinInput) pinInput.value = '';
+      showToast('Lockout PIN saved 🔑');
+    }
+
+    function updateQuotaSetting(val) {
+      const parsed = parseInt(val, 10);
+      // Reject garbage from devtools/cached DOM: a NaN quota would poison
+      // every comparison (NaN >= x is false) and silently disable the limit.
+      if (!ALLOWED_QUOTAS.includes(parsed)) return;
+      quotaMinutes = parsed;
+      try { localStorage.setItem(SETTING_QUOTA_KEY, String(quotaMinutes)); } catch (e) {}
+      updateDailyCounterBadge();
+      checkDailyLimitTrigger();
+    }
+
+    function updateEnforcementSetting(val) {
+      if (val !== 'gentle' && val !== 'hard') return;
+      enforcementMode = val;
+      try { localStorage.setItem(SETTING_ENFORCEMENT_KEY, enforcementMode); } catch (e) {}
+      syncSettingsUI();
+    }
+
+    function updateAdvanceSetting(val) {
+      if (val !== 'auto' && val !== 'manual') return;
+      advanceMode = val;
+      try { localStorage.setItem(SETTING_ADVANCE_KEY, advanceMode); } catch (e) {}
+    }
+
+    function toggleBreatherSetting() {
+      breatherEnabled = !breatherEnabled;
+      try { localStorage.setItem(SETTING_BREATHER_KEY, breatherEnabled ? 'true' : 'false'); } catch (e) {}
+      syncSettingsUI();
+    }
+
+    function toggleGrayscaleSetting() {
+      grayscaleMode = !grayscaleMode;
+      try { localStorage.setItem(SETTING_GRAYSCALE_KEY, grayscaleMode ? 'true' : 'false'); } catch (e) {}
+      applyGrayscaleMode();
+      syncSettingsUI();
+    }
+
+    function applyGrayscaleMode() {
+      if (grayscaleMode) {
+        document.body.classList.add('grayscale-mode');
+      } else {
+        document.body.classList.remove('grayscale-mode');
+      }
+    }
+
+    function toggleHideRanksSetting() {
+      hideRanksMode = !hideRanksMode;
+      try { localStorage.setItem(SETTING_HIDE_RANKS_KEY, hideRanksMode ? 'true' : 'false'); } catch (e) {}
+      applyHideRanksMode();
+      syncSettingsUI();
+    }
+
+    function applyHideRanksMode() {
+      if (hideRanksMode) {
+        document.body.classList.add('hide-ranks');
+      } else {
+        document.body.classList.remove('hide-ranks');
+      }
+    }
+
+    function updateSortOrderSetting(val) {
+      if (val !== 'rank' && val !== 'chrono') return;
+      sortOrder = val;
+      try { localStorage.setItem(SETTING_SORT_ORDER_KEY, sortOrder); } catch (e) {}
+      applySortOrder();
+    }
+
+    function applySortOrder() {
+      const container = document.getElementById('feedContainer');
+      if (!container) return;
+      const cards = Array.from(container.querySelectorAll('.reel-card'));
+      const celeb = document.getElementById('celebrationScreen');
+      if (sortOrder === 'chrono') {
+        cards.sort((a, b) => {
+          // data-timestamp holds unix epoch SECONDS (ranker _coerce_timestamp);
+          // new Date() needs ms. parseFloat keeps ms-epoch payloads working.
+          const rawt = parseFloat(a.dataset.timestamp || '0');
+          const rawb = parseFloat(b.dataset.timestamp || '0');
+          const ta = Number.isFinite(rawt) ? (rawt > 1e12 ? rawt : rawt * 1000) : 0;
+          const tb = Number.isFinite(rawb) ? (rawb > 1e12 ? rawb : rawb * 1000) : 0;
+          return tb - ta;
+        });
+      } else {
+        cards.sort((a, b) => {
+          const ia = parseInt(a.dataset.index || '0', 10);
+          const ib = parseInt(b.dataset.index || '0', 10);
+          return ia - ib;
+        });
+      }
+      cards.forEach(card => {
+        if (celeb) {
+          container.insertBefore(card, celeb);
+        } else {
+          container.appendChild(card);
+        }
+      });
+      if (typeof filterCategory === 'function') {
+        filterCategory(currentCategory);
+      }
+    }
+
+    function syncSettingsUI() {
+      const qSel = document.getElementById('settingQuotaSelect');
+      if (qSel) qSel.value = String(quotaMinutes);
+      const eSel = document.getElementById('settingEnforcementSelect');
+      if (eSel) eSel.value = enforcementMode;
+      // PIN row is only meaningful for hard lockout; showing it under
+      // gentle mode invites a false sense of configuration.
+      const pinRow = document.getElementById('settingPinRow');
+      if (pinRow) pinRow.style.display = (enforcementMode === 'hard') ? '' : 'none';
+      const aSel = document.getElementById('settingAdvanceSelect');
+      if (aSel) aSel.value = advanceMode;
+      const bTog = document.getElementById('settingBreatherToggle');
+      if (bTog) bTog.classList.toggle('active', breatherEnabled);
+      const gTog = document.getElementById('settingGrayscaleToggle');
+      if (gTog) gTog.classList.toggle('active', grayscaleMode);
+      const rTog = document.getElementById('settingHideRanksToggle');
+      if (rTog) rTog.classList.toggle('active', hideRanksMode);
+      const sSel = document.getElementById('settingSortOrderSelect');
+      if (sSel) sSel.value = sortOrder;
+    }
+
+    // Attach to window for inline onclicks
+    window.updatePinSetting = updatePinSetting;
+    window.updateQuotaSetting = updateQuotaSetting;
+    window.updateEnforcementSetting = updateEnforcementSetting;
+    window.updateAdvanceSetting = updateAdvanceSetting;
+    window.toggleBreatherSetting = toggleBreatherSetting;
+    window.toggleGrayscaleSetting = toggleGrayscaleSetting;
+    window.toggleHideRanksSetting = toggleHideRanksSetting;
+    window.updateSortOrderSetting = updateSortOrderSetting;
+    window.submitLockoutPinOverride = submitLockoutPinOverride;
+    window.pauseAndTakeBreak = pauseAndTakeBreak;
+    window.continueMindfulWatching = continueMindfulWatching;
+
     updateDailyCounterBadge();
+    applyGrayscaleMode();
+    applyHideRanksMode();
+    syncSettingsUI();
 
     // P6: Storage hygiene: prune stale week keys outside the retention window + legacy key
     (function pruneOldWeeks() {
@@ -160,7 +463,7 @@
         Object.keys(localStorage).forEach(k => {
           const m = k.match(/^ig_digest_(?:watched_ids|last_watched_id|last_active_id|download_completed|downloaded_count)_(\d{4}-\d{2}-\d{2})$/);
           if ((m && !keep.has(m[1])) || k === 'ig_digest_watched_ids') localStorage.removeItem(k);
-          const d = k.match(/^ig_digest_daily_(?:viewed|snooze)_(\d{4}-\d{2}-\d{2})$/);
+          const d = k.match(/^ig_digest_daily_(?:viewed|snooze|watch_secs)_(\d{4}-\d{2}-\d{2})$/);
           if (d && d[1] !== todayStr) localStorage.removeItem(k);
         });
       } catch (e) {}
@@ -618,6 +921,14 @@
       if (wakeLock !== null && document.visibilityState === 'visible') {
         requestWakeLock();
       }
+      if (document.visibilityState !== 'visible') {
+        stopWatchTicker();
+      } else if (currentActiveCard) {
+        const v = currentActiveCard.querySelector('.reel-video');
+        if (v && !v.paused && !v.ended) {
+          startWatchTicker();
+        }
+      }
     });
 
     // Single auto-immersive state: immersive ⇔ (native fullscreen OR current
@@ -1004,11 +1315,14 @@
         const watchedCount = matchingCards.filter(c => watched.has(c.dataset.id)).length;
         const leftCount = Math.max(0, total - watchedCount);
         const pctLeft = total > 0 ? (leftCount / total) : 0;
-        const deg = Math.round(pctLeft * 360);
 
         const ring = bubble.querySelector('.story-ring');
         if (ring) {
-          ring.style.background = `conic-gradient(from -90deg, #f09433 0deg, #dc2743 ${deg * 0.5}deg, #bc1888 ${deg}deg, rgba(255, 255, 255, 0.16) ${deg}deg 360deg)`;
+          // Quiet-luxury: frosted slate ring whose white border fades as the
+          // category is consumed. Zero neon conic gradients.
+          const alpha = (0.14 + pctLeft * 0.86).toFixed(2);
+          ring.style.background = 'transparent';
+          ring.style.borderColor = `rgba(255, 255, 255, ${alpha})`;
         }
         bubble.setAttribute('title', `${leftCount} of ${total} left (${Math.round(pctLeft * 100)}%)`);
       });
@@ -1214,12 +1528,16 @@
       if (targetCard) {
         if (isInitialLaunch && feed.style.display !== 'none') {
           // WebKit snap-scroll lock fix on initial load: unlock snap, set scrollTop, prepare paused, restore snap
-          feed.style.setProperty('scroll-snap-type', 'none');
-          feed.scrollTop = targetCard.offsetTop;
-          prepareCardVideoPaused(targetCard);
-          setTimeout(() => {
-            feed.style.setProperty('scroll-snap-type', 'y mandatory');
-          }, 120);
+          if (targetCard.offsetTop > 0) {
+            feed.style.setProperty('scroll-snap-type', 'none');
+            feed.scrollTop = targetCard.offsetTop;
+            prepareCardVideoPaused(targetCard);
+            setTimeout(() => {
+              feed.style.setProperty('scroll-snap-type', 'y mandatory');
+            }, 120);
+          } else {
+            prepareCardVideoPaused(targetCard);
+          }
           isInitialLaunch = false;
         } else if (!isInitialLaunch) {
           goToCard(targetCard, { play: allWatched ? false : shouldPlay });
@@ -1450,17 +1768,78 @@
     function handleVideoEnd(card) {
       const gen = ++navGen;
       markAsWatched(card.dataset.id);
+      stopWatchTicker();
       const toast = card.querySelector('.countdown-toast');
-      if (toast) toast.classList.add('visible');
 
-      clearTimeout(autoAdvanceTimeout);
-      autoAdvanceTimeout = setTimeout(() => {
-        if (toast) toast.classList.remove('visible');
-        card.dataset.endedHandled = '';
-        if (gen === navGen && currentActiveCard === card) {
-          advanceToNextReel(card);
+      if (advanceMode === 'manual') {
+        if (toast) {
+          toast.textContent = 'Swipe up for next reel ⬆️';
+          toast.classList.add('visible');
         }
-      }, 500);
+        return;
+      }
+
+      // Auto mode: check breather
+      if (breatherEnabled) {
+        isBreatherActive = true;
+        let secondsLeft = 3;
+        let breatherInterval = null;
+        const endBreatherEarly = () => {
+          if (breatherInterval) clearInterval(breatherInterval);
+          clearTimeout(autoAdvanceTimeout);
+          isBreatherActive = false;
+          if (toast) {
+            toast.textContent = 'Next reel in 0.5s...';
+            toast.classList.remove('visible');
+            toast.onclick = null;
+          }
+          card.dataset.endedHandled = '';
+          if (gen === navGen && currentActiveCard === card) {
+            advanceToNextReel(card);
+          }
+        };
+        if (toast) {
+          toast.textContent = `Breather... ${secondsLeft}s 🌿 (tap to skip)`;
+          toast.classList.add('visible');
+          // Skippable by tap per spec: breather time is excluded from quota.
+          toast.onclick = endBreatherEarly;
+        }
+        breatherInterval = setInterval(() => {
+          secondsLeft -= 1;
+          if (secondsLeft > 0 && toast) {
+            toast.textContent = `Breather... ${secondsLeft}s 🌿 (tap to skip)`;
+          }
+        }, 1000);
+
+        clearTimeout(autoAdvanceTimeout);
+        autoAdvanceTimeout = setTimeout(() => {
+          if (breatherInterval) clearInterval(breatherInterval);
+          isBreatherActive = false;
+          if (toast) {
+            toast.textContent = 'Next reel in 0.5s...';
+            toast.classList.remove('visible');
+            toast.onclick = null;
+          }
+          card.dataset.endedHandled = '';
+          if (gen === navGen && currentActiveCard === card) {
+            advanceToNextReel(card);
+          }
+        }, 3000);
+      } else {
+        // Standard 0.5s pause
+        if (toast) {
+          toast.textContent = 'Next reel in 0.5s...';
+          toast.classList.add('visible');
+        }
+        clearTimeout(autoAdvanceTimeout);
+        autoAdvanceTimeout = setTimeout(() => {
+          if (toast) toast.classList.remove('visible');
+          card.dataset.endedHandled = '';
+          if (gen === navGen && currentActiveCard === card) {
+            advanceToNextReel(card);
+          }
+        }, 500);
+      }
     }
 
     // Wire Up Video Events
@@ -1490,6 +1869,7 @@
         if (card === currentActiveCard) {
           syncImmersive();
           if (playIcon) playIcon.classList.remove('visible');
+          startWatchTicker();
         }
       });
 
@@ -1497,6 +1877,7 @@
         mtrace(`ev-pause idx=${card.dataset.index} cur=${card === currentActiveCard} t=${video.currentTime.toFixed(1)}`);
         if (card === currentActiveCard) {
           syncImmersive();
+          stopWatchTicker();
         }
       });
 
@@ -1870,10 +2251,17 @@
     });
 
     // IntersectionObserver to play video when snapped into view (user scroll)
+    // Manual advance mode: the ended reel stays parked on its final frame
+    // with a swipe affordance — the observer must not auto-play past it.
     const observer = new IntersectionObserver((entries) => {
       if (isScrollingTransition) return;
       entries.forEach(entry => {
         if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+          if (advanceMode === 'manual' && currentActiveCard &&
+              currentActiveCard !== entry.target &&
+              currentActiveCard.dataset.endedHandled === 'true') {
+            return;
+          }
           mtrace(`io idx=${entry.target.dataset.index} ratio=${entry.intersectionRatio.toFixed(2)}`);
           playCardVideo(entry.target);
         }
@@ -1905,6 +2293,12 @@
       });
 
       if (closestCard && closestCard !== currentActiveCard && closestDist < feedRect.height * 0.45) {
+        // Manual mode: the ended reel owns the viewport until the user
+        // swipes — a settle tick must not auto-play past it.
+        if (advanceMode === 'manual' && currentActiveCard &&
+            currentActiveCard.dataset.endedHandled === 'true') {
+          return;
+        }
         const prevIdx = vCards.indexOf(currentActiveCard);
         const newIdx = vCards.indexOf(closestCard);
         if (currentActiveCard && newIdx > prevIdx && currentActiveCard.dataset.id) {
@@ -2118,17 +2512,23 @@
       }
 
       if (targetCard) {
-        feed.style.setProperty('scroll-snap-type', 'none');
-        feed.scrollTop = targetCard.offsetTop;
+        if (targetCard.offsetTop > 0) {
+          feed.style.setProperty('scroll-snap-type', 'none');
+          feed.scrollTop = targetCard.offsetTop;
+        }
         prepareCardVideoPaused(targetCard);
-        requestAnimationFrame(() => {
-          if (targetCard.offsetTop > 0) feed.scrollTop = targetCard.offsetTop;
-          setTimeout(() => {
-            if (targetCard.offsetTop > 0) feed.scrollTop = targetCard.offsetTop;
-            feed.style.setProperty('scroll-snap-type', 'y mandatory');
-            updateSlidingWindow(targetCard);
-          }, 80);
-        });
+        if (targetCard.offsetTop > 0) {
+          requestAnimationFrame(() => {
+            feed.scrollTop = targetCard.offsetTop;
+            setTimeout(() => {
+              feed.scrollTop = targetCard.offsetTop;
+              feed.style.setProperty('scroll-snap-type', 'y mandatory');
+              updateSlidingWindow(targetCard);
+            }, 80);
+          });
+        } else {
+          updateSlidingWindow(targetCard);
+        }
       }
       isInitialLaunch = false;
     }
@@ -2825,7 +3225,7 @@
       }
     }
 
-    // Init: paint snapshot state, owner-gate, opportunistic sync.
+    // Init: paint snapshot state, owner-gate, opportunistic sync, anti-doomscroll guards.
     document.addEventListener('DOMContentLoaded', () => {
       try {
         document.body.classList.toggle('readonly', typeof isOwnerDevice === 'function' && !isOwnerDevice());
@@ -2833,5 +3233,11 @@
         paintBookmarkButtons();
         updateBookmarkBadge();
         flushBookmarkOutbox();
+        applyGrayscaleMode();
+        applyHideRanksMode();
+        syncSettingsUI();
+        updateDailyCounterBadge();
+        if (sortOrder === 'chrono') applySortOrder();
+        checkDailyLimitTrigger();
       } catch (e) {}
     });

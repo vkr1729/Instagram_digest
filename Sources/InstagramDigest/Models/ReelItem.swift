@@ -16,6 +16,8 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
     public let commentCount: Int?
     public let isExternal: Bool
     public let sizeBytes: Int64?
+    public let archetype: String?
+    public let takenAt: Date?
 
     public init(
         id: String,
@@ -31,7 +33,9 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         likeCount: Int? = nil,
         commentCount: Int? = nil,
         isExternal: Bool = false,
-        sizeBytes: Int64? = nil
+        sizeBytes: Int64? = nil,
+        archetype: String? = nil,
+        takenAt: Date? = nil
     ) {
         self.id = id
         self.creatorHandle = creatorHandle
@@ -51,6 +55,8 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         self.commentCount = commentCount
         self.isExternal = isExternal
         self.sizeBytes = sizeBytes
+        self.archetype = archetype
+        self.takenAt = takenAt
     }
 
     enum CodingKeys: String, CodingKey {
@@ -82,6 +88,9 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         case altIsExternal = "isExternal"
         case sizeBytes = "sizeBytes"
         case altSizeBytes = "size_bytes"
+        case archetype
+        case timestamp
+        case takenAt = "taken_at"
     }
 
     public init(from decoder: Decoder) throws {
@@ -157,6 +166,14 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
 
         self.sizeBytes = (try? container.decode(Int64.self, forKey: .sizeBytes))
             ?? (try? container.decode(Int64.self, forKey: .altSizeBytes))
+
+        self.archetype = try? container.decode(String.self, forKey: .archetype)
+        if let ts = (try? container.decode(Double.self, forKey: .timestamp))
+            ?? (try? container.decode(Double.self, forKey: .takenAt)) {
+            self.takenAt = Date(timeIntervalSince1970: ts)
+        } else {
+            self.takenAt = nil
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -175,5 +192,9 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         try container.encodeIfPresent(commentCount, forKey: .commentCount)
         try container.encode(isExternal, forKey: .isExternal)
         try container.encodeIfPresent(sizeBytes, forKey: .sizeBytes)
+        try container.encodeIfPresent(archetype, forKey: .archetype)
+        if let takenAt = takenAt {
+            try container.encode(takenAt.timeIntervalSince1970, forKey: .timestamp)
+        }
     }
 }

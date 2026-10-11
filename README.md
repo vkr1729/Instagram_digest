@@ -1,6 +1,6 @@
-# 📱 Instagram Digest
+# 📱 Instagram Digest — The Anti-Doomscroll Briefing
 
-> **An intentional, ad-free, high-signal weekly digest of Instagram Reels curated into a distraction-free Progressive Web App (PWA).**  
+> **An intentional, ad-free, high-signal weekly digest of Instagram Reels curated into a distraction-free Progressive Web App (PWA).**
 > Replaces algorithmic doom-scrolling with a finite, curated media briefing. Hosted on GitHub Pages with zero-bandwidth video streaming via Cloudflare R2 and permanent bookmark syncing to Telegram — **100% free forever ($0.00/mo)**.
 
 ---
@@ -40,7 +40,9 @@ Mainstream social media algorithms are engineered for **infinite retention** —
 1. **Finite Batches:** Delivers a curated, fixed weekly digest of top reels (default: 250) from creators you specifically respect, supplemented by high-engagement external discovery.
 2. **Strict Watched Tracking:** Reels are automatically marked as watched in client-side storage as you advance. Unwatched items are prioritized; previously watched reels are dimmed.
 3. **Celebratory Finish:** Once you watch all reels, you are presented with a celebratory *"You're All Caught Up! 🎉"* screen — no endless pagination, no algorithmically inserted filler.
-4. **Mindful Pace:** A configurable daily check-in counter (e.g. 50 reels/day target) provides a gentle pause to maintain deliberate media consumption.
+4. **Mindful Pace:** A configurable daily watch-time quota (default 20 min/day, 10/20/30/45 options) with gentle pause or hard lockout to maintain deliberate media consumption.
+
+> 📖 **Philosophy:** Instagram Digest systematically neutralizes the 10 behavioral addiction traps from the Satvic Movement video *"The Brain Behind Your Phone Addiction. We Caught Him!"* (https://youtu.be/FmLJbYBu094). Open the ℹ️ manifesto in the app for the full breakdown.
 
 ---
 
@@ -50,7 +52,7 @@ Mainstream social media algorithms are engineered for **infinite retention** —
 * **Configurable Weekly Target:** Extracts and ranks a finite batch of the highest-signal reels (default 250 via `TOP_DIGEST_COUNT`), with on-demand `--expand` capability.
 * **Persistent Watched History:** Tracks watched reel IDs in browser `localStorage` and syncs dual-layer progress to local desktop servers. Departed reels are marked immediately upon swiping.
 * **All Caught Up Screen:** An explicit end-of-feed milestone celebration preventing unconscious looping.
-* **Daily Mindful Check-in:** Soft check-in reminder upon reaching your daily target (e.g., 50 reels) with quick *"Take a Break"* or *"Continue"* options.
+* **Daily Mindful Check-in:** Soft check-in reminder upon reaching your daily watch-time quota (default 20 min) with quick *"Take a Break"* or *"Continue"* options, plus opt-in hard lockout.
 
 ### 2. Native Mobile-First PWA Experience
 * **Cinema Aspect Ratio Preservation:** Strict `object-fit: contain` scaling ensures portrait (9:16), square (1:1), and landscape videos are never cropped or distorted.

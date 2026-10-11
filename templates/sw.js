@@ -4,8 +4,8 @@
 // cap how long a message event may be extended, so a 3 GB loop inside
 // waitUntil was terminated silently part-way through.
 
-const CACHE_NAME = 'ig-digest-media-v1';
-const IMAGE_CACHE_NAME = 'ig-digest-images-v1';
+const CACHE_NAME = 'ig-digest-media-v2';
+const IMAGE_CACHE_NAME = 'ig-digest-images-v2';
 const PRECACHE_CONCURRENCY = 2;
 const BLOB_MEMO_MAX = 2;
 

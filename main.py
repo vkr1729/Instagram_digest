@@ -3047,6 +3047,8 @@ def _main_inner() -> int:
     parser.add_argument("--resume", action="store_true", help="Resume an interrupted or shortfall-paused sync run")
     parser.add_argument("--skip-email", action="store_true", help="Run pipeline but skip sending email notifications")
     parser.add_argument("--lock-status", action="store_true", help="Show which process holds data/.pipeline.lock, if any (read-only)")
+    parser.add_argument("--import-following", nargs="?", const="", default=None, metavar="FILE",
+                        help="Additively import followed channels (via Playwright browser login or export FILE)")
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--cookie-free", action="store_true", default=None,
                             help="Force cookie-free anonymous operation (no cookies or account login used)")
@@ -3071,6 +3073,12 @@ def _main_inner() -> int:
         cookie_free = bool(config.COOKIE_FREE_MODE)
         mode_source = f"config.COOKIE_FREE_MODE (default={config.COOKIE_FREE_MODE})"
     logger.info("Pipeline mode: %s (source: %s)", "cookie-free" if cookie_free else "cookie-based", mode_source)
+
+    # Additive interactive following onboarding import
+    if args.import_following is not None:
+        import interactive_onboarding
+        file_arg = args.import_following if args.import_following else None
+        return interactive_onboarding.run_interactive_cli(source_file=file_arg)
 
     # Lock-holder readout: read-only, never touches the lock itself.
     if args.lock_status:

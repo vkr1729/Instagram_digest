@@ -1735,6 +1735,25 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # API Route: /api/channels/reconcile-following
+        if clean_path in ("/api/channels/reconcile-following", "/api/channels/reconcile-following/"):
+            try:
+                import audit_channels
+                import interactive_onboarding
+                following = audit_channels._load_following()
+                reconciliation = interactive_onboarding.reconcile_following(following)
+                resp_data = {"success": True, **reconciliation}
+            except Exception as exc:
+                logger.warning("Reconcile following failed: %s", exc)
+                resp_data = {"success": False, "error": str(exc)[:200]}
+            body = json.dumps(resp_data, ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         # API Route: /api/channels
         if clean_path == "/api/channels":
             sources = []
@@ -1754,6 +1773,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                         "handle": h,
                         "name": s.get("name", h),
                         "category": s.get("category", "entertainment"),
+                        "archetype": s.get("archetype"),
                         "is_blacklisted": (h in blacklist),
                         "is_favorite": s.get("favorite") is True,
                     }
@@ -1922,6 +1942,7 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                             "handle": handle,
                             "name": name,
                             "category": cat,
+                            "archetype": None,
                             "enabled": True,
                             **({"favorite": True} if payload.get("favorite") is True else {}),
                         })
@@ -2260,6 +2281,37 @@ class LocalDigestHandler(SimpleHTTPRequestHandler):
                 "total_blacklisted": len(b_data["creators"]),
                 "total_sources": len(sources),
             }
+            body = json.dumps(resp).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if parsed.path in ("/api/channels/import-following", "/api/channels/import-following/"):
+            try:
+                payload = _read_json_body(self)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, str(exc))
+                return
+            if not isinstance(payload, dict):
+                payload = {}
+            handles = payload.get("handles", [])
+            candidates = payload.get("candidates", [])
+            if not isinstance(handles, list) or not isinstance(candidates, list):
+                self.send_error(HTTPStatus.BAD_REQUEST, "handles and candidates must be lists")
+                return
+            if not all(isinstance(h, str) for h in handles):
+                self.send_error(HTTPStatus.BAD_REQUEST, "handles must be a list of strings")
+                return
+            try:
+                import interactive_onboarding
+                added = interactive_onboarding.merge_imported_channels(handles, candidates)
+                resp = {"success": True, "added_count": added}
+            except Exception as exc:
+                logger.error("Failed importing channels: %s", exc)
+                resp = {"success": False, "error": str(exc)[:200]}
             body = json.dumps(resp).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json")

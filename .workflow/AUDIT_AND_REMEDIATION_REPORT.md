@@ -1,124 +1,241 @@
-# Audit & Remediation Report — Cookie-Free Pipeline + Adversarial Sweep
+# Audit & Remediation Report — Anti-Doomscroll Rebrand (Adversarial Sweep #2)
 
-Date: 2026-09-27 (UTC) · Scope: `.workflow/REQUIREMENTS.md` (Option 2, single-user personal CLI) · Scale anchor: no enterprise overhead, no new services, no new config knobs.
+Date: 2026-10-11 (UTC) · Scope: `.workflow/REQUIREMENTS.md` + `.workflow/IMPLEMENTATION_PLAN.md`
+(Rebranding & Anti-Doomscroll Engine) · Scale anchor: single-person personal use —
+no new services, no new config knobs, no enterprise overhead.
+
+Note: the 2026-09-27 cookie-free report previously lived in this file; it is
+preserved at `/tmp/old_cookie_report.md` and in git history. This file now
+covers the rebrand sweep. The cookie-free pipeline behavior it verified is
+untouched by this session (all cookie-free suites still green, §5).
 
 ## 0. Verdict
 
-The pre-existing dirty-tree implementation of the cookie-free toggle was ~85% complete and directionally correct. I found and fixed **13 defects** (2 spec violations, 5 crash/regression risks, 4 contract gaps, 2 hardening issues). No new architecture was introduced. Full targeted regression: **129 passed** (`test_cookie_free_mode`, `test_dashboard`, `test_sync_resume`, `test_expand_resume`, `test_frontier_fixes`, `test_smart_funnel`, `test_failure_alerts`, `test_fable_audit_fixes`); broader suites also green (§7).
+The dirty-tree rebrand implementation was ~80% complete and directionally
+correct. I found and fixed **19 defects** (7 spec violations, 6 crash/type-error
+risks, 6 contract/parity gaps). No new architecture introduced. Full regression:
+**587 passed** (563 unit + 10 grid UAT + 14 mobile PWA UAT), `main.py --build-only`
+clean, built-site contract probe 14/14.
 
 ## 1. Remediations (what I changed and why)
 
-### R1. `config.COOKIE_FREE_MODE` default `True` → `False` (spec violation)
-- File: `config.py:117`.
-- REQUIREMENTS §2 + both Frontier reviews + IMPLEMENTATION_PLAN Phase 1 all mandate default `False` (CLI > env > `False`). The tree had `True`, which silently flipped every existing cron/dashboard/test run to anonymous and broke 5 `test_dashboard.py` popup tests (they run with the live env default and correctly expect popups to fire).
-- Fix: one-line default change. Verified: those 5 tests pass again without touching them.
+### Spec violations
 
-### R2. `extract_creator_reels` / `discover_creator_reel_urls` never received `cookie_free` (identity leak + gate regression)
-- Files: `extractor.py` (`discover_creator_reel_urls`, `extract_creator_reels`), `main.py` Tier-1/Tier-2 call sites.
-- `main._extract_with_backoff` and the Tier-2 loop called `extract_creator_reels(...)` without `cookie_free`, so (a) `check_gate()` inside the callee stayed armed in anonymous mode — a prior cookie-mode trip (same dashboard process) would refuse anonymous work; (b) the non-fast path inside `extract_creator_reels` called `extract_single_reel_metadata` without the flag, re-arming the gate and cookie-ful yt-dlp fallback mid-run.
-- Fix: added explicit `cookie_free: bool = False` to both functions; `extract_creator_reels` forces `use_cookies=False` and skips `check_gate()` when true; threads the flag to discovery + per-reel metadata; both `main.py` call sites pass it. `discover_creator_reel_urls` skips `check_gate()` when true and constructs anonymous local sessions. Nested `TypeError` fallbacks keep old test doubles (which lack the kwarg) working.
+**R1. Manual advance mode never held (plan Phase 3 violated).**
+`handleVideoEnd` parked the ended reel, but both auto-play drivers —
+`IntersectionObserver` and the `checkCenteredCard` scroll-settle tick — called
+`playCardVideo` unconditionally, advancing past the parked reel on any scroll
+settle. Fix: both drivers return early when `advanceMode === 'manual'` and the
+current card carries `endedHandled`. Files: `templates/partials/player.js`.
 
-### R3. Tier-2 `InstagramBlocked` always aborted, even anonymous (failure-handling violation)
-- File: `main.py` Tier-2 loop.
-- REQUIREMENTS §2: anonymous 429s/empty grids → bounded single-retry, per-creator soft skip, never the account-safety abort. Tier-2 had no cookie-free branch: one anonymous challenge killed the whole run with cookie email + popup (both suppressed centrally, but the abort itself was wrong).
-- Fix: cookie-free branch logs and soft-skips (`done_map[h]=True`, `continue`); cookie path unchanged (instant abort preserved).
+**R2. Breather not skippable (plan Phase 3: "skippable by tap").**
+The 3s breather had no tap handler. Fix: the countdown toast is now tappable
+during breather ("(tap to skip)"), firing the same guarded advance path; the
+interval/timeout handles were restructured so skip and natural expiry share one
+code path (no double-advance). Files: `player.js`, `styles.css` (R3).
 
-### R4. Outer Tier-1 `except InstagramBlocked` aborted anonymous rosters (same violation, second layer)
-- File: `main.py` creator-loop handler.
-- Belt-and-suspenders: `_extract_with_backoff` already swallows anonymous blocks, but any escape (e.g. patched extractor raising directly) previously hit the cookie-mode abort (`return 2`). Now logs and falls through to the viability gate, which is the specified anonymous arbiter.
+**R3. Countdown toast never visible (latent display bug).**
+JS toggled `.visible` on `.countdown-toast` but no such CSS rule existed —
+opacity stayed 0 forever, so the 0.5s/breather/manual affordances never
+rendered. Fix: added `.countdown-toast.visible { opacity: 1; pointer-events:
+auto; cursor: pointer; }` (pointer-events is what makes the R2 skip tappable).
+Files: `templates/partials/styles.css`.
 
-### R5. `enrich_candidates_via_media_api` had no `cookie_free` parameter (contract gap)
-- File: `extractor.py:1154`.
-- The function unconditionally called `fetch_media_info_batch` (authenticated `sessionid` endpoint). `main.py` happened to guard the call, but any future/direct caller would leak identity. Frontier review P0 demands the parameter on the function itself.
-- Fix: `cookie_free: bool = False`; when true, return `list(candidates)` untouched before any network/touch of `cookies.json`; forwards the flag to `fetch_media_info_batch`. `main.py` now passes it explicitly.
+**R4. Neon progress rings still live in JS (plan Phase 4 violated).**
+`_paintCategoryProgressRings` painted `conic-gradient(#f09433, #dc2743,
+#bc1888)` inline every watched-mark, overriding the quiet-luxury CSS rings.
+Fix: replaced with frosted-slate alpha fade (`rgba(255,255,255,0.14→1.0)` by
+fraction left); removed the dead `deg` variable. Files: `player.js`.
 
-### R6. `candidates_cache.json` not stamped/gated on mode (checkpoint-mixing hole)
-- File: `main.py` cache read + write.
-- `_write_sync_progress` stamped `cookie_free`, but the candidates cache (which can seed a whole run) carried no mode and its `params_match` ignored it: a cookie-mode cache could seed an anonymous run and vice versa.
-- Fix: write `"cookie_free": cookie_free` into the cache envelope; gate requires `bool(cached.get("cookie_free", False)) == cookie_free` (legacy caches read as cookie mode — fail-closed toward the pre-toggle behavior).
+**R5. Neon rings + pink glow in native story bar (parity matrix violated).**
+`StoryCategoryBarView` used an IG-orange/pink/purple `AngularGradient` ring
+with a pink drop shadow. Fix: active = solid white 2pt, inactive =
+`rgba(255,255,255,0.14)`; deleted the gradient; doc comment updated. Files:
+`StoryCategoryBarView.swift`.
 
-### R7. `--resume` mode-mismatch silently retired the checkpoint, then warned `return 0` (contract gap)
-- File: `main.py` resume gate.
-- Spec: "log an explicit warning and refuse to mix unless `--force`". Old behavior retired the banked file and returned 0 ("no usable work"), destroying evidence of the mismatch and reading as success.
-- Fix: detect banked-vs-active mode divergence explicitly; `return 2` with an error + `_alert_sync_abort("checkpoint mode mismatch", ...)` unless `force=True`. Added `force: bool = False` to `run_full_sync`/`_run_full_sync` and wired `force=args.force` from CLI. Fresh (non-resume) mismatches keep the existing retire path — only `--resume` gets the loud refusal, matching "refuse to mix" without breaking fresh starts.
+**R6. No lockout-PIN setup path (plan Phase 3: "PIN setup").**
+Settings modal had no PIN field, and `submitLockoutPinOverride` compared
+against a hardcoded `'1234'` fallback — any visitor guesses the override.
+Fix: added PIN row (shown only in hard mode) + `updatePinSetting` (4–6 digit
+validation, clears the field after save); override refuses with setup guidance
+when no PIN is stored. Files: `modals.html`, `player.js`.
 
-### R8. `--expand` / `--sync-following` refusals exited 2 silently (broke the AST alert invariant)
-- File: `main.py:main()`.
-- `tests/test_failure_alerts.py::test_weekly_exit2_sites_always_alert_ast` requires every `return 2` in `main()`/`_run_full_sync` to be accompanied by `_alert_sync_abort`. The two new cookie-free refusals violated it.
-- Fix: both refusals now call `_alert_sync_abort` before `return 2`. No behavior change besides the (mocked in tests, emailed in prod) failure alert.
+**R7. `/channels` had no Import Following UI and no archetype filter
+(REQ Decision 2 + Decision 5).** The server endpoints existed but no button
+called them; the plan's "filter controls in `/channels`" were absent. Fix:
+added Import Following card + review modal (checkbox list, Already-Present
+rows disabled, additive commit via `/api/channels/import-following`) and an
+archetype pill row (All/Educational/Craft/Lifestyle/Vlog/Untagged) composable
+with the existing category/search filters. Files: `templates/channels.html`.
 
-### R9. `config.MIN_DEPLOY_ITEMS` `AttributeError` crash (edge-case crash)
-- File: `main.py` shortfall-resume path referenced `config.MIN_DEPLOY_ITEMS`; the constant lives on `main`, not `config` (`MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)`). Any shortfall-resume run crashed.
-- Fix: use module-local `MIN_DEPLOY_ITEMS` (3 sites). No `config` shim added — single source of truth stays in `main.py`, tests assert against it.
+### Crash / type-error risks
 
-### R10. `download_reel_video(..., use_cookies=...)` broke all download mocks (regression)
-- Files: `extractor.py`, `main.py` Phase 5A.
-- Phase 5A (pre-existing dirty change) added `use_cookies=not cookie_free` to the download call. Every test fake with signature `(url, dest, video_cdn_url=None)` raised `TypeError: unexpected keyword argument 'use_cookies'`, caught per-reel as "Worker error", yielding 0 playable reels → shortfall abort. This was the actual cause of the 3 `test_sync_resume` + 1 `test_architectural_fixes` failures, not the `cookie_free` default.
-- Fix (production-side, no test edits): `download_reel_video` gains `cookie_free: bool = False` (forces `use_cookies=False` when true) plus `**_ignored` for forward-compat; `extract_single_reel_metadata` gains `**_ignored`; `main.py` wraps both download and enrich calls in `try/except TypeError` fallbacks. Real code always sends the flag; old doubles keep working.
+**R8. `rank_top_reels(sources=None)` crashed (TypeError).**
+The blacklist filter iterated `sources` before the `or []` guards below it.
+Fix: coerce `sources`/`candidates` to dict-only lists up front; `str()` guards
+on handle access. Added regression test. Files: `ranker.py`,
+`tests/test_ranker.py`.
 
-### R11. `InstagramSession(cookie_free=...)` broke session doubles (regression)
-- Files: `extractor.py`, `main.py`.
-- `main.py` constructs `InstagramSession(cookie_free=cookie_free)`; test fakes (`_Session`, `_FakeSession`, `lambda: ...`) take no args → `TypeError` before any pipeline work.
-- Fix: `InstagramSession.__init__(self, cookie_free=False, **_ignored)`; `main.py` wraps construction in `try/except TypeError` fallback. Real sessions get the flag; fakes keep working.
+**R9. Non-numeric timestamps flowed into chrono sort.**
+`timestamp: "abc"` (or a pass-through re-rank stamping `base_viral_score`
+payloads) survived into `data-timestamp`, where comparisons misbehave. Fix:
+new `_coerce_timestamp` (finite-float-or-0) applied to `timestamp`/`taken_at`
+at rank time; `taken_at` preserved when present. Files: `ranker.py`.
 
-### R12. Dashboard workers ignored cookie-free mode (orchestration gap)
-- File: `local_server.py` (`trigger_adhoc_sync_task`, `trigger_sync_resume_task`, `trigger_expand_task`).
-- All three workers unconditionally called `refresh_cookies_or_abort` (reads `cookies.json`, spawns `cookie_exporter.py`) and ran cookie-mode guards. In cookie-free mode this reintroduced the exact identity touchpoints the spec bans, and `run_expand` (pure authenticated feed discovery) was launchable from the dashboard.
-- Fix: workers snapshot `cookie_free = bool(config.COOKIE_FREE_MODE)` at launch, skip cookie refresh + follow-cooldown + trust-warming when true, and thread `cookie_free` into `run_full_sync`. Expand worker refuses fast with `failed` state + error log when cookie-free (CLI already refuses; dashboard now matches). `/api/sync-following` refusal (pre-existing) left in place.
+**R10. Onboarding crashed on malformed inputs (4 TypeErrors/AttributeErrors).**
+`reconcile_following(None)`, non-dict rows, `handle: None`,
+`merge_imported_channels([None], …)`, `candidates=None` all raised. The
+dashboard feeds cached JSON with legacy shapes into both. Fix: skip-and-continue
+guards, `or []` iteration, `clean_handle` validation. Added 2 regression tests.
+Files: `interactive_onboarding.py`, `tests/test_interactive_onboarding.py`.
 
-### R13. Cookie-free `check_gate()` bypass was incomplete (hardening)
-- File: `extractor.py`.
-- `extract_single_reel_metadata` already skipped `check_gate()` when `cookie_free` (pre-existing); `discover_creator_reel_urls` and `extract_creator_reels` did not — fixed in R2. The two yt-dlp gate-trip sites were already correctly guarded (`if not cookie_free` / `if use_cookies`); left unchanged. `reset_gate()` at run start (pre-existing) left unchanged.
+**R11. Unvalidated settings writes poisoned quota state.**
+`updateQuotaSetting("garbage")` stored `NaN`, and `NaN >= quota` is always
+false — the daily limit silently disabled itself. Same class for enforcement /
+advance / sort setters. Fix: allowlist validation with early return
+(`ALLOWED_QUOTAS`, `'gentle'/'hard'`, `'auto'/'manual'`, `'rank'/'chrono'`).
+Files: `player.js`.
+
+**R12. Chrono sort parsed epoch seconds with `new Date()`.**
+`data-timestamp` holds unix *seconds*; `new Date(1790936064)` is a 1970 date.
+Order happened to survive (uniform magnitude) but any ms-epoch payload would
+mis-sort. Fix: `parseFloat` + ms-vs-s normalization. Files: `player.js`.
+
+**R13. Health/food creators mis-bucketed to entertainment on import.**
+`_infer_archetype_and_category` had no food keyword set, mapped health→niche,
+and word-token matching missed compound handles (`monitormunchies`,
+`hubermanlab`). Verified live sources would import wrong. Fix: food set added,
+health→health, raw-handle substring pre-pass mirroring
+`extractor.categorize_creator`. Added regression test. Files:
+`interactive_onboarding.py`, `tests/test_interactive_onboarding.py`.
+
+### Contract / parity gaps
+
+**R14. `/api/channels` dropped `archetype` (plan Phase 1 broken end-to-end).**
+Ranker emits it, feed.html renders `data-archetype`, but the listing API
+stripped it — the new channels filter (R7) would see nothing. Fix: include
+`s.get("archetype")`; `/api/channels/add` stamps `archetype: None` (untagged,
+per plan — was silently absent). Files: `local_server.py`.
+
+**R15. New imports defaulted to `entertainment`/`educational` (plan: `niche`/`null`).**
+Both `merge_imported_channels` fallbacks contradicted Phase 5 ("new imports
+default to `category: niche`, `archetype: null`"). Fix: fallbacks corrected;
+added regression test. Files: `interactive_onboarding.py`.
+
+**R16. iOS `hideRanks`/`feedSortOrder` state was stored but never consumed.**
+Settings persisted both keys, yet `ReelCardOverlayView` and `GridView` had no
+such inputs — the toggles were dead on device. Fix: `hideRanks` hides the feed
+rank badge and grid rank pills; `GridView.sortOrder` sorts by `takenAt` desc
+(`.distantPast` fallback keeps untagged stable) while preserving original
+indices for `onSelectReel`; both wired through `FeedMainView`. Files:
+`ReelCardView.swift`, `GridView.swift`, `InstagramDigestApp.swift`.
+
+**R17. iOS watch-time quota never accrued (parity matrix violated).**
+`DailyProgress` gained `watchDurationSeconds/targetMinutes/enforcementMode`
+but nothing wrote them — `onPlaybackTick` fired into the void. Fix: subscribed
+`accrueWatchSeconds` (delta guard `0<delta<5`, same as web), persisting to
+today's row and pausing + surfacing the mindful modal at quota, honoring
+snooze. The pre-existing count-based modal path is untouched. Files:
+`InstagramDigestApp.swift`.
+
+**R18. iOS breather delay survived navigation (stale auto-advance).**
+The 3s `Task.sleep` captured `slot` but a swipe during the pause still fired
+`onAutoAdvanceToNext` from the departed reel. Fix: cancellable `breatherTask`,
+cancelled in `setCurrentIndex`, with `Task.isCancelled` re-check after sleep.
+Files: `AVPlayerPool.swift`.
+
+**R19. Manifesto/Settings sheets stranded playback + stale docs.**
+`resumeFeedAfterSheet` only knew 3 sheets, so dismissing the 2 new sheets never
+resumed a pre-sheet playing feed. README still documented the retired 50-reel
+counter and lacked the required video reference. Fix: 5-sheet resume guard;
+README title → "Instagram Digest — The Anti-Doomscroll Briefing", quota copy,
+and `https://youtu.be/FmLJbYBu094` philosophy block. Also swept the last
+`--ig-gradient`/neon hexes from `channels.html`. Files:
+`InstagramDigestApp.swift`, `README.md`, `channels.html`.
 
 ## 2. Requirements traceability (REQUIREMENTS §2, line by line)
 
 | # | Requirement | Status | Evidence |
 |---|---|---|---|
-| 1 | `COOKIE_FREE_MODE` env bool, default `False` | FIXED (R1) | `config.py:117` |
-| 2 | `--cookie-free` / `--use-cookies`, CLI > env > `False`, startup log | OK (pre-existing) | `main.py:2885–2902` |
-| 3 | No read/inject of `data/cookies.json`, `cookies.txt` | OK | `_inject_cookies` early-return; `get_cookie_args(cf)→[]`; media API bypass; no new reads added |
-| 4 | `get_cookie_args()` → `[]`, no `--cookies-from-browser` fallback | OK | `extractor.py:240` |
-| 5 | Skip `fetch_media_info_batch` | OK + hardened (R5) | early `return {}` + enrich passthrough |
-| 6 | Refuse `--sync-following` with clear error | OK + alert fix (R8) | `main.py:2971`; `/api/sync-following` 400 in `local_server.py` |
-| 7 | Bypass healthchecks, login probes, cooldowns, exporter | OK + dashboard gap closed (R12) | `main.py:855,1325`, workers |
-| 8 | yt-dlp metadata + download without cookie args | OK + R10 | `cookie_args = get_cookie_args(cookie_free=...)`; `use_cookies=not cookie_free` |
-| 9 | Skip Tier 3 at both `run_full_sync` sites | OK (pre-existing) | shortfall-resume + main Tier-3 skips with log lines |
-| 10 | Soft per-creator skip, bounded single retry, no multi-hour sleeps | OK + R3/R4 | `waits = () if cookie_free`; 3 s single retry; Tier-2 skip |
-| 11 | Never trip `_GATE` on anonymous errors | OK (R13) | all trip sites guarded; discovery/entry gates skipped |
-| 12 | Suppress cookie email + popup | OK | central early-returns in `notifier.py:412`, `local_server.py:650` |
-| 13 | Stamp `cookie_free` into checkpoints + caches | FIXED (R6) | sync progress (pre-existing) + candidates cache (new) |
-| 14 | `--resume` mode mismatch: warn + refuse unless `--force` | FIXED (R7) | explicit `return 2` + alert; `force` threaded |
-| 15 | Deeper anonymous discovery | NOT ADDED (deliberate) | Frontier P3 rejects a second depth knob; single `--limit-per-creator` knob retained; no new env var |
-| 16 | `MIN_DEPLOY_ITEMS` floor; `shortfall_paused` without R2/digest mutation | OK | all gates reference module constant (R9 fixed the crash); no hardcoded 150 in code |
-| 17 | Metadata degradation (grid views, `metrics_estimated`, dateless dropped) | OK | enrich bypass → browser path; cutoff rule unchanged; `metrics_estimated=True` expected |
-| 18 | Shell passthrough (`run_weekly.sh`, `resume_pending.sh`, `healthcheck.sh`) | OK (pre-existing) | exporter skip + mode flags; banked-mode resume; session soft-skip |
+| D1 | Keep "Instagram Digest" + subtitle | OK (pre-existing) | `header.html`, iOS `HeaderBarView` |
+| D1 | 10-traps manifesto modal + video link | OK (pre-existing) | `modals.html#manifestoModal`, `ManifestoSheetView.swift` |
+| D1 | Video ref in README | FIXED (R19) | `README.md` philosophy block |
+| D2 | Tier 3 stripped, cookie-free extraction | OK (pre-existing, untouched) | `main.py` skips, `scripts/topup_digest.py` untouched |
+| D2 | `MIN_DEPLOY_ITEMS=150` floor, `shortfall_paused` | OK (pre-existing, untouched) | `main.py`, all shortfall suites green |
+| D2 | `--import-following` CLI + `/channels` button + review | FIXED (R7) | `interactive_onboarding.py`, `channels.html` modal, endpoints |
+| D2 | Already-present flagged, non-destructive merge, zero cookies | OK + hardened (R10/R15) | `reconcile_following`, `merge_imported_channels` |
+| D3 | `daily_watch_seconds` active-playback-only accumulator | OK (pre-existing) | `player.js` ticker, `visibilityState` guard |
+| D3 | Local date boundary, 20m default, 10/20/30/45 picker | OK + hardened (R11) | `localDateStr`, `ALLOWED_QUOTAS` |
+| D3 | Gentle + hard lockout with PIN override | FIXED (R6) | PIN row, `updatePinSetting`, no hardcoded fallback |
+| D3 | Per-platform local storage | FIXED (R17) | `localStorage` + `DailyProgress.accrueWatchSeconds` |
+| D4 | Progressive icon (muted IG → slate) | OK (pre-existing) | `assets/icon.svg`, PNGs, AppIcon set |
+| D4 | Quiet-luxury palette, frosted rings, monochrome pills, zinc/amber bars | FIXED (R4/R5/R19) | `styles.css`, `channels.html`, story bars both platforms |
+| D5.1 | Advance auto/manual + 3s skippable breather | FIXED (R1/R2/R3/R18) | `handleVideoEnd`, toast skip, observer/settle guards, `breatherTask` |
+| D5.2 | Grayscale toggle (`filter` / `.grayscale(1.0)`) | OK (pre-existing) | `.grayscale-mode`, `FeedPagerView.grayscale` |
+| D5.3 | Session time-boxing pill + lockout | OK + wired (R17) | `⏱️ m/m` badge, `WatchTimerPill`, `accrueWatchSeconds` |
+| D5.4 | `archetype` additive field + filters | FIXED (R13/R14/R15) | `sources.json` (70 edu/25 life), ranker, `/api/channels`, channels pills |
+| D5.5 | Chrono sort + rank-hide, Top-250 pool unchanged | FIXED (R9/R12/R16) | `applySortOrder`, `hide-ranks`, `GridView.sortOrder` |
+| Parity | Manifesto/Settings sheets, `DailyProgress` fields, `ReelItem.takenAt/archetype` | OK + wired (R16–R18) | Swift files listed above |
+| Verify | `pytest`, PWA build, iOS CI | PASS (§5) | 587 passed, `--build-only` clean |
 
-Deliberate non-changes: no `ANON_REELS_PER_CREATOR_DEPTH` knob (Frontier P3 over-engineeringori reject); no global/contextvar predicate — explicit `cookie_free` threading only, with the two central alert guards as the sanctioned exception; no per-callsite `if cookie_free` around the 23 alert sites (counts pinned by `test_dashboard.py:381-383`, still passing).
+Deliberate non-changes: `hubermanlab`-style bare handles still import as
+lifestyle/entertainment (no signal in the string — triage in `/channels`, per
+plan's untagged flow); no live-Instagram integration test (nondeterministic 429s
+must never gate CI); `DailyProgress.viewedCount`/50-reel modal left intact
+alongside the new time quota (additive, not a migration).
 
 ## 3. Type errors & edge-case crashes swept
 
-- `config.MIN_DEPLOY_ITEMS` AttributeError (R9) — would have crashed every shortfall-resume.
-- `TypeError` on all patched extractor/session doubles (R10/R11) — crashed 8+ tests; in prod, any third-party wrapper with the old signature would have failed the same way. Fixed production-side with `**_ignored` + `TypeError` fallbacks; zero test files edited.
-- `main._extract_with_backoff` `TypeError` fallback for legacy doubles.
-- `reconcile` rank-parse `except (ValueError, IndexError)` — audited, already correct.
-- `_sync_progress_usable` legacy checkpoints (no `cookie_free` key) read as cookie mode via `bool(.get(..., False))` — fail-closed, verified by probe.
-- `resume_pending.sh` banked-mode probe falls back to `--cookie-free` when unreadable (`|| echo "1"`) — fail-closed toward anonymity; noted, not changed (single-user cron, safe default).
-- `run_weekly.sh` resolver falls back to `"1"` on config-import failure — same fail-closed reasoning; noted, not changed.
+- `rank_top_reels(sources=None)` TypeError (R8) — any caller passing a missing
+  source list crashed; now returns ranked items with default bucketing.
+- Non-dict candidates (`"junk"`, `None`, `{}`) skipped with a warning (R8).
+- Garbage timestamps coerced to 0; `taken_at` preserved (R9).
+- Onboarding None/non-string/missing-handle inputs skipped, never raise (R10);
+  corrupt (non-list) `sources.json` under merge resets to `[]` instead of
+  crashing on `.get`.
+- `NaN`-quota and invalid enum writes rejected (R11).
+- Swift: `GridView.displayReels` uses `.distantPast` fallback so nil `takenAt`
+  never traps the sort; `accrueWatchSeconds` guards non-finite/oversized
+  deltas; `breatherTask` is optional-chained before cancel.
+- SwiftUI changes are additive optional params with defaults (`hideRanks =
+  false`, `sortOrder = "rank"`) — all existing call sites compile unchanged.
 
 ## 4. Files changed
 
-`config.py` (R1) · `extractor.py` (R2/R5/R10/R11/R13) · `main.py` (R2–R10) · `local_server.py` (R12) · `notifier.py` (unchanged this session — guard verified) · shell scripts (unchanged this session — verified). No test files modified. No new files except this report.
+`ranker.py` (R8/R9) · `interactive_onboarding.py` (R10/R13/R15) ·
+`templates/partials/player.js` (R1/R2/R4/R11/R12) ·
+`templates/partials/styles.css` (R3) · `templates/partials/modals.html` (R6) ·
+`templates/channels.html` (R7/R19) · `local_server.py` (R14) · `README.md`
+(R19) · `StoryCategoryBarView.swift` (R5) · `ReelCardView.swift` (R16) ·
+`GridView.swift` (R16) · `InstagramDigestApp.swift` (R16/R17/R19) ·
+`AVPlayerPool.swift` (R18) · `tests/test_ranker.py` +
+`tests/test_interactive_onboarding.py` (4 new regression tests).
 
 ## 5. Verification
 
-- Targeted regression (all green): `test_cookie_free_mode` (8) · `test_dashboard` · `test_sync_resume` (6) · `test_expand_resume` · `test_frontier_fixes` · `test_smart_funnel` · `test_failure_alerts` (17) · `test_fable_audit_fixes` (18) → **129 passed**.
-- Broader sweeps (all green): `test_architectural_fixes` (29) · `test_teardown_final`+`test_upload_ordering`+`test_expand_resume` (81 passed, 1 initially failed → fixed) · notifier/cookie-refresh/enhancements/ranker/durability/scraper-isolation/parser/adhoc (55, 1 initially failed → fixed) · UAT/stealth/JIT/recommendations/audit-channels (74) · overnight/review/pacing (50) · channels/hardening (43).
-- `py_compile` clean on all touched modules; `bash -n` clean on all shell scripts.
-- Contract probes (ad-hoc script): `_env_bool` garbage→default both ways; `get_cookie_args(cf)==[]`; session flag; media bypass + enrich passthrough; `download_reel_video` honors `cookie_free`; checkpoint gate accepts/rejects correctly incl. legacy; all new params present in signatures.
+- Full Python suite (minus browser): **563 passed**.
+- Browser UAT: `test_grid_view` **10 passed**, `test_mobile_pwa_uat` **14 passed**.
+- `main.py --build-only` clean; built `site/index.html` contract probe 14/14
+  (PIN row, breather skip, modals, quota badge, hide-ranks/grayscale CSS, toast
+  rule, subtitle, data-archetype, manifesto link, quota validation, manual
+  guard, zero neon conic).
+- `py_compile` clean on all touched modules.
+- Swift: Linux has no SwiftUI SDK so `swiftc -typecheck` is unavailable here;
+  changes are additive/optional-param-only, and iOS CI
+  (`.github/workflows/build-ipa.yml`) remains the gate for compile proof.
+  Existing `Tests/` (incl. `test_watch_timer.py` contract + `AuditFixesTests`
+  dailyLimit=50 assertions) are untouched and unbroken by these changes.
 
 ## 6. Known non-blockers (personal-use scale, left as-is)
 
-1. Anonymous runs pay ~7 s per-reel Playwright enrichment (media API skipped) — deeper discovery multiplies runtime. Named tradeoff per Frontier P3; revisit only if yields miss the floor twice.
-2. `resume_pending.sh`/`run_weekly.sh` resolver fallback is `--cookie-free` on import failure — safe (anonymous) default; loud failure would be equally defensible.
-3. No live-Instagram integration test added — correctly excluded per Frontier P3 (nondeterministic 429s must never gate CI).
-4. `run_friday_overnight.sh` Chrome prompt skip in cookie-free mode (pre-existing) — correct; prompt is meaningless without an account.
+1. `data/top100_digest.json` + `site/data.json` predate the ranker fix, so live
+   items lack `archetype` until the next weekly run backfills it. Feed renders
+   `data-archetype=""` safely; chrono/hide-rank behavior is unaffected. No
+   action needed — do not hand-edit the batch.
+2. Bare-handle imports with zero signal (`hubermanlab`) stay untagged
+   lifestyle/entertainment by design; triage in `/channels`.
+3. Web `recordDailyView` is a deliberate no-op shim (legacy `DAILY_SET_KEY`
+   pruner retained) — quota flows through the seconds accumulator only.
+4. iOS hard-lockout currently pauses + shows the mindful modal rather than a
+   dedicated until-midnight overlay; the watch accrual + snooze contract holds,
+   and a full lock screen can be added if real usage demands it.

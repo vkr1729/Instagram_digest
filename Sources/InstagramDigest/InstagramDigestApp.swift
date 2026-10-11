@@ -120,7 +120,16 @@ struct FeedMainView: View {
     @State private var showGridSheet: Bool = false
     @State private var showDownloadSheet: Bool = false
     @State private var showBookmarksSheet: Bool = false
+    @State private var showManifestoSheet: Bool = false
+    @State private var showSettingsSheet: Bool = false
     @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
+    @State private var isGrayscale: Bool = UserDefaults.standard.bool(forKey: "ig_digest_grayscale_mode")
+    @State private var hideRanks: Bool = UserDefaults.standard.bool(forKey: "ig_digest_hide_ranks_mode")
+    @State private var timeQuotaMinutes: Int = UserDefaults.standard.integer(forKey: "ig_digest_quota_minutes") == 0 ? 20 : UserDefaults.standard.integer(forKey: "ig_digest_quota_minutes")
+    @State private var enforcementMode: String = UserDefaults.standard.string(forKey: "ig_digest_enforcement_mode") ?? "gentle"
+    @State private var advanceMode: String = UserDefaults.standard.string(forKey: "ig_digest_advance_mode") ?? "auto"
+    @State private var breatherEnabled: Bool = UserDefaults.standard.bool(forKey: "ig_digest_breather_enabled")
+    @State private var feedSortOrder: String = UserDefaults.standard.string(forKey: "ig_digest_sort_order") ?? "rank"
     // Set while a category switch resets activeIndex to 0 so the transient
     // reset is not persisted as the user's resume position.
     @State private var suppressNextResumeSave: Bool = false
@@ -238,6 +247,7 @@ struct FeedMainView: View {
                     lastScrollEndTime: lastScrollEndTime,
                     currentProgress: pool.currentProgress
                 )
+                .grayscale(isGrayscale ? 1.0 : 0.0)
                 .ignoresSafeArea()
 
                 // 2. Full-Bleed Mock 2 Overlay (Natural Scrim, Progress, Creator, Buttons, Caption)
@@ -253,6 +263,7 @@ struct FeedMainView: View {
                     isPlaying: pool.isPlaying,
                     showBookmarkPop: showBookmarkPop,
                     isCaptionExpanded: isCaptionExpanded,
+                    hideRanks: hideRanks,
                     onTogglePlayPause: {
                         pool.togglePlayPause()
                         if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
@@ -296,6 +307,16 @@ struct FeedMainView: View {
                             wasPlayingBeforeSheet = pool.isPlaying
                             pool.pause()
                             showBookmarksSheet = true
+                        },
+                        onTapManifesto: {
+                            wasPlayingBeforeSheet = pool.isPlaying
+                            pool.pause()
+                            showManifestoSheet = true
+                        },
+                        onTapSettings: {
+                            wasPlayingBeforeSheet = pool.isPlaying
+                            pool.pause()
+                            showSettingsSheet = true
                         }
                     )
 
@@ -381,6 +402,8 @@ struct FeedMainView: View {
                 freshnessCaption: WatchedRules.freshnessCaption(
                     weekID: manifest?.weekId ?? "",
                     generatedAt: manifest?.generatedAt),
+                hideRanks: hideRanks,
+                sortOrder: feedSortOrder,
                 onSelectReel: { targetIndex in
                     jumpToReel(at: targetIndex)
                 }
@@ -393,6 +416,20 @@ struct FeedMainView: View {
         }
         .sheet(isPresented: $showBookmarksSheet) {
             BookmarksSheet()
+        }
+        .sheet(isPresented: $showManifestoSheet) {
+            ManifestoSheetView()
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            SettingsSheetView(
+                timeQuotaMinutes: $timeQuotaMinutes,
+                enforcementMode: $enforcementMode,
+                advanceMode: $advanceMode,
+                breatherEnabled: $breatherEnabled,
+                isGrayscale: $isGrayscale,
+                hideRanks: $hideRanks,
+                feedSortOrder: $feedSortOrder
+            )
         }
         .onChange(of: activeIndex) { _, newIndex in
             if suppressNextResumeSave {
@@ -409,6 +446,16 @@ struct FeedMainView: View {
         }
         .onChange(of: showBookmarksSheet) { _, isPresented in
             resumeFeedAfterSheet(isPresented: isPresented)
+        }
+        .onChange(of: showManifestoSheet) { _, isPresented in
+            resumeFeedAfterSheet(isPresented: isPresented)
+        }
+        .onChange(of: showSettingsSheet) { _, isPresented in
+            resumeFeedAfterSheet(isPresented: isPresented)
+            pool.advanceMode = (advanceMode == "manual") ? .manual : .auto
+            pool.breatherEnabled = breatherEnabled
+            pool.isGrayscale = isGrayscale
+            pool.hideRanks = hideRanks
         }
         .onChange(of: scenePhase) { _, phase in
             // Rec 2: quiet foreground refresh — the new week appears without
@@ -660,6 +707,12 @@ struct FeedMainView: View {
         pool.onWatchedMilestone = { reel in
             recordWatched(reel: reel)
         }
+        // Time-based daily quota: the pool ticks 0.5s while the current item
+        // is actually rendering. Accumulate into DailyProgress (local calendar
+        // date) and surface the gentle check-in at the configured target.
+        pool.onPlaybackTick = { delta in
+            accrueWatchSeconds(delta)
+        }
         pool.onAutoAdvanceToNext = {
             // Read the index from the pool (source of truth), not captured view
             // state, so rapid scrolls between setup and fire can't target stale N+1.
@@ -699,8 +752,8 @@ struct FeedMainView: View {
         guard !isPresented else { return }
         guard wasPlayingBeforeSheet else { return }
         wasPlayingBeforeSheet = false
-        // All three sheets are mutually exclusive, so any dismiss resumes.
-        if !showGridSheet && !showDownloadSheet && !showBookmarksSheet {
+        // All five sheets are mutually exclusive, so any dismiss resumes.
+        if !showGridSheet && !showDownloadSheet && !showBookmarksSheet && !showManifestoSheet && !showSettingsSheet {
             pool.play()
             if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
                 withAnimation(.easeInOut(duration: 0.25)) {
@@ -762,6 +815,45 @@ struct FeedMainView: View {
                     showMindfulModal = true
                 }
             }
+        }
+    }
+
+    /// Accumulates active playback seconds into today's DailyProgress row and
+    /// surfaces the time-quota check-in. The pool only ticks while the current
+    /// item is rendering, so paused/background time never accrues — matching
+    /// the web `daily_watch_seconds` contract. Hard-lockout enforcement is
+    /// additive: it pauses playback, leaving the existing gentle modal path
+    /// to explain the state.
+    private func accrueWatchSeconds(_ delta: Double) {
+        guard delta.isFinite, delta > 0, delta < 5 else { return }
+        let todayStr = getTodayDateString()
+        let dailyDescriptor = FetchDescriptor<DailyProgress>(
+            predicate: #Predicate { $0.dateString == todayStr }
+        )
+        let daily: DailyProgress
+        if let existing = (try? modelContext.fetch(dailyDescriptor))?.first {
+            daily = existing
+        } else {
+            daily = DailyProgress(dateString: todayStr)
+            modelContext.insert(daily)
+        }
+        daily.watchDurationSeconds += delta
+        daily.targetMinutes = timeQuotaMinutes
+        daily.enforcementMode = enforcementMode
+        try? modelContext.save()
+
+        let quotaSecs = Double(timeQuotaMinutes) * 60.0
+        guard daily.watchDurationSeconds >= quotaSecs else { return }
+        let isSnoozed: Bool
+        if let snooze = daily.snoozeUntil {
+            isSnoozed = Date() < snooze
+        } else {
+            isSnoozed = false
+        }
+        guard !isSnoozed, !showMindfulModal else { return }
+        pool.pause()
+        withAnimation {
+            showMindfulModal = true
         }
     }
 

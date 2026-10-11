@@ -3,587 +3,682 @@
     "handle": "100xengineers",
     "name": "100xEngineers",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "_masalalab",
     "name": "Krish Ashok",
     "category": "food",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "_soniashenoy",
     "name": "Sonia Shenoy",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "abhiswatchlist",
     "name": "Abhi",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "aevytvdaily",
     "name": "AevyTV",
     "category": "ai_tech",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "alishabeotra",
     "name": "Alisha Beotra",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "bgandtheboys",
     "name": "Biji Basheer",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "caitofalltraits",
-    "name": "Caitanya Tan | Actor • Presenter • Voiceover Artist • Creator",
+    "name": "Caitanya Tan | Actor \u2022 Presenter \u2022 Voiceover Artist \u2022 Creator",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "casahiljain.official",
     "name": "CA Sahil Jain",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "casarthakahuja",
     "name": "Sarthak Ahuja",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "chalchitratalks",
     "name": "Chalchitra Talks",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "charankotaru",
     "name": "Charan Kotaru",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "cinema.positivity",
-    "name": "Cinema Positivity ➕",
+    "name": "Cinema Positivity \u2795",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "cleoabram",
     "name": "Cleo Abram (Huge If True)",
     "category": "niche",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "codesensei.dev",
     "name": "Gowtham Paruchuru",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "deon_tech",
     "name": "Deon Menezes",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "dr.finny_cardiologist",
-    "name": "The Heart Doctor🫀🩺 💊🏥",
+    "name": "The Heart Doctor\ud83e\udec0\ud83e\ude7a \ud83d\udc8a\ud83c\udfe5",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "dr.raghu_vamsi",
     "name": "DrRaghu Vamsi",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "dr.samathatulla",
     "name": "Dr. Samatha Tulla MD",
     "category": "health",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "dr.sujit_telagamsetty",
     "name": "Sujit Telagamsetty",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "drchatterjee",
     "name": "Dr Rangan Chatterjee",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "drmalharganla",
     "name": "Malhar Ganla",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "fictionarybooks",
     "name": "Fictionary",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "foundmyfitness",
     "name": "Dr. Rhonda Patrick",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "garikipatinarasimharaoofficial",
     "name": "Sri Garikipati Narasimha Rao",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "gutfeelingwithdrpal",
     "name": "Gut Feeling With Dr Pal",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "hubermanlab",
     "name": "Dr. Andrew Huberman",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "idris_workout2",
     "name": "Idris | Online Fitness Coach",
     "category": "health",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "itsme_bhagavathi",
     "name": "Bhagavathi S",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "itsnehasamuel",
     "name": "Neha Upadhyay Samuel",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "ji_nitinjoshi",
     "name": "Nitin Joshi",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "kirtanshahcfp",
     "name": "Kirttan Shah",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "lavin_creator",
     "name": "Vallabhaneni Lakshmi Suresh Chandra",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "madhu_gogulapati",
     "name": "Cassette & Tapes",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "madstryke",
     "name": "Madstryke",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "mom_in_dubai",
     "name": "Virdah Javed Khan",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "monitormunchies",
     "name": "Murali Maddula",
     "category": "food",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "nonauppal",
-    "name": "nona ☀️",
+    "name": "nona \u2600\ufe0f",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "nrishaala",
     "name": "NRI Shaala by Aspora",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "parthknowsai",
     "name": "Parthknowsai",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "peterattiamd",
     "name": "Dr. Peter Attia",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "pr4th1k",
     "name": "Prathik Gonzalez",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "raj.ganpath",
     "name": "Raj Ganpath",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "rajamamidanna",
     "name": "Raja Sekhar Mamidanna",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "rationalrahul123",
     "name": "Rational Rahul - Telugu",
     "category": "finance",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "raydalio",
     "name": "Ray Dalio",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "readandrisee",
     "name": "Md Junaid (Read & Rise)",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "sandeepdasauthor",
     "name": "Sandeep Das",
     "category": "niche",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "simonsinek",
     "name": "Simon Sinek",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "socho.abhi",
     "name": "Tvisha Tuli | Creator Economy | Business | AI",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "storiesbytwoplusone",
     "name": "Arpitha Kowtal",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "sukhada",
     "name": "Sukhada Chaudhary",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "thebarbershopwithshantanu",
     "name": "The BarberShop with Shantanu",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "theliverdr",
     "name": "The Liver Doc (Cyriac Abby Philips)",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "thethinkschool",
     "name": "Ganeshprasad Sridharan",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "thevarunmayya",
     "name": "Varun Mayya",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "unconventional.conversations",
     "name": "Unconventional Conversations",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "v.i.s.h.ai",
     "name": "Vishnu Vijayan",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "vaibhavsisinty",
     "name": "Vaibhav Sisinty",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "vamsigiduthuri",
     "name": "Vamsi Giduthuri",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "vishal.chowhan_",
     "name": "Vishal Chowhan",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "with.prathamesh",
     "name": "Prathamesh Shetty",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "zarnagarg",
     "name": "Zarna Garg",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "markmanson",
     "name": "markmanson",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "theboardgamist",
     "name": "theboardgamist",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "tjpower",
     "name": "tjpower",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "ral.livezy",
     "name": "ral.livezy",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "stories_by_srilok",
     "name": "stories_by_srilok",
     "category": "entertainment",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "matthewberman_ai",
     "name": "Matthew Berman",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "ryanholiday",
     "name": "Ryan Holiday",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "mohak.mangal",
     "name": "Mohak Mangal",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "humansofcinema",
     "name": "Harshit Bansal (Humans of Cinema)",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "rowancheung",
     "name": "Rowan Cheung",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "pranjalkamra",
     "name": "Pranjal Kamra",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "glucosegoddess",
-    "name": "Jessie Inchauspé",
+    "name": "Jessie Inchausp\u00e9",
     "category": "food",
     "enabled": true,
-    "favorite": true
+    "favorite": true,
+    "archetype": "educational"
   },
   {
     "handle": "foodpharmer",
     "name": "Revant Himatsingka",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "dr.pal.manickam",
     "name": "Dr. Pal Manickam",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "satshyaa",
     "name": "Satshya Tharien",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "tim.spector",
     "name": "Prof. Tim Spector",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "drkaranrajan",
     "name": "Dr. Karan Rajan",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "dr_idz",
     "name": "Dr. Idrees Mughal",
     "category": "health",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "adamgrant",
     "name": "Adam Grant",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "realrileybrown",
     "name": "Riley Brown",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "sabrina_ramonov",
     "name": "Sabrina Ramonov",
     "category": "ai_tech",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "finshots.in",
     "name": "Finshots",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "iamradhikagupta",
     "name": "Radhika Gupta",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "prateek_learnapp",
     "name": "Prateek Singh",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "zerodhavarsity",
     "name": "Zerodha Varsity",
     "category": "finance",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "the_plant_slant",
     "name": "Liam Layton",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "nehadeepakshah",
     "name": "Neha Deepak Shah",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "insulinresistant1",
     "name": "Justin Richard",
     "category": "food",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "colorpalette.cinema",
     "name": "Color Palette Cinema",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "screenplayed",
     "name": "Screenplayed",
     "category": "entertainment",
-    "enabled": true
+    "enabled": true,
+    "archetype": "lifestyle"
   },
   {
     "handle": "officialgaurangadas",
     "name": "Gauranga Das",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   },
   {
     "handle": "jamesclear",
     "name": "James Clear",
     "category": "niche",
-    "enabled": true
+    "enabled": true,
+    "archetype": "educational"
   }
 ]

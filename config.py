@@ -136,10 +136,8 @@ MAX_PER_CREATOR = _env_int("MAX_PER_CREATOR", 4, 1, 50)
 FAVORITE_GUARANTEED_PICKS = _env_int("FAVORITE_GUARANTEED_PICKS", 2, 1, 10)
 FAVORITE_MAX_PER_CREATOR = _env_int("FAVORITE_MAX_PER_CREATOR", 8, 1, 50)
 FAVORITE_SCORE_BOOST = _env_float("FAVORITE_SCORE_BOOST", 1.5)
-# Tier 3 (external feed discovery) guardrails. Fresh/low-trust accounts get
-# flagged for long discovery-feed scrolls, so Tier 3 fills at most
-# MAX_EXTERNAL_SHARE of the digest and stops after MAX_FEED_EVALUATIONS DOM
-# evaluations (~7s each incl. pacing => ~2h ceiling) instead of grinding.
+# Tier 3 (external feed discovery) deprecated in cookie-free mode.
+# Kept for backward compatibility with existing tests.
 MAX_EXTERNAL_SHARE = _env_float("MAX_EXTERNAL_SHARE", 0.40)
 MAX_FEED_EVALUATIONS = _env_int("MAX_FEED_EVALUATIONS", 1000, 100, 2000)
 # High-signal bar for Tier 3 externals: visible likes, or (likes hidden)

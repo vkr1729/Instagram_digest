@@ -6,7 +6,7 @@
         <h3 class="modal-title">Jump to Reel</h3>
         <p class="modal-desc">Enter reel number (1–{{ items|length }}). All reels before this will be marked as watched.</p>
         <div class="modal-daily-stat" id="modalDailyStat" style="font-size: 12px; color: #a1a1aa; margin: -6px 0 12px; font-weight: 500;">
-          🎯 Mindful Progress: <span id="modalDailyCount">0</span>/50 watched today
+          ⏱️ Mindful Progress: <span id="modalDailyWatchTime">0m</span> / <span id="modalDailyTargetTime">20m</span> today
         </div>
         <div class="jump-input-group">
           <input type="number" id="jumpInput" min="1" max="{{ items|length }}" placeholder="e.g. 52" inputmode="numeric" pattern="[0-9]*" onkeydown="if(event.key==='Enter')handleJumpSubmit()">
@@ -24,7 +24,7 @@
         <p class="modal-desc" id="offlineDesc">The rolling 25-video window (prev 5 + next 20) is always kept offline automatically. You can also pre-download all {{ items|length }} reels for airplane or travel mode.</p>
         <div id="offlineProgressContainer" style="display:none; margin: 14px 0;">
           <div style="background: rgba(255,255,255,0.15); height: 8px; border-radius: 4px; overflow: hidden;">
-            <div id="offlineProgressBar" style="width: 0%; height: 100%; background: var(--ig-gradient); transition: width 0.2s linear;"></div>
+            <div id="offlineProgressBar" style="width: 0%; height: 100%; background: #ffffff; transition: width 0.2s linear;"></div>
           </div>
           <div id="offlineProgressText" style="font-size: 11px; color: #a1a1aa; margin-top: 6px;">0 / {{ items|length }}</div>
         </div>
@@ -36,17 +36,191 @@
       </div>
     </div>
 
-    <!-- Mindful Daily Limit Check-in Modal -->
+    <!-- Mindful Daily Limit Check-in Modal (Gentle Mode) -->
     <div class="modal-overlay" id="dailyLimitModal" onclick="handleModalBackdrop(event, 'dailyLimitModal')">
       <div class="modal-dialog">
         <div class="modal-icon-badge">🌿</div>
         <h3 class="modal-title">Mindful Check-in</h3>
         <p class="modal-desc" style="margin-bottom: 20px;">
-          You've reached your daily <strong>50-reel target</strong>! Take a breather, or feel free to continue whenever you'd like.
+          You've reached your daily <strong><span id="dailyTargetReachedText">20-minute</span> watch target</strong>! Take a breather, or feel free to continue whenever you'd like.
         </p>
         <div class="modal-actions" style="flex-direction: column; gap: 8px;">
           <button class="modal-btn-cancel" style="padding: 12px; font-size: 14px;" onclick="pauseAndTakeBreak()">🌿 Take a Break</button>
           <button class="jump-submit-btn" style="padding: 12px; border-radius: 12px; font-size: 14px;" onclick="continueMindfulWatching()">Continue Watching</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Hard Session Lockout Overlay -->
+    <div id="lockoutOverlay" class="lockout-overlay" style="display:none">
+      <div class="lockout-badge">🛑</div>
+      <h2 class="lockout-title">Daily Session Complete</h2>
+      <p class="lockout-desc">
+        You've reached your configured daily limit. Time to unplug and rest your eyes! Playback is locked until midnight.
+      </p>
+      <div class="lockout-timer" id="lockoutCountdown">Resets in 00h 00m</div>
+      <div class="lockout-pin-group">
+        <input type="password" id="lockoutPinInput" maxlength="6" placeholder="PIN override" class="settings-input" style="text-align:center; width:140px; font-size:16px;">
+        <button class="jump-submit-btn" onclick="submitLockoutPinOverride()" style="padding:8px 18px;">Unlock</button>
+      </div>
+    </div>
+
+    <!-- Anti-Doomscroll Settings Modal -->
+    <div class="modal-overlay" id="settingsModal" onclick="handleModalBackdrop(event, 'settingsModal')">
+      <div class="modal-dialog" style="max-width: 420px;">
+        <div class="modal-icon-badge">⚙️</div>
+        <h3 class="modal-title">Anti-Doomscroll Controls</h3>
+        <p class="modal-desc">Configure your mindful briefing guardrails.</p>
+
+        <div class="settings-group">
+          <!-- Daily Quota -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Daily Time Quota</div>
+              <div class="settings-sub">Active video playback limit per day</div>
+            </div>
+            <select id="settingQuotaSelect" class="settings-select" onchange="updateQuotaSetting(this.value)">
+              <option value="10">10 minutes</option>
+              <option value="20">20 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="45">45 minutes</option>
+            </select>
+          </div>
+
+          <!-- Enforcement Mode -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Enforcement Mode</div>
+              <div class="settings-sub">Gentle reminder vs hard daily lockout</div>
+            </div>
+            <select id="settingEnforcementSelect" class="settings-select" onchange="updateEnforcementSetting(this.value)">
+              <option value="gentle">Gentle Pause</option>
+              <option value="hard">Hard Lockout</option>
+            </select>
+          </div>
+
+          <!-- Lockout PIN (Hard Lockout override) -->
+          <div class="settings-row" id="settingPinRow" style="display:none">
+            <div>
+              <div class="settings-label">Lockout PIN</div>
+              <div class="settings-sub">4-digit emergency override for hard lockout</div>
+            </div>
+            <input type="password" id="settingPinInput" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+              class="settings-input" placeholder="Set PIN" autocomplete="off"
+              style="width:120px; text-align:center;" onchange="updatePinSetting(this.value)">
+          </div>
+
+          <!-- Advance Mode -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Advance Mode</div>
+              <div class="settings-sub">Automatic 0.5s vs manual swipe-to-advance</div>
+            </div>
+            <select id="settingAdvanceSelect" class="settings-select" onchange="updateAdvanceSetting(this.value)">
+              <option value="auto">Auto (0.5s pause)</option>
+              <option value="manual">Manual (Swipe next)</option>
+            </select>
+          </div>
+
+          <!-- 3s Breather -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Inter-Reel Breather</div>
+              <div class="settings-sub">3-second calm pause between reels</div>
+            </div>
+            <div id="settingBreatherToggle" class="settings-toggle" onclick="toggleBreatherSetting()">
+              <div class="settings-toggle-knob"></div>
+            </div>
+          </div>
+
+          <!-- Grayscale Detox -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Grayscale Mode (Dopamine Detox)</div>
+              <div class="settings-sub">Desaturate video to tame visual stimulation</div>
+            </div>
+            <div id="settingGrayscaleToggle" class="settings-toggle" onclick="toggleGrayscaleSetting()">
+              <div class="settings-toggle-knob"></div>
+            </div>
+          </div>
+
+          <!-- Hide Rank Badges -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Hide Rank Numbers (#01)</div>
+              <div class="settings-sub">Neutral unranked viewing experience</div>
+            </div>
+            <div id="settingHideRanksToggle" class="settings-toggle" onclick="toggleHideRanksSetting()">
+              <div class="settings-toggle-knob"></div>
+            </div>
+          </div>
+
+          <!-- Sort Order -->
+          <div class="settings-row">
+            <div>
+              <div class="settings-label">Feed Sort Order</div>
+              <div class="settings-sub">Fair-share viral vs chronological post date</div>
+            </div>
+            <select id="settingSortOrderSelect" class="settings-select" onchange="updateSortOrderSetting(this.value)">
+              <option value="rank">Fair-Share Viral</option>
+              <option value="chrono">Chronological (Newest)</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="modal-close-btn" onclick="closeModal('settingsModal')">Done</button>
+      </div>
+    </div>
+
+    <!-- The 10 Traps Manifesto Modal -->
+    <div class="modal-overlay" id="manifestoModal" onclick="handleModalBackdrop(event, 'manifestoModal')">
+      <div class="modal-dialog" style="max-width: 480px;">
+        <div class="modal-icon-badge">📖</div>
+        <h3 class="modal-title">The Anti-Doomscroll Briefing</h3>
+        <p class="modal-desc" style="color: #d4af37; font-weight: 600;">
+          Neutralizing the 10 Psychological Traps of Social Media
+        </p>
+
+        <div class="manifesto-body">
+          <p>
+            Mainstream short-form video algorithms are intentionally engineered as behavioral casinos—optimizing for time-on-screen rather than signal. Inspired by the educational breakdown in <em>"The Brain Behind Your Phone Addiction. We Caught Him!"</em> (Satvic Movement), Instagram Digest inverts this model:
+          </p>
+
+          <h4>1. Infinite Scrolling</h4>
+          <p><span class="manifesto-tag">Solved</span> Replaced with a finite weekly batch and an explicit <em>"You're All Caught Up! 🎉"</em> milestone screen.</p>
+
+          <h4>2. The Red Colour Trap</h4>
+          <p><span class="manifesto-tag">Solved</span> Zero red badge counts or alarm dots. Replaced with quiet-luxury OLED slate tones and an optional 1-tap Grayscale Detox mode.</p>
+
+          <h4>3. Gamified Friendship</h4>
+          <p><span class="manifesto-tag">Solved</span> Completely severed social graph. Zero streaks, zero interaction scores, zero social obligation loops.</p>
+
+          <h4>4. The Anticipation Trap</h4>
+          <p><span class="manifesto-tag">Solved</span> Deterministic static compilation. Zero slot-machine pull-to-refresh roulette or delayed typing indicators.</p>
+
+          <h4>5. Filtered Reality</h4>
+          <p><span class="manifesto-tag">Solved</span> Whitelist ingestion targeting high-signal creators in science, tech, crafts, and finance, with lifestyle filters.</p>
+
+          <h4>6. Customised Feed</h4>
+          <p><span class="manifesto-tag">Solved</span> Replaces black-box recommendation neural nets with an open, fair-share algorithm capping creators at 4 reels.</p>
+
+          <h4>7. Artificial Urgency</h4>
+          <p><span class="manifesto-tag">Solved</span> Completely ignores 24h disappearing stories and live broadcasts. Asynchronous weekly briefing on your schedule.</p>
+
+          <h4>8. Likes and Followers Count</h4>
+          <p><span class="manifesto-tag">Solved</span> Completely strips like counts, view tallies, follower numbers, and public comment threads from the screen.</p>
+
+          <h4>9. Simplicity (Hypnotic Trance)</h4>
+          <p><span class="manifesto-tag">Solved</span> Introduces active decision friction: manual-advance option, 3-second breathers, and active session time-boxing.</p>
+
+          <h4>10. The Buzz</h4>
+          <p><span class="manifesto-tag">Solved</span> Zero real-time push notifications or vibration pings. 100% quiet, passive, on-demand pull model.</p>
+
+          <a href="https://youtu.be/FmLJbYBu094" target="_blank" rel="noopener noreferrer" class="manifesto-link-btn">
+            ▶ Watch "The Brain Behind Your Phone Addiction" on YouTube
+          </a>
+        </div>
+
+        <button class="modal-close-btn" onclick="closeModal('manifestoModal')">Close</button>
       </div>
     </div>

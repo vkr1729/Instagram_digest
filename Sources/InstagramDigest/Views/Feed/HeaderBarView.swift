@@ -13,6 +13,8 @@ public struct HeaderBarView: View {
     public var onTapGrid: () -> Void
     public var onTapOffline: () -> Void
     public var onTapBookmarks: () -> Void
+    public var onTapManifesto: () -> Void
+    public var onTapSettings: () -> Void
 
     public init(
         currentIndex: Int,
@@ -21,7 +23,9 @@ public struct HeaderBarView: View {
         watchHoursText: String = "0.0 hrs",
         onTapGrid: @escaping () -> Void = {},
         onTapOffline: @escaping () -> Void = {},
-        onTapBookmarks: @escaping () -> Void = {}
+        onTapBookmarks: @escaping () -> Void = {},
+        onTapManifesto: @escaping () -> Void = {},
+        onTapSettings: @escaping () -> Void = {}
     ) {
         self.currentIndex = currentIndex
         self.totalCount = totalCount
@@ -30,21 +34,54 @@ public struct HeaderBarView: View {
         self.onTapGrid = onTapGrid
         self.onTapOffline = onTapOffline
         self.onTapBookmarks = onTapBookmarks
+        self.onTapManifesto = onTapManifesto
+        self.onTapSettings = onTapSettings
     }
 
     public var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // 1. Cursive "Instagram" Brand Logo
-            Text("Instagram")
-                .font(instagramLogoFont(size: 27))
-                .foregroundColor(.white)
-                .padding(.leading, 4)
-                .accessibilityIdentifier("InstagramLogoText")
+        HStack(alignment: .center, spacing: 6) {
+            // 1. Cursive "Instagram" Brand Logo with Subtitle
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Instagram")
+                    .font(instagramLogoFont(size: 24))
+                    .foregroundColor(.white)
+                    .accessibilityIdentifier("InstagramLogoText")
+                Text("The Anti-Doomscroll Briefing")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(Color.white.opacity(0.6))
+                    .lineLimit(1)
+            }
+            .padding(.leading, 4)
 
             Spacer()
 
-            // 2. Action Controls Group (Timer, Grid, Download, Bookmarks)
-            HStack(spacing: 8) {
+            // 2. Action Controls Group (Manifesto, Settings, Timer, Grid, Download, Bookmarks)
+            HStack(spacing: 6) {
+                // Manifesto Info Button
+                Button(action: onTapManifesto) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Circle())
+                }
+                .contentShape(Rectangle())
+                .frame(width: 36, height: 44)
+                .accessibilityIdentifier("ManifestoIconButton")
+
+                // Settings Button
+                Button(action: onTapSettings) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Circle())
+                }
+                .contentShape(Rectangle())
+                .frame(width: 36, height: 44)
+                .accessibilityIdentifier("SettingsIconButton")
                 // Watch Timer Pill (⏱ X.X hrs)
                 HStack(spacing: 4) {
                     Image(systemName: "stopwatch")
