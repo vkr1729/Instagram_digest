@@ -1,128 +1,94 @@
-# 📱 Instagram Digest — The Anti-Doomscroll Briefing
+<div align="center">
+  <img src="assets/icon-192.png" width="80" height="80" alt="Instagram Digest Logo" style="border-radius: 18px;" />
+  <h1>📱 The Anti-Doomscroll Briefing</h1>
+  <p><strong>An intentional, finite, ad-free weekly digest of Instagram Reels on native iOS & web.</strong></p>
+  <p>Replaces algorithmic doom-scrolling with a finite, curated media briefing. Stream high-bitrate video via Cloudflare R2 and sync permanent bookmarks to Telegram — <strong>100% free forever ($0.00/mo)</strong>.</p>
 
-> **An intentional, ad-free, high-signal weekly digest of Instagram Reels curated into a distraction-free Progressive Web App (PWA).**
-> Replaces algorithmic doom-scrolling with a finite, curated media briefing. Hosted on GitHub Pages with zero-bandwidth video streaming via Cloudflare R2 and permanent bookmark syncing to Telegram — **100% free forever ($0.00/mo)**.
-
----
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)](#instagram-digest)
-[![Zero Cost](https://img.shields.io/badge/Hosting_Cost-$0.00_Forever-success.svg)](#the-000-forever-zero-cost-architecture)
-[![Progressive Web App](https://img.shields.io/badge/PWA-iOS_%26_Android-purple.svg)](#pwa-installation-guide)
-[![Cloudflare R2](https://img.shields.io/badge/Storage-Cloudflare_R2_(0_Egress)-orange.svg)](#4-zero-egress-cloudflare-r2-media-delivery)
-[![Telegram Sync](https://img.shields.io/badge/Bookmarks-Telegram_Bot_API-blue.svg)](#5-hybrid-bookmarks--telegram-cloud-sync)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-
----
+  <p>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+    <a href="#-native-ios-app-installation-primary"><img src="https://img.shields.io/badge/iOS_App-Swift_%26_SwiftUI-orange.svg" alt="Native iOS App" /></a>
+    <a href="#-web-pwa-backup-no-install"><img src="https://img.shields.io/badge/Web_PWA-Mobile_%26_Desktop-purple.svg" alt="Web PWA" /></a>
+    <a href="#-the-000-forever-zero-cost-architecture"><img src="https://img.shields.io/badge/Hosting_Cost-$0.00_Forever-success.svg" alt="Zero Cost" /></a>
+    <a href="#5-permanent-telegram-cloud-bookmarks"><img src="https://img.shields.io/badge/Bookmarks-Telegram_Bot_API-blue.svg" alt="Telegram Sync" /></a>
+    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python 3.10+" /></a>
+  </p>
+</div>
 
 ---
 
 ## 📸 Visual Tour
 
 <p align="center">
-  <img src="assets/screens/feed_view.png" width="23%" alt="Vertical Feed" />
+  <img src="assets/screens/feed_view.png" width="23%" alt="Full-Screen Vertical Feed" />
   <img src="assets/screens/grid_view.png" width="23%" alt="3-Column Visual Grid" />
-  <img src="assets/screens/bookmarks_view.png" width="23%" alt="Bookmarks Library" />
-  <img src="assets/screens/jump_modal.png" width="23%" alt="Mindful Jump Dialog" />
+  <img src="assets/screens/manifesto_view.png" width="23%" alt="10 Traps Manifesto" />
+  <img src="assets/screens/settings_view.png" width="23%" alt="Anti-Doomscroll Controls" />
 </p>
 
 <p align="center">
-  <em>(Left to Right: Full-Screen Vertical Feed · 3-Column Visual Grid View · Hybrid Bookmarks Library · Mindful Jump Dialog)</em>
+  <em>(Left to Right: Full-Screen Vertical Feed · 3-Column Visual Grid View · The 10 Traps Manifesto · Anti-Doomscroll Wellbeing Controls)</em>
 </p>
 
 ---
 
 ## 💡 Why Instagram Digest?
 
-Mainstream social media algorithms are engineered for **infinite retention** — optimizing for time-on-screen rather than signal. Users open an app to check one creator and emerge 45 minutes later trapped in an algorithmic rabbit hole of low-value dopamine loops.
+Mainstream social media apps are engineered for **infinite retention** — optimizing for time-on-screen rather than signal. You open an app to check one creator and emerge 45 minutes later trapped in an algorithmic rabbit hole of low-value dopamine loops.
 
-**Instagram Digest inverts this model:**
-1. **Finite Batches:** Delivers a curated, fixed weekly digest of top reels (default: 250) from creators you specifically respect, supplemented by high-engagement external discovery.
-2. **Strict Watched Tracking:** Reels are automatically marked as watched in client-side storage as you advance. Unwatched items are prioritized; previously watched reels are dimmed.
-3. **Celebratory Finish:** Once you watch all reels, you are presented with a celebratory *"You're All Caught Up! 🎉"* screen — no endless pagination, no algorithmically inserted filler.
-4. **Mindful Pace:** A configurable daily watch-time quota (default 20 min/day, 10/20/30/45 options) with gentle pause or hard lockout to maintain deliberate media consumption.
+**Instagram Digest systematically neutralizes this trap:**
+1. **Finite Weekly Batches:** Delivers a capped weekly digest of the top 250 reels from creators you specifically choose, plus high-engagement discovery.
+2. **Strict Watched Tracking:** Reels are automatically marked as watched as you swipe past. Unwatched items are prioritized; watched items are dimmed.
+3. **Celebratory Finish:** When you reach the end, you are greeted with a *"You're All Caught Up! 🎉"* milestone — no endless algorithmic auto-play.
+4. **Mindful Pace:** Daily watch quotas (10m, 20m, 30m, 45m) with gentle pause reminders or hard PIN lockouts.
 
-> 📖 **Philosophy:** Instagram Digest systematically neutralizes the 10 behavioral addiction traps from the Satvic Movement video *"The Brain Behind Your Phone Addiction. We Caught Him!"* (https://youtu.be/FmLJbYBu094). Open the ℹ️ manifesto in the app for the full breakdown.
+> 📖 **The Anti-Doomscroll Philosophy:** Instagram Digest directly neutralizes the 10 psychological addiction traps exposed in the Satvic Movement investigation [*The Brain Behind Your Phone Addiction. We Caught Him!*](https://youtu.be/FmLJbYBu094).
 
----
-
-## ✨ Key Features
-
-### 1. Intentional Curation & Anti-Doomscroll Engine
-* **Configurable Weekly Target:** Extracts and ranks a finite batch of the highest-signal reels (default 250 via `TOP_DIGEST_COUNT`), with on-demand `--expand` capability.
-* **Persistent Watched History:** Tracks watched reel IDs in browser `localStorage` and syncs dual-layer progress to local desktop servers. Departed reels are marked immediately upon swiping.
-* **All Caught Up Screen:** An explicit end-of-feed milestone celebration preventing unconscious looping.
-* **Daily Mindful Check-in:** Soft check-in reminder upon reaching your daily watch-time quota (default 20 min) with quick *"Take a Break"* or *"Continue"* options, plus opt-in hard lockout.
-
-### 2. Native Mobile-First PWA Experience
-* **Cinema Aspect Ratio Preservation:** Strict `object-fit: contain` scaling ensures portrait (9:16), square (1:1), and landscape videos are never cropped or distorted.
-* **Floating Glass Overlay:** High-contrast text drop shadows over subtle transparent scrims eliminate clunky black header bars.
-* **Notch & Home Indicator Clearance:** Optimized for modern mobile displays (iOS Dynamic Island, iPhone notches, Android navigation bars) with adaptive `env(safe-area-inset-*)` padding.
-* **Gesture Controls:**
-  - **Press-and-Hold Right Edge:** Latches `2x` fast-forward speed with visual indicator pill. Tap to return to 1x.
-  - **Double-Tap Center / Key `F`:** Triggers native immersive fullscreen.
-  - **Horizontal Drag:** Real-time scrubbing HUD with timestamps and seek deltas.
-  - **Tap Unmute:** Persistent global audio state across reels.
-
-### 3. 3-Column Visual Grid View
-* **Fast Visual Browsing:** Tap `⊞` in the header (or press `V` on desktop) to open a high-density 3-column explore grid of all 250 reels.
-* **Real-Time Instant Search:** Filter across all 250 reels in real time by creator handle, caption keywords, or rank numbers.
-* **Horizontal Category Chips:** One-tap filtering across categories: `All (250)`, `🎬 Entertain`, `💰 Finance`, `💻 Tech`, `🧠 Niche`, `🏋️ Health`, `🥗 Food`.
-* **Visual Status Hierarchy:**
-  - Unwatched reels display full-opacity posters and rank badges (`#01`).
-  - Watched reels are dimmed with a glowing green checkmark badge (`✓`).
-  - Active reel is highlighted with an amber glowing border and `ACTIVE` tag.
-* **Instant Feed Jump:** Tapping any card in the grid closes the grid and immediately scrolls to and plays that reel in the vertical feed (`goToCard(card, { play: true })`).
-
-### 4. Zero-Egress Cloudflare R2 Media Delivery
-* **Zero Egress Bandwidth Fees:** All high-bitrate MP4 video streaming is offloaded to Cloudflare R2 object storage ($0.00 egress costs), keeping GitHub Pages ultra-lean (~2 MB static HTML/CSS/JS).
-* **Immutable Content-Addressed Identity:** Videos are keyed by immutable Instagram reel IDs. Re-ranks, re-orders, and title adjustments never orphan cached files or re-download media.
-* **Rolling Purge & Quota Guard:** Automated rolling retention prunes media files and weekly site archives older than configured retention periods. A pre-flight quota guard aborts before exceeding safe storage limits.
-
-### 5. Hybrid Bookmarks & Telegram Cloud Sync
-* **One-Tap Permanent Saving:** Tap `🔖 Save` on any reel to bookmark it.
-* **Cloudflare Workers & D1 Integration:** Bookmarks are pushed to a serverless Cloudflare Worker API backed by Cloudflare D1 SQL.
-* **Automatic Telegram Bot Forwarding:**
-  - The Cloudflare Worker queues and forwards saved reels directly to your private Telegram chat.
-  - Handles files under 20 MB via standard Telegram Bot URL forwarding.
-  - Automatically handles files over 20 MB by streaming multipart video bytes directly from Cloudflare R2 into Telegram, bypassing Telegram's URL download cap.
-  - Telegram serves as your **unlimited, free, permanent cloud media library** that you can access from any phone or computer without cluttering your local phone storage!
-* **Dedicated Bookmarks Viewer:** Browse bookmarked reels in a 3-column visual gallery with a glassmorphic cinema overlay player and swipe navigation.
-
-### 6. Client-Side PIN Gate & Cryptographic Owner Key
-* **Zero-Backend Privacy Gate:** Protects your digest from public search engine scrapers and unauthorized viewers using client-side SHA-256 PIN hashing.
-* **Seamless PWA URL Bootstrapping:** Install the PWA once with your PIN attached (`https://<user>.github.io/<repo>/?pin=1234`), and the PWA unlocks automatically without prompting every time.
-* **WebCrypto Owner Key Signing:** Generates an asymmetric cryptographic Owner Key (`crypto.subtle`) stored securely in your private device storage.
-* **Read-Only Guest Mode:** Shared links or guest devices without the Owner Key can view the digest but cannot modify bookmarks or trigger cloud sync.
-
-### 7. Offline PWA & RFC 7233 Range Slicing
-* **Full Offline Mode:** One-tap download button (`📥`) caches all 250 videos to local device storage for flights and travel.
-* **Rolling Cache Window:** Automatically keeps a rolling window of adjacent videos (prev 5 + next 20) pre-cached in the background during playback.
-* **RFC 7233 Range Slicing:** Custom Service Worker (`sw.js`) serves cached MP4s as proper HTTP 206 partial content ranges, supporting smooth seeking and pause/resume on mobile WebKit (iOS Safari).
-
-### 8. Desktop Operations Dashboard
-* **Zero-Bandwidth Local Server:** Run `python main.py --serve --port 8080` to launch a local server with byte-range video streaming from local disk.
-* **Channel Manager (`/channels`):** Visual management UI to audit followed creators, toggle subscriptions on/off, inspect engagement stats, and trigger ad-hoc refreshes.
-* **Ops Dashboard (`/dashboard`):** System health metrics, storage quotas, pipeline status, and sync triggers.
+| # | Trap in Social Media | How Instagram Digest Solves It |
+|---|---|---|
+| 1 | **Infinite Scrolling** | **Finite Weekly Cap:** 250 curated reels, followed by an explicit "All Caught Up" screen. |
+| 2 | **The Red Colour Trap** | **Quiet-Luxury Aesthetics:** Zero red notification badges. Frosted slate tones and 1-tap Grayscale mode. |
+| 3 | **Gamified Validation** | **Metrics Stripped:** Zero follower counts, like counts, view tallies, or public comment threads. |
+| 4 | **Variable Reward (Casino Logic)** | **Predictable Delivery:** Deterministic ranking or pure chronological sort order. No roulette refresh. |
+| 5 | **Algorithmic Rabbit Holes** | **Channel Archetypes:** Whitelist curation balancing `Educational`, `Craft`, `Lifestyle`, and `Vlog` creators. |
+| 6 | **Sensory Dopamine Overload** | **Hardware Grayscale Detox:** 1-tap monochrome filter to remove visual stimulation. |
+| 7 | **Artificial Urgency (FOMO)** | **Asynchronous Weekly Briefing:** Zero 24h disappearing stories or live streams. Read on your schedule. |
+| 8 | **Hypnotic Trance State** | **Active Friction:** Choose between Auto mode (0.5s pause) and Manual advance, plus optional 3s inter-reel breathers. |
+| 9 | **Vanity Comparison** | **Neutrality Mode:** 1-tap toggle to hide rank badges (`#01`, `#02`) across the feed and grid. |
+| 10 | **Frictionless Habit Loop** | **Session Time-Boxing:** Daily watch quotas with mindful break prompts or hard 4-digit PIN lockouts. |
 
 ---
 
-## 💰 The $0.00 Forever Zero-Cost Architecture
+## ✨ 5 Core Pillars
 
-Every infrastructure component was selected to fit entirely within permanently free tiers:
+### 1. ★ Native iOS App Experience (Primary Tier)
+* **120Hz ProMotion Fluidity:** Pure Swift & SwiftUI interface delivering butter-smooth vertical paging with native iOS gesture physics.
+* **0ms Instant Video Playback:** Multi-slot `AVPlayer` background pre-buffering completely eliminates black screens, spinners, and thumbnail loading delay.
+* **100% Offline Flight Mode:** One-tap download caches the entire weekly digest to your iPhone storage using SwiftData for uninterrupted offline travel.
+* **Intuitive Media Gestures:**
+  - **Tap Screen:** Instant play/pause toggle.
+  - **Press-and-Hold Right Edge:** Latches `2.0x` fast-forward speed with a visual indicator pill. Tap again to return to 1.0x.
+  - **Horizontal Scrubbing HUD:** Drag horizontally for real-time seek scrubbing with timestamp preview.
 
-| Component | Provider & Service | Free Tier Allowance | Instagram Digest Usage | Total Cost |
-| :--- | :--- | :--- | :--- | :--- |
-| **Frontend Hosting** | **GitHub Pages** | Unlimited public bandwidth, 1 GB storage | ~2 MB static bundle | **$0.00 / mo** |
-| **Media Delivery** | **Cloudflare R2** | 10 GB storage / month, **$0.00 egress bandwidth** | ~2–4 GB active weekly digest | **$0.00 / mo** |
-| **Bookmarks API** | **Cloudflare Workers** | 100,000 requests / day | ~50–100 requests / day | **$0.00 / mo** |
-| **Bookmarks Database** | **Cloudflare D1** | 5M read rows / mo, 100k write rows / mo | < 1,000 rows / mo | **$0.00 / mo** |
-| **Media Cloud Archive** | **Telegram Bot API** | Unlimited cloud file storage & bandwidth | Unlimited bookmarked video forwarding | **$0.00 / mo** |
-| **Pipeline Ingestion** | **Local Machine / VPS** | Runs on your existing laptop, PC, or mini-PC | ~15 min cron once per week | **$0.00 / mo** |
-| **TOTAL** | | | | **$0.00 / mo** |
+### 2. Anti-Doomscroll Psychology & Active Friction
+* **Auto vs. Manual Advance:** Choose between `Auto` (effortless playback with 0.5s pause) and `Manual` (playback pauses at reel completion until you deliberately swipe).
+* **3-Second Breathing Space:** Optional 3-second countdown toast between reels that breaks unconscious hypnotic trance states.
+* **Hardware-Accelerated Grayscale:** Instantly strips hyper-saturated colors across the entire app with zero performance penalty.
+* **Neutrality Mode:** Hides `#01`, `#02` rank numbers to remove comparative judgment and let you appreciate content for its intrinsic value.
 
-> [!TIP]
-> Traditional video streaming apps incur hefty bandwidth egress fees (often $0.05–$0.09 per GB transferred). Cloudflare R2's **zero-egress-fee policy** is the critical architectural pillar that allows hundreds of gigabytes of video streaming without paying a single cent.
+### 3. Session Time-Boxing & Hard Lockout
+* **Daily Watch Quotas:** Select a healthy daily media limit: **10 min**, **20 min**, **30 min**, or **45 min**.
+* **Gentle Pause vs. Hard Lockout:**
+  - `Gentle Pause`: Displays a calm mindful reminder toast with an option to take a break or snooze.
+  - `Hard Lockout`: Full-screen blur that requires entering a private 4-digit PIN to unlock, preventing impulsive over-consumption.
+
+### 4. Channels You Actually Value & Zero-Cookie Import
+* **Additive Creator Onboarding (`--import-following`):** Log in once via an interactive, headed browser window to import creators you follow. Pre-existing channels are safely preserved — no wiped lists, zero stored passwords, zero saved cookies.
+* **Intentional Archetypes:** Categorize creators into `Educational`, `Craft`, `Lifestyle`, and `Vlog`. The fair-share ranking engine ensures no single creator dominates your feed.
+* **High-Density 3-Column Explore Grid:** Tap `⊞` (or press `V` on desktop) to browse all 250 reels at once with instant search by creator handle or caption keywords.
+
+### 5. Permanent Telegram Cloud Bookmarks
+* **Permanent Cloud Saving:** Tap `🔖 Save` on any reel to bookmark it forever.
+* **Automatic Telegram Bot Forwarding:** Saved reels are forwarded directly to your private Telegram chat, serving as an unlimited, free, permanent cloud media archive that doesn't consume your phone storage.
 
 ---
 
@@ -130,30 +96,40 @@ Every infrastructure component was selected to fit entirely within permanently f
 
 ```mermaid
 flowchart TD
-    subgraph Ingestion ["1. Extraction & Ingestion (Local Scheduled Runner)"]
-        A[Instagram Chrome Session] -->|Profile Scrape| B[extractor.py]
-        A -->|External Discovery| B
-        B -->|Viral Scoring & Fair-Share| C[ranker.py]
+    subgraph Ingestion ["1. Scheduled Ingestion & Fair-Share Ranking"]
+        A[Cookie-Free Public Ingestion] -->|Extract Top Reels| B[extractor.py]
+        A2[Headed Following Importer] -->|Audit & Add Creators| B
+        B -->|Archetype Tagging & Fair-Share Quota| C[ranker.py]
         C -->|Deduplication & Storage Check| D[storage_r2.py]
     end
 
     subgraph Storage ["2. Zero-Egress Cloudflare Storage"]
-        D -->|Upload Top 250 MP4s| E[(Cloudflare R2 Bucket)]
+        D -->|Upload Top 250 MP4s & Posters| E[(Cloudflare R2 Bucket)]
     end
 
-    subgraph Hosting ["3. Static PWA Compilation & Deploy"]
-        D -->|Compile Jinja2 HTML/CSS/JS| F[site_builder.py]
-        F -->|Git Force-Push to gh-pages| G[GitHub Pages CDN]
+    subgraph Hosting ["3. Static Manifest & Site Compilation"]
+        D -->|Generate manifest.json & Static Web Shell| F[site_builder.py]
+        F -->|Deploy to gh-pages| G[GitHub Pages CDN]
     end
 
-    subgraph Client ["4. Client PWA (iOS Safari / Android Chrome)"]
-        G -->|Load Static HTML/PWA Shell| H[Mobile Browser]
-        H -->|HTTP 206 Byte-Range Video Stream| E
-        H -->|Cache Rolling 25-Video Window| I[Service Worker Cache]
+    subgraph Clients ["4. Dual-Client Architecture"]
+        subgraph PrimaryClient ["★ Primary: Native iOS App (Swift & SwiftUI)"]
+            H1[iOS Native App] -->|Fetch manifest.json| G
+            H1 -->|120Hz ProMotion Feed & 3-Slot AVPlayer| E
+            H1 -->|SwiftData Offline Media Cache| I1[Local iPhone Storage]
+            H1 -->|Anti-Doomscroll Controls: Grayscale, Breathers, PIN Lockout| H1
+        end
+
+        subgraph FallbackClient ["Web: Progressive Web App (PWA)"]
+            H2[PWA / Mobile Safari / Desktop Chrome] -->|Load Static Web Shell| G
+            H2 -->|HTTP 206 Byte-Range Video Stream| E
+            H2 -->|Offline Service Worker Cache| I2[Browser Cache Storage]
+        end
     end
 
-    subgraph CloudSync ["5. Serverless Bookmarks & Telegram Cloud Sync"]
-        H -->|Save Bookmark| J[Cloudflare Worker API]
+    subgraph CloudSync ["5. Optional Telegram Cloud Bookmarks"]
+        H1 -.->|Save Bookmark| J[Cloudflare Worker API]
+        H2 -.->|Save Bookmark| J
         J -->|Persist SQL Metadata| K[(Cloudflare D1 Database)]
         J -->|Forward Video URL or Stream R2 Multipart| L[Telegram Bot API]
         L -->|Private Message| M[Your Telegram Saved Feed]
@@ -162,11 +138,40 @@ flowchart TD
 
 ---
 
-## 🚀 Step-by-Step Setup Tutorial
+## 📲 App Installation
 
-Follow this guide to deploy your own personal Instagram Digest from scratch.
+### ★ Native iOS App Installation (Primary)
 
-### Step 1: Clone Repository & Create Environment
+The native iOS app is compiled and packaged automatically on every release via GitHub Actions.
+
+1. **Download the latest IPA:**
+   - Go to your repository's [Actions Tab](../../actions) -> **Build InstagramDigest iOS App**.
+   - Download the `InstagramDigest-Unsigned-IPA` artifact (or grab it from `dist/ipa/InstagramDigest-latest.ipa`).
+2. **Install on your iPhone:**
+   - **AltStore / Sideloadly / TrollStore:** Drag and drop `InstagramDigest.ipa` to install and sign with your free Apple ID.
+   - **Xcode (Mac):** Open `InstagramDigest.xcodeproj`, select your connected device, and press `Cmd+R`.
+3. Launch the app and enjoy 120Hz ProMotion playback, 0ms switching, and full offline caching!
+
+---
+
+### 🌐 Web PWA (Backup / No Install)
+
+If you cannot sideload the native app, the Progressive Web App (PWA) gives you instant access from any browser:
+
+#### iOS Safari
+1. Open your digest URL in Safari: `https://<user>.github.io/Instagram_digest/?pin=1234`
+2. Tap **Share** -> **Add to Home Screen**.
+3. Tap **Add**. Launching from your home screen opens the briefing in full-screen standalone mode without browser chrome.
+
+#### Android Chrome
+1. Open your digest URL in Chrome.
+2. Tap the three-dot menu -> **Install app** or **Add to Home Screen**.
+
+---
+
+## 🚀 Setup & Weekly Ingestion Pipeline
+
+### Step 1: Clone Repository & Install Dependencies
 
 ```bash
 git clone https://github.com/<your-username>/Instagram_digest.git
@@ -176,187 +181,88 @@ cd Instagram_digest
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies and Playwright browser binaries
+# Install dependencies and browser tools
 pip install -r requirements.txt
 playwright install chromium
 ```
 
 ---
 
-### Step 2: Extract Instagram Session Cookies
+### Step 2: Cloudflare Setup (R2 Video Storage)
 
-The pipeline reuses an existing logged-in Instagram session to bypass bot-detection algorithms without storing raw account passwords:
-
-1. Open **Google Chrome** on your computer and log in to [instagram.com](https://www.instagram.com).
-2. Run the automated cookie extractor:
-   ```bash
-   python cookie_exporter.py
-   ```
-   This exports your authenticated session cookies securely into `cookies.txt` (which is excluded from git in `.gitignore`).
-
----
-
-### Step 3: Cloudflare Setup (R2 Bucket & Bookmarks Worker)
-
-#### 3.1 Create Cloudflare R2 Bucket
-1. Log into your [Cloudflare Dashboard](https://dash.cloudflare.com/) and navigate to **R2**.
+1. Log into your [Cloudflare Dashboard](https://dash.cloudflare.com/) and go to **R2**.
 2. Click **Create bucket** and name it `instagram-digest`.
-3. Under **Settings** -> **Public access**, enable **R2.dev subdomain** (or connect a custom domain like `media.yourdomain.com`).
-4. Generate API tokens: Go to **R2** -> **Manage R2 API Tokens** -> **Create API Token** with `Object Read & Write` permissions.
-5. Note down:
-   - Account ID
-   - Access Key ID
-   - Secret Access Key
-   - Public Bucket Domain (`https://pub-xxxx.r2.dev` or your custom domain)
-
-#### 3.2 Deploy Bookmarks Worker (Optional, for Telegram Bookmark Sync)
-1. Install Wrangler CLI:
-   ```bash
-   npm install -g wrangler
-   ```
-2. Navigate to the cloudflare directory:
-   ```bash
-   cd cloudflare
-   wrangler login
-   ```
-3. Create the serverless D1 database:
-   ```bash
-   wrangler d1 create ig-digest-bookmarks
-   ```
-   Update the `database_id` in `cloudflare/wrangler.toml` with the generated ID, then initialize the schema:
-   ```bash
-   wrangler d1 execute ig-digest-bookmarks --file=schema.sql
-   ```
-4. Set your private secrets in the worker:
-   ```bash
-   wrangler secret put OWNER_KEY             # Choose a strong secret password
-   wrangler secret put TELEGRAM_BOT_TOKEN    # From @BotFather (see Step 4)
-   wrangler secret put TELEGRAM_CHAT_ID      # Your Telegram user ID (see Step 4)
-   ```
-5. Deploy the worker:
-   ```bash
-   wrangler deploy
-   ```
-   Note your worker URL: `https://ig-digest-api.<subdomain>.workers.dev`.
+3. Under **Settings** -> **Public access**, enable your **R2.dev subdomain** (or connect a custom domain).
+4. Create an API Token under **Manage R2 API Tokens** with `Object Read & Write` permissions.
 
 ---
 
-### Step 4: Create Telegram Bot (for Bookmarking)
-
-1. Open Telegram and start a chat with [@BotFather](https://t.me/botfather).
-2. Send `/newbot`, enter a name (e.g. `My Digest Bot`), and note the generated **Bot Token** (`123456789:ABCDef...`).
-3. Start a chat with your newly created bot and send any message (e.g. `hello`).
-4. Find your numeric Telegram Chat ID by messaging [@userinfobot](https://t.me/userinfobot) (returns an ID like `987654321`).
-5. Feed these secrets into your Cloudflare Worker as shown in Step 3.2.
-
----
-
-### Step 5: Configure Environment (`.env`)
+### Step 3: Configure Environment (`.env`)
 
 Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your settings:
+Fill in your Cloudflare R2 credentials and GitHub Pages URL:
 ```env
-# ==============================================================================
-# Cloudflare R2 Video Storage (Free Tier)
-# ==============================================================================
+# Cloudflare R2 Video Storage (10 GB Free Tier, $0.00 Egress)
 R2_ACCOUNT_ID=<your-cloudflare-account-id>
 R2_ACCESS_KEY_ID=<your-r2-access-key-id>
 R2_SECRET_ACCESS_KEY=<your-r2-secret-access-key>
 R2_BUCKET_NAME=instagram-digest
 R2_PUBLIC_DOMAIN=https://<your-bucket-domain>.r2.dev
 
-# ==============================================================================
-# GitHub Pages Static Deployment
-# ==============================================================================
+# GitHub Pages Deployment
 GH_PAGES_REPO=https://github.com/<your-username>/Instagram_digest.git
 PAGES_BASE_URL=https://<your-username>.github.io/Instagram_digest
 
-# ==============================================================================
-# Security & Access PIN
-# ==============================================================================
-# 4-digit client-side PIN to gate viewing from public scrapers
+# Security PIN for Web PWA Gating
 VIEWING_PIN=1234
-
-# ==============================================================================
-# Bookmarks & Telegram Sync API
-# ==============================================================================
-BOOKMARK_API_BASE=https://ig-digest-api.<your-subdomain>.workers.dev
-
-# ==============================================================================
-# Digest Settings
-# ==============================================================================
-TOP_DIGEST_COUNT=250
-MAX_PER_CREATOR=4
-RETENTION_WEEKS=1
-DEFAULT_PLAYBACK_SPEED=1.0
 ```
 
 ---
 
-### Step 6: First Run & Deployment
-
-Run the complete pipeline to extract reels, score them, upload media to R2, compile the static site, and deploy to GitHub Pages:
+### Step 4: Import Channels & Run Ingestion
 
 ```bash
+# Additive import: import followed channels interactively without saving credentials
+python main.py --import-following
+
+# Run weekly sync, score videos, upload to R2, and deploy manifest to GitHub Pages:
 python main.py --sync --deploy
 ```
 
-Once the run completes, enable GitHub Pages in your repository:
-1. Go to your GitHub repository -> **Settings** -> **Pages**.
-2. Under **Build and deployment** -> **Branch**, select `gh-pages` and `/ (root)`.
-3. Click **Save**. Within ~60 seconds, your digest is live at:  
-   `https://<your-username>.github.io/Instagram_digest/`
+Once deployment completes, enable GitHub Pages in your repository under **Settings** -> **Pages** (Branch: `gh-pages`, Folder: `/ (root)`).
 
 ---
 
-### Step 7: Automated Weekly Scheduling
+### Step 5: Automated Weekly Scheduling
 
-To keep your digest updated every week automatically:
-
-#### Option A: Cron Job (Linux / macOS)
-Add to your crontab (`crontab -e`) to run every Friday at 18:00:
+To update your digest every week automatically, add a cron job on your computer or server (`crontab -e`):
 ```cron
-0 18 * * 5 cd /path/to/Instagram_digest && ./run_weekly.sh >> logs/cron.log 2>&1
+# Runs every Saturday at 18:00
+0 18 * * 6 cd /path/to/Instagram_digest && ./run_weekly.sh >> logs/cron.log 2>&1
 ```
 
-#### Option B: Systemd User Timer (Linux)
-The repository includes automated overnight timer scripts in `run_friday_overnight.sh` that can wake up, sync, and power down cleanly.
-
 ---
 
-## 📲 PWA Installation Guide
+## 💰 The $0.00 Forever Zero-Cost Architecture
 
-### iOS Safari
-1. Open your digest URL in Safari with your PIN appended:
-   ```
-   https://<your-username>.github.io/Instagram_digest/?pin=1234
-   ```
-2. Tap the **Share** button (box with arrow at the bottom).
-3. Scroll down and tap **Add to Home Screen**.
-4. Tap **Add**. An app icon labeled **Digest** will appear on your home screen.
-5. Launching the app opens it as a standalone, fullscreen iOS app without Safari navigation bars. Because the PIN was passed in the install URL, it opens instantly without prompting!
+Every infrastructure component was selected to fit entirely within permanently free tiers:
 
-### Android Chrome
-1. Open your digest URL in Chrome:
-   ```
-   https://<your-username>.github.io/Instagram_digest/?pin=1234
-   ```
-2. Tap the three-dot menu icon in the top right.
-3. Tap **Install app** or **Add to Home Screen**.
+| Component | Provider & Service | Free Tier Allowance | Instagram Digest Usage | Monthly Cost |
+| :--- | :--- | :--- | :--- | :--- |
+| **Manifest & Web Hosting** | **GitHub Pages** | Unlimited public bandwidth, 1 GB storage | ~2 MB static bundle | **$0.00** |
+| **Video Streaming** | **Cloudflare R2** | 10 GB storage / month, **$0.00 egress fees** | ~2–4 GB active weekly digest | **$0.00** |
+| **Bookmarks API** | **Cloudflare Workers** | 100,000 requests / day | ~50–100 requests / day | **$0.00** |
+| **Bookmarks Database** | **Cloudflare D1** | 5M read rows / mo, 100k write rows / mo | < 1,000 rows / mo | **$0.00** |
+| **Media Cloud Archive** | **Telegram Bot API** | Unlimited cloud file storage & bandwidth | Unlimited bookmarked video forwarding | **$0.00** |
+| **Scheduled Ingestion** | **Local Machine / VPS** | Runs on your existing computer | ~15 min cron once per week | **$0.00** |
+| **TOTAL** | | | | **$0.00 / mo** |
 
-### Linking Your Owner Key (for Bookmarking)
-If you wish to bookmark reels from your phone, link your device:
-1. Tap the **🔖 Bookmarks** pill in the top header.
-2. Tap **🔑 Link Key** and enter your `OWNER_KEY` (the secret you set in your Cloudflare Worker).
-3. Alternatively, launch the install URL once with both parameters:
-   ```
-   https://<your-username>.github.io/Instagram_digest/?pin=1234&owner_key=YOUR_SECRET_KEY
-   ```
-   Your device will be cryptographically linked as an authenticated Owner Device permanently.
+> [!TIP]
+> Traditional video streaming platforms incur heavy bandwidth egress fees ($0.05–$0.09 per GB). Cloudflare R2's **zero-egress-fee policy** is the critical architectural pillar that allows gigabytes of video streaming at absolute zero cost.
 
 ---
 
@@ -364,82 +270,31 @@ If you wish to bookmark reels from your phone, link your device:
 
 | Shortcut | Action | Description |
 | :--- | :--- | :--- |
-| `Space` | **Play / Pause** | Toggles video playback with visual indicator |
+| `Space` | **Play / Pause** | Toggles video playback |
 | `ArrowDown` / `J` | **Next Reel** | Advances to next reel in active category |
 | `ArrowUp` / `K` | **Previous Reel** | Returns to previous reel |
 | `V` | **Toggle Grid View** | Opens / closes 3-column explore grid |
-| `G` | **Jump to Reel** | Opens jump dialog to enter reel number (1–250) |
 | `F` | **Fullscreen** | Toggles native browser fullscreen |
-| `B` | **Block Creator** | Unsubscribes and blocks creator from future digests |
-| `Escape` | **Close Overlays** | Closes Grid View, Bookmarks overlay, or modals |
+| `Escape` | **Close Overlays** | Closes Grid View, Bookmarks, or Modals |
 
 ---
 
-## ⚙️ Configuration Reference
+## 🛠️ CLI Reference
 
-All settings can be customized in `.env` or passed as environment variables:
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `R2_ACCOUNT_ID` | `""` | Cloudflare Account ID |
-| `R2_ACCESS_KEY_ID` | `""` | Cloudflare R2 API Access Key |
-| `R2_SECRET_ACCESS_KEY` | `""` | Cloudflare R2 Secret Access Key |
-| `R2_BUCKET_NAME` | `instagram-digest` | Name of your Cloudflare R2 bucket |
-| `R2_PUBLIC_DOMAIN` | `""` | Public HTTP URL domain for R2 bucket |
-| `GH_PAGES_REPO` | `""` | Git clone URL for deployment repo |
-| `PAGES_BASE_URL` | `""` | Public GitHub Pages root URL |
-| `VIEWING_PIN` | `""` | 4-digit PIN for client-side viewer authentication |
-| `BOOKMARK_API_BASE` | `""` | HTTP URL for Cloudflare Worker Bookmarks API |
-| `TOP_DIGEST_COUNT` | `250` | Target number of top reels in each digest |
-| `MAX_PER_CREATOR` | `4` | Maximum reels allowed per creator (fairness cap) |
-| `RETENTION_WEEKS` | `1` | Weeks of historical digests to retain in storage |
-| `DEFAULT_PLAYBACK_SPEED` | `1.0` | Default video playback rate |
-| `MIN_DISCOVERY_LIKES` | `25000` | Minimum likes threshold for Explore discovery |
-
----
-
-## 🛠️ Operations & CLI Commands
-
-* **Full Weekly Sync & Deployment:**
-  ```bash
-  python main.py --sync --deploy
-  ```
-* **Midweek Refresh (New reels since last run):**
-  ```bash
-  python main.py --ad-hoc --deploy
-  ```
-* **Expand Digest (+N additional reels):**
-  ```bash
-  python main.py --expand 50 --deploy
-  ```
-* **Local Offline Server (Port 8080):**
-  ```bash
-  python main.py --serve --port 8080
-  ```
-* **Rebuild Static Site from Cache (Zero network calls):**
-  ```bash
-  python main.py --build-only
-  ```
-* **Run Automated Test Suite:**
-  ```bash
-  .venv/bin/pytest tests/ -v
-  ```
-* **Manual-only maintenance checks** (report-only, never scheduled — run by hand when investigating):
-  ```bash
-  python scripts/check_media_urls.py --sample 10        # probe R2 video URL health
-  python scripts/check_local_media.py --sample 20       # ffprobe spot-check of videos/
-  python audit_channels.py --hygiene                   # sources.json handle hygiene
-  python main.py --lock-status                          # who holds the pipeline lock
-  ```
+* **Full Weekly Sync & Deploy:** `python main.py --sync --deploy`
+* **Midweek Refresh (New reels only):** `python main.py --ad-hoc --deploy`
+* **Expand Digest (+N reels):** `python main.py --expand 50 --deploy`
+* **Local Offline Server (Port 8080):** `python main.py --serve --port 8080`
+* **Rebuild Static Site (Zero network calls):** `python main.py --build-only`
+* **Run Test Suite:** `.venv/bin/pytest tests/ -q`
 
 ---
 
 ## 🔒 Privacy & Security Posture
 
-* **No Credentials Stored:** Account passwords are never requested or stored. The scraper reuses an existing Chrome session via cookie export.
-* **Client-Side PIN Gate:** Obfuscated with PBKDF2 (200k iterations) in memory; deters casual scrapers from viewing video feeds or metadata. It is not access control — treat the Pages URL as public.
-* **Cryptographic Device Isolation:** The Cloudflare Worker enforces Owner Key validation; read-only devices cannot alter bookmarks or trigger API pushes.
-* **Zero Analytics / Tracking:** No analytics SDKs, ad networks, or invasive trackers. (Google Fonts serves the typeface — the only third-party request.)
+* **No Credentials Stored:** Account passwords and authentication cookies are never persisted.
+* **No Trackers or Analytics:** Zero tracking scripts, tracking pixels, or third-party behavioral telemetry.
+* **Private Cloud Forwarding:** Bookmarked videos stream directly to your personal Telegram chat via encrypted bot tokens.
 
 ---
 

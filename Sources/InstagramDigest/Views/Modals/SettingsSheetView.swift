@@ -91,6 +91,7 @@ public struct SettingsSheetView: View {
                         dismiss()
                     }
                     .foregroundColor(.white)
+                    .accessibilityIdentifier("SettingsDoneButton")
                 }
             }
         }

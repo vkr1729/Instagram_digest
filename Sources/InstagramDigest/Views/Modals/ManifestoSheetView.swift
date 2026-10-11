@@ -68,6 +68,7 @@ public struct ManifestoSheetView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                         .foregroundColor(.white)
+                        .accessibilityIdentifier("ManifestoDoneButton")
                 }
             }
         }
