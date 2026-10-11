@@ -234,6 +234,9 @@ final class InstagramDigestUITests: XCTestCase {
                        "Rank badge must advance after swipe up")
         let labelAfterUp = rankBadge.label
 
+        // Settle scroll deceleration before reversing direction
+        Thread.sleep(forTimeInterval: 0.8)
+
         // Swipe down to return — rank must change again (back toward start).
         collectionView.swipeDown(velocity: .fast)
         let returned = XCTNSPredicateExpectation(
@@ -472,13 +475,19 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(collectionView.waitForExistence(timeout: 8.0))
         let progress = app.otherElements["PlaybackProgress"]
         XCTAssertTrue(progress.waitForExistence(timeout: 5.0))
+        // Settle from prior test case interactions (e.g. category switch / scroll)
+        Thread.sleep(forTimeInterval: 0.8)
         // Ensure playing first: a second tap would resume and flake the check.
         var state = (progress.value as? String) ?? ""
-        if state.contains("paused") { collectionView.tap() }
+        if state.contains("paused") {
+            collectionView.tap()
+            Thread.sleep(forTimeInterval: 0.6)
+        }
         let playing = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value CONTAINS 'playing'"),
             object: progress)
         XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 5.0), .completed)
+        Thread.sleep(forTimeInterval: 0.6)
         collectionView.tap()
         let paused = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value CONTAINS 'paused'"),

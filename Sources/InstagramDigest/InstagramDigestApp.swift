@@ -247,7 +247,7 @@ struct FeedMainView: View {
                     lastScrollEndTime: lastScrollEndTime,
                     currentProgress: pool.currentProgress
                 )
-                .grayscale(isGrayscale ? 1.0 : 0.0)
+                .grayscaleIf(isGrayscale)
                 .ignoresSafeArea()
 
                 // 2. Full-Bleed Mock 2 Overlay (Natural Scrim, Progress, Creator, Buttons, Caption)
@@ -840,7 +840,9 @@ struct FeedMainView: View {
         daily.watchDurationSeconds += delta
         daily.targetMinutes = timeQuotaMinutes
         daily.enforcementMode = enforcementMode
-        try? modelContext.save()
+        if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+            try? modelContext.save()
+        }
 
         let quotaSecs = Double(timeQuotaMinutes) * 60.0
         guard daily.watchDurationSeconds >= quotaSecs else { return }
@@ -1120,6 +1122,17 @@ public enum ShareSheetPresenter {
             popover.permittedArrowDirections = []
         }
         topVC.present(activityVC, animated: true)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func grayscaleIf(_ active: Bool) -> some View {
+        if active {
+            self.grayscale(1.0)
+        } else {
+            self
+        }
     }
 }
 
