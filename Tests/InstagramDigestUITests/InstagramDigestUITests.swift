@@ -238,24 +238,23 @@ final class InstagramDigestUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.8)
 
         // Swipe down to return clear of the story bar — rank must change back toward start
+        let start = Date()
         var returned = false
-        for _ in 0..<3 {
-            let start = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
-            let end = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
-            start.press(forDuration: 0.02, thenDragTo: end)
-            let check = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "label != %@", labelAfterUp),
-                object: rankBadge)
-            if XCTWaiter.wait(for: [check], timeout: 2.5) == .completed {
+        while !returned, Date().timeIntervalSince(start) < 12.0 {
+            let topCoord = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            let bottomCoord = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92))
+            topCoord.press(forDuration: 0.02, thenDragTo: bottomCoord)
+            Thread.sleep(forTimeInterval: 0.4)
+            if rankBadge.label != labelAfterUp {
                 returned = true
                 break
             }
             collectionView.swipeDown(velocity: .fast)
-            if XCTWaiter.wait(for: [check], timeout: 2.5) == .completed {
+            Thread.sleep(forTimeInterval: 0.4)
+            if rankBadge.label != labelAfterUp {
                 returned = true
                 break
             }
-            Thread.sleep(forTimeInterval: 0.5)
         }
         XCTAssertTrue(returned, "Rank badge must change after swipe down")
     }
@@ -504,22 +503,21 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 5.0), .completed)
         Thread.sleep(forTimeInterval: 0.6)
         // Tap to pause playback
+        let pauseStart = Date()
         var isPaused = false
-        for _ in 0..<3 {
-            center.tap()
-            let paused = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "value CONTAINS 'paused'"),
-                object: progress)
-            if XCTWaiter.wait(for: [paused], timeout: 2.5) == .completed {
-                isPaused = true
-                break
-            }
+        while !isPaused, Date().timeIntervalSince(pauseStart) < 12.0 {
             collectionView.tap()
-            if XCTWaiter.wait(for: [paused], timeout: 2.5) == .completed {
+            Thread.sleep(forTimeInterval: 0.4)
+            if ((progress.value as? String) ?? "").contains("paused") {
                 isPaused = true
                 break
             }
-            Thread.sleep(forTimeInterval: 0.5)
+            center.tap()
+            Thread.sleep(forTimeInterval: 0.4)
+            if ((progress.value as? String) ?? "").contains("paused") {
+                isPaused = true
+                break
+            }
         }
         XCTAssertTrue(isPaused, "tap must pause playback")
 
