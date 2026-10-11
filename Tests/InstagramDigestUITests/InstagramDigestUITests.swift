@@ -237,8 +237,10 @@ final class InstagramDigestUITests: XCTestCase {
         // Settle scroll deceleration before reversing direction
         Thread.sleep(forTimeInterval: 0.8)
 
-        // Swipe down to return — rank must change again (back toward start).
-        collectionView.swipeDown(velocity: .fast)
+        // Swipe down to return clear of the header and story circles bar
+        let mid = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))
+        let bottom = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
+        mid.press(forDuration: 0.05, thenDragTo: bottom)
         let returned = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label != %@", labelAfterUp),
             object: rankBadge)
@@ -477,10 +479,11 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(progress.waitForExistence(timeout: 5.0))
         // Settle from prior test case interactions (e.g. category switch / scroll)
         Thread.sleep(forTimeInterval: 0.8)
+        let center = collectionView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         // Ensure playing first: a second tap would resume and flake the check.
         var state = (progress.value as? String) ?? ""
         if state.contains("paused") {
-            collectionView.tap()
+            center.tap()
             Thread.sleep(forTimeInterval: 0.6)
         }
         let playing = XCTNSPredicateExpectation(
@@ -488,7 +491,7 @@ final class InstagramDigestUITests: XCTestCase {
             object: progress)
         XCTAssertEqual(XCTWaiter.wait(for: [playing], timeout: 5.0), .completed)
         Thread.sleep(forTimeInterval: 0.6)
-        collectionView.tap()
+        center.tap()
         let paused = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value CONTAINS 'paused'"),
             object: progress)

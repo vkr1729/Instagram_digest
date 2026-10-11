@@ -133,9 +133,11 @@ public struct FeedPagerView: UIViewControllerRepresentable {
                 return
             }
 
-            let now = ProcessInfo.processInfo.systemUptime
-            if now - parent.lastScrollEndTime < 0.50 || now - lastSwipeTime < 0.35 {
-                return
+            if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - parent.lastScrollEndTime < 0.50 || now - lastSwipeTime < 0.35 {
+                    return
+                }
             }
 
             if AVPlayerPool.shared.isLatched2x {
