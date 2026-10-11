@@ -288,71 +288,74 @@ struct FeedMainView: View {
 
                 // 3. Top Navigation Header & Story Category Circles Bar (Mock 2 Locked)
                 VStack(spacing: 0) {
-                    HeaderBarView(
-                        currentIndex: activeIndex,
-                        totalCount: pool.currentItems.count,
-                        bookmarkCount: savedBookmarks.count,
-                        watchHoursText: String(format: "%.1f hrs", watchSeconds / 3600.0),
-                        onTapGrid: {
-                            wasPlayingBeforeSheet = pool.isPlaying
-                            pool.pause()
-                            showGridSheet = true
-                        },
-                        onTapOffline: {
-                            wasPlayingBeforeSheet = pool.isPlaying
-                            pool.pause()
-                            showDownloadSheet = true
-                        },
-                        onTapBookmarks: {
-                            wasPlayingBeforeSheet = pool.isPlaying
-                            pool.pause()
-                            showBookmarksSheet = true
-                        },
-                        onTapManifesto: {
-                            wasPlayingBeforeSheet = pool.isPlaying
-                            pool.pause()
-                            showManifestoSheet = true
-                        },
-                        onTapSettings: {
-                            wasPlayingBeforeSheet = pool.isPlaying
-                            pool.pause()
-                            showSettingsSheet = true
-                        }
-                    )
+                    VStack(spacing: 0) {
+                        HeaderBarView(
+                            currentIndex: activeIndex,
+                            totalCount: pool.currentItems.count,
+                            bookmarkCount: savedBookmarks.count,
+                            watchHoursText: String(format: "%.1f hrs", watchSeconds / 3600.0),
+                            onTapGrid: {
+                                wasPlayingBeforeSheet = pool.isPlaying
+                                pool.pause()
+                                showGridSheet = true
+                            },
+                            onTapOffline: {
+                                wasPlayingBeforeSheet = pool.isPlaying
+                                pool.pause()
+                                showDownloadSheet = true
+                            },
+                            onTapBookmarks: {
+                                wasPlayingBeforeSheet = pool.isPlaying
+                                pool.pause()
+                                showBookmarksSheet = true
+                            },
+                            onTapManifesto: {
+                                wasPlayingBeforeSheet = pool.isPlaying
+                                pool.pause()
+                                showManifestoSheet = true
+                            },
+                            onTapSettings: {
+                                wasPlayingBeforeSheet = pool.isPlaying
+                                pool.pause()
+                                showSettingsSheet = true
+                            }
+                        )
 
-                    StoryCategoryBarView(
-                        totalCount: allReels.count,
-                        selectedCategoryId: selectedCategoryId,
-                        offlineCaption: offlineActive
-                            ? "Offline · \(pool.currentItems.count) downloaded" : "",
-                        onSelectCategory: { newCat in
-                            guard let m = manifest else { return }
-                            // B14: only adopt the selection when it matched
-                            // something — otherwise the chip would claim a
-                            // category while the pool plays something else.
-                            if pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId) {
-                                selectedCategoryId = newCat
-                                if newCat == "all" {
-                                    // Back to the full list: resume where you left off, not at #1.
-                                    let saved = UserDefaults.standard.string(forKey: "lastActiveReelID_\(m.weekId)")
-                                    let idx = allReels.firstIndex { $0.id == saved } ?? 0
-                                    activeIndex = idx
-                                    pool.setCurrentIndex(idx)
-                                } else {
-                                    // The reset to 0 is a view-filter artifact, not a
-                                    // watched position: suppress its resume persist so
-                                    // it cannot overwrite the saved full-list position.
-                                    suppressNextResumeSave = true
-                                    activeIndex = 0
+                        StoryCategoryBarView(
+                            totalCount: allReels.count,
+                            selectedCategoryId: selectedCategoryId,
+                            offlineCaption: offlineActive
+                                ? "Offline · \(pool.currentItems.count) downloaded" : "",
+                            onSelectCategory: { newCat in
+                                guard let m = manifest else { return }
+                                // B14: only adopt the selection when it matched
+                                // something — otherwise the chip would claim a
+                                // category while the pool plays something else.
+                                if pool.filterByCategory(newCat, allReels: allReels, weekID: m.weekId) {
+                                    selectedCategoryId = newCat
+                                    if newCat == "all" {
+                                        // Back to the full list: resume where you left off, not at #1.
+                                        let saved = UserDefaults.standard.string(forKey: "lastActiveReelID_\(m.weekId)")
+                                        let idx = allReels.firstIndex { $0.id == saved } ?? 0
+                                        activeIndex = idx
+                                        pool.setCurrentIndex(idx)
+                                    } else {
+                                        // The reset to 0 is a view-filter artifact, not a
+                                        // watched position: suppress its resume persist so
+                                        // it cannot overwrite the saved full-list position.
+                                        suppressNextResumeSave = true
+                                        activeIndex = 0
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
+                    .allowsHitTesting(isChromeVisible)
 
                     Spacer()
+                        .allowsHitTesting(false)
                 }
                 .opacity(isChromeVisible ? 1.0 : 0.0)
-                .allowsHitTesting(isChromeVisible)
                 .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
             } else {
                 // Empty digest must never be a dead black screen.

@@ -146,118 +146,116 @@ public struct ReelCardOverlayView: View {
             // 5. Bottom Metadata HUD
             VStack(alignment: .leading, spacing: 0) {
                 Spacer()
+                    .allowsHitTesting(false)
 
-                // Hairline Progress Bar
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Rectangle()
-                            .fill(Color.white.opacity(0.25))
-                            .frame(height: 2.5)
+                VStack(alignment: .leading, spacing: 0) {
+                    // Hairline Progress Bar
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.25))
+                                .frame(height: 2.5)
 
-                        let displayFraction = seekFractionPreview ?? progress
-                        Rectangle()
-                            .fill(seekFractionPreview != nil ? Color.yellow : Color.white)
-                            .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(displayFraction))), height: 2.5)
+                            let displayFraction = seekFractionPreview ?? progress
+                            Rectangle()
+                                .fill(seekFractionPreview != nil ? Color.yellow : Color.white)
+                                .frame(width: max(0, min(geo.size.width, geo.size.width * CGFloat(displayFraction))), height: 2.5)
+                        }
                     }
-                }
-                .frame(height: 2.5)
-                .padding(.bottom, 10)
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("PlaybackProgress")
-                .accessibilityValue(String(format: "%.1f %@", currentTime, isPlaying ? "playing" : "paused"))
+                    .frame(height: 2.5)
+                    .padding(.bottom, 10)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("PlaybackProgress")
+                    .accessibilityValue(String(format: "%.1f %@", currentTime, isPlaying ? "playing" : "paused"))
 
-                // Creator & Action Row (Mock 2: @handle, #rank, Share, Save)
-                HStack(alignment: .center, spacing: 8) {
-                    // Creator Handle
-                    Text("@\(reel.creatorHandle)")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                        .accessibilityIdentifier("ReelCreatorHandle")
+                    // Creator & Action Row (Mock 2: @handle, #rank, Share, Save)
+                    HStack(alignment: .center, spacing: 8) {
+                        // Creator Handle
+                        Text("@\(reel.creatorHandle)")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                            .accessibilityIdentifier("ReelCreatorHandle")
 
-                    // #rank Badge (Orange) — hidden in neutrality mode
-                    if !hideRanks {
-                        Text(reel.rankDisplay)
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.20))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.22))
+                        // #rank Badge (Orange) — hidden in neutrality mode
+                        if !hideRanks {
+                            Text(reel.rankDisplay)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.20))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.22))
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule().stroke(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.6), lineWidth: 0.8)
+                                )
+                                .accessibilityIdentifier("ReelRankBadge")
+                        }
+
+                        Spacer()
+
+                        // WhatsApp Share Button (🟢 Share)
+                        Button(action: onTriggerShare) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrowshape.turn.up.right.fill")
+                                    .font(.system(size: 11, weight: .bold))
+                                Text("Share")
+                                    .font(.system(size: 12, weight: .bold))
+                            }
+                            .foregroundColor(Color(red: 0.25, green: 0.92, blue: 0.45))
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 7)
+                            .background(Color(red: 0.15, green: 0.82, blue: 0.40).opacity(0.22))
                             .clipShape(Capsule())
                             .overlay(
-                                Capsule().stroke(Color(red: 0.95, green: 0.60, blue: 0.20).opacity(0.6), lineWidth: 0.8)
+                                Capsule().stroke(Color(red: 0.25, green: 0.92, blue: 0.45).opacity(0.6), lineWidth: 0.8)
                             )
-                            .accessibilityIdentifier("ReelRankBadge")
-                    }
-
-                    Spacer()
-
-                    // WhatsApp Share Button (🟢 Share)
-                    Button(action: onTriggerShare) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrowshape.turn.up.right.fill")
-                                .font(.system(size: 11, weight: .bold))
-                            Text("Share")
-                                .font(.system(size: 12, weight: .bold))
                         }
-                        .foregroundColor(Color(red: 0.25, green: 0.92, blue: 0.45))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 7)
-                        .background(Color(red: 0.15, green: 0.82, blue: 0.40).opacity(0.22))
-                        .clipShape(Capsule())
-                        .overlay(
-                            Capsule().stroke(Color(red: 0.25, green: 0.92, blue: 0.45).opacity(0.6), lineWidth: 0.8)
-                        )
-                    }
-                    .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
-                    .accessibilityIdentifier("WhatsAppShareButton")
+                        .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
+                        .accessibilityIdentifier("WhatsAppShareButton")
 
-                    // Bookmark Button (🔖 Save / 🔖 Saved)
-                    Button(action: onTriggerBookmark) {
-                        HStack(spacing: 4) {
-                            Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
-                                .font(.system(size: 11, weight: .bold))
-                            Text(isBookmarked ? "Saved" : "Save")
-                                .font(.system(size: 12, weight: .bold))
+                        // Bookmark Button (🔖 Save / 🔖 Saved)
+                        Button(action: onTriggerBookmark) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                                    .font(.system(size: 11, weight: .bold))
+                                Text(isBookmarked ? "Saved" : "Save")
+                                    .font(.system(size: 12, weight: .bold))
+                            }
+                            .foregroundColor(Color(red: 1.0, green: 0.80, blue: 0.28))
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 7)
+                            .background(Color(red: 0.95, green: 0.75, blue: 0.20).opacity(isBookmarked ? 0.38 : 0.18))
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule().stroke(Color(red: 1.0, green: 0.80, blue: 0.28).opacity(0.6), lineWidth: 0.8)
+                            )
                         }
-                        .foregroundColor(Color(red: 1.0, green: 0.80, blue: 0.28))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 7)
-                        .background(Color(red: 0.95, green: 0.75, blue: 0.20).opacity(isBookmarked ? 0.38 : 0.18))
-                        .clipShape(Capsule())
-                        .overlay(
-                            Capsule().stroke(Color(red: 1.0, green: 0.80, blue: 0.28).opacity(0.6), lineWidth: 0.8)
-                        )
+                        .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
+                        .accessibilityIdentifier("SaveBookmarkButton")
                     }
-                    .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
-                    .accessibilityIdentifier("SaveBookmarkButton")
-                }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 6)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
 
-                // Caption Snippet (2 lines, tap to expand)
-                if !reel.caption.isEmpty {
-                    Text(reel.caption)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.92))
-                        .lineLimit(isCaptionExpanded ? 8 : 2)
-                        .multilineTextAlignment(.leading)
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 12)
-                        .contentShape(Rectangle())
-                        .onTapGesture(perform: onToggleCaption)
-                        .accessibilityIdentifier("ReelCaptionText")
-                        .accessibilityValue(isCaptionExpanded ? "expanded" : "collapsed")
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction(named: "Toggle caption") { onToggleCaption() }
+                    // Caption Snippet (2 lines, tap to expand)
+                    if !reel.caption.isEmpty {
+                        Text(reel.caption)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.92))
+                            .lineLimit(isCaptionExpanded ? 8 : 2)
+                            .multilineTextAlignment(.leading)
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 12)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: onToggleCaption)
+                            .accessibilityIdentifier("ReelCaptionText")
+                            .accessibilityValue(isCaptionExpanded ? "expanded" : "collapsed")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction(named: "Toggle caption") { onToggleCaption() }
+                    }
                 }
+                .allowsHitTesting(isChromeVisible)
             }
             .opacity(isChromeVisible ? 1.0 : 0.0)
-            // Only the interactive rows (buttons, caption) claim touches:
-            // the VStack has no background so gaps, the Spacer and the
-            // progress bar (allowsHitTesting(false) above) pass horizontal
-            // seek pans through to the collection view (IOS-P1-10 verified:
-            // no container-level blocker; controls must keep their taps).
-            .allowsHitTesting(isChromeVisible)
             .animation(.easeInOut(duration: 0.25), value: isChromeVisible)
         }
     }
