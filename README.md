@@ -23,14 +23,14 @@
 ## 📸 Visual Tour
 
 <p align="center">
-  <img src="assets/screens/feed_view.png" width="23%" alt="Full-Screen Vertical Feed" />
+  <img src="assets/screens/feed_view.png" width="23%" alt="Vertical Feed" />
   <img src="assets/screens/grid_view.png" width="23%" alt="3-Column Visual Grid" />
-  <img src="assets/screens/manifesto_view.png" width="23%" alt="10 Traps Manifesto" />
-  <img src="assets/screens/settings_view.png" width="23%" alt="Anti-Doomscroll Controls" />
+  <img src="assets/screens/bookmarks_view.png" width="23%" alt="Bookmarks Library" />
+  <img src="assets/screens/jump_modal.png" width="23%" alt="Mindful Jump Dialog" />
 </p>
 
 <p align="center">
-  <em>(Left to Right: Full-Screen Vertical Feed · 3-Column Visual Grid View · The 10 Traps Manifesto · Anti-Doomscroll Wellbeing Controls)</em>
+  <em>(Left to Right: Full-Screen Vertical Feed · 3-Column Visual Grid View · Hybrid Bookmarks Library · Mindful Jump Dialog)</em>
 </p>
 
 ---

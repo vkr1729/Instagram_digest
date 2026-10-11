@@ -89,22 +89,6 @@ jobs:
           path: UATResults.xcresult
           if-no-files-found: ignore
 
-      - name: Sync Real iPhone Screenshots to assets/screens
-        run: |
-          mkdir -p assets/screens
-          if [ -d "/tmp/screens" ]; then
-            echo "Copying captured screenshots from /tmp/screens..."
-            cp -vf /tmp/screens/*.png assets/screens/
-          fi
-          ls -la assets/screens/
-
-      - name: Upload Real iPhone Screenshots
-        uses: actions/upload-artifact@v5
-        with:
-          name: iPhone-Screenshots
-          path: assets/screens/*.png
-          if-no-files-found: ignore
-
       - name: Build Release App for Device (Unsigned)
         run: |
           xcodebuild build \
@@ -146,10 +130,10 @@ jobs:
           cp InstagramDigest.ipa dist/ipa/InstagramDigest-latest.ipa
           ls -lh dist/ipa/
 
-      - name: Commit IPA and Screenshots
+      - name: Commit IPA to dist/ipa
         run: |
           git config user.name "InstagramDigest Bot"
           git config user.email "digest@bot.local"
-          git add -f dist/ipa/*.ipa assets/screens/*.png
-          git diff --cached --quiet || git commit -m "ci: update IPA build ${GITHUB_SHA::8} and refreshed real iPhone screenshots"
-          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "IPA/Screenshots commit push skipped (no permission or nothing to push)."
+          git add -f dist/ipa/*.ipa
+          git diff --cached --quiet || git commit -m "ci: save IPA build ${GITHUB_SHA::8} to dist/ipa"
+          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "IPA commit push skipped (no permission or nothing to push)."
