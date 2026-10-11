@@ -31,30 +31,27 @@
 
 ---
 
-## 💡 Why Instagram Digest?
+## 💡 Why This Exists — Neutralizing The 10 Traps of Phone Addiction
 
-Mainstream social media apps are engineered for **infinite retention** — optimizing for time-on-screen rather than signal. You open an app to check one creator and emerge 45 minutes later trapped in an algorithmic rabbit hole of low-value dopamine loops.
+Mainstream social media apps are behavioral casinos engineered for **infinite retention** — maximizing time-on-screen rather than user wellbeing.
 
-**Instagram Digest systematically neutralizes this trap:**
-1. **Finite Weekly Batches:** Delivers a capped weekly digest of the top 250 reels from creators you specifically choose, plus high-engagement discovery.
-2. **Strict Watched Tracking:** Reels are automatically marked as watched as you swipe past. Unwatched items are prioritized; watched items are dimmed.
-3. **Celebratory Finish:** When you reach the end, you are greeted with a *"You're All Caught Up! 🎉"* milestone — no endless algorithmic auto-play.
-4. **Mindful Pace:** Daily watch quotas (10m, 20m, 30m, 45m) with gentle pause reminders or hard PIN lockouts.
+This project was built as an open-source, engineering-first antidote to the 10 psychological traps exposed in the viral investigative documentary by **Satvic Movement**:  
+🎬 **Watch the investigation:** [*"The Brain Behind Your Phone Addiction. We Caught Him!"*](https://www.youtube.com/watch?v=FmLJbYBu094)
 
-> 📖 **The Anti-Doomscroll Philosophy:** Instagram Digest directly neutralizes the 10 psychological addiction traps exposed in the Satvic Movement investigation [*The Brain Behind Your Phone Addiction. We Caught Him!*](https://youtu.be/FmLJbYBu094).
+Here is how **The Anti-Doomscroll Briefing** directly dismantles every single trap in code:
 
-| # | Trap in Social Media | How Instagram Digest Solves It |
-|---|---|---|
-| 1 | **Infinite Scrolling** | **Finite Weekly Cap:** 250 curated reels, followed by an explicit "All Caught Up" screen. |
-| 2 | **The Red Colour Trap** | **Quiet-Luxury Aesthetics:** Zero red notification badges. Frosted slate tones and 1-tap Grayscale mode. |
-| 3 | **Gamified Validation** | **Metrics Stripped:** Zero follower counts, like counts, view tallies, or public comment threads. |
-| 4 | **Variable Reward (Casino Logic)** | **Predictable Delivery:** Deterministic ranking or pure chronological sort order. No roulette refresh. |
-| 5 | **Algorithmic Rabbit Holes** | **Channel Archetypes:** Whitelist curation balancing `Educational`, `Craft`, `Lifestyle`, and `Vlog` creators. |
-| 6 | **Sensory Dopamine Overload** | **Hardware Grayscale Detox:** 1-tap monochrome filter to remove visual stimulation. |
-| 7 | **Artificial Urgency (FOMO)** | **Asynchronous Weekly Briefing:** Zero 24h disappearing stories or live streams. Read on your schedule. |
-| 8 | **Hypnotic Trance State** | **Active Friction:** Choose between Auto mode (0.5s pause) and Manual advance, plus optional 3s inter-reel breathers. |
-| 9 | **Vanity Comparison** | **Neutrality Mode:** 1-tap toggle to hide rank badges (`#01`, `#02`) across the feed and grid. |
-| 10 | **Frictionless Habit Loop** | **Session Time-Boxing:** Daily watch quotas with mindful break prompts or hard 4-digit PIN lockouts. |
+| # | Trap from the Video | The Psychological Trap | How This Repo Solves It | Status |
+|---|---|---|---|:---:|
+| 1 | **Infinite Scroll** | Eliminates natural stopping cues so the brain never decides to exit. | **Hard Weekly Cap:** Finite batch of 250 curated reels, followed by an explicit celebratory *"You're All Caught Up! 🎉"* milestone. No endless feed. | **Solved** |
+| 2 | **The Red Colour Trap** | Red notification dots exploit primal threat/urgency reflexes to compel clicks. | **Quiet-Luxury Aesthetics:** Zero red notification badges or alarm dots. Frosted OLED slate tones and a 1-tap **Hardware Grayscale Mode**. | **Solved** |
+| 3 | **Gamified Social Obligation** | Streaks, interaction scores, and follow ratios exploit fear of social rejection. | **Zero Social Graph:** Completely severed social graph. No follower counts, streaks, or social debt loops. | **Solved** |
+| 4 | **Variable Reward (Casino Logic)** | Pull-to-refresh roulette; unpredictability triggers dopamine spikes like a slot machine. | **Deterministic Static Digest:** Predictable curated score ranking or pure chronological sort. Zero pull-to-refresh roulette. | **Solved** |
+| 5 | **Filtered Reality & Envy** | Hyper-curated algorithmic feeds optimize for envy, drama, and artificial lifestyle comparisons. | **Channel Archetypes:** Whitelist ingestion balancing intentional categories (`Educational`, `Craft`, `Lifestyle`, `Vlog`) with strict fair-share creator caps. | **Solved** |
+| 6 | **Social Validation Metrics** | Like counts, view tallies, and comment threads hijack the brain's validation circuitry. | **Metrics Stripped:** Like counts, views, and comment threads are completely removed. Includes a **Neutrality Mode** to hide even rank badges (`#01`, `#02`). | **Solved** |
+| 7 | **Artificial Urgency (FOMO)** | 24-hour disappearing stories and live pings force compulsive daily checking. | **Asynchronous Weekly Batch:** Published once a week (Saturdays 18:00); reels remain permanently accessible offline with zero disappearing FOMO feeds. | **Solved** |
+| 8 | **Hypnotic Trance State** | Frictionless 0-effort autoplay lulls the prefrontal cortex into a passive zombie state. | **Active Playback Friction:** Choose between Auto mode (0.5s pause) and Manual advance (swiping required to proceed), plus optional **3-second inter-reel breathers**. | **Solved** |
+| 9 | **Sensory & Dopamine Overload** | Hyper-saturated colors and aggressive jump cuts trigger continuous neural stimulation. | **1-Tap Grayscale Detox:** Hardware-accelerated monochrome filter strips all saturation from video and interface with zero latency. | **Solved** |
+| 10 | **The Buzz (Frictionless Re-entry)** | Push notifications and vibration pings pull you back into the loop multiple times per day. | **Pull-Only Architecture & Hard PIN Lockout:** Zero push notifications. Configurable daily watch-time quotas (10/20/30/45m) backed by a hard **4-digit PIN lockout**. | **Solved** |
 
 ---
 
