@@ -2150,31 +2150,14 @@ def _run_full_sync(
             )
             return 2
 
-        # 5D: JIT purge previous weeks FIRST (scoped: everything under videos/
-        # EXCEPT videos/<current_week_id>/ and the live-digest week), then the
-        # pre-flight quota check against the real batch size. Purging first
-        # makes the quota math current_R2_usage(excluding purged weeks) +
-        # batch_bytes < quota. Current-week strays from partial/interrupted
-        # uploads are deleted before upload too (keyed by reel-id suffix, same
-        # style as purge_unreferenced_r2_videos but scoped to the new week,
-        # which no saved digest references yet).
-        live_week = _persisted_digest_week()
-        # P1-5: the local digest can be ahead of Pages (failed/refused
-        # deploy) — keep both the local week and the served week.
-        try:
-            served_week = json.loads((config.DATA_DIR / "deployed_week.json")
-                                     .read_text(encoding="utf-8")).get("run_date") or ""
-        except Exception:
-            served_week = ""
-        keep_weeks = {w for w in (live_week, served_week) if isinstance(w, str) and w and w != week_id}
-        live_digest_unreadable = config.DIGEST_BATCH_FILE.exists() and not live_week
+        # 5D: Pre-upload purge of all previous weeks' videos in R2 (scoped:
+        # everything under videos/ EXCEPT videos/<current_week_id>/), then the
+        # pre-flight quota check against the real batch size.
+        # Single-person repo design: Purging previous week before uploading ensures
+        # old videos (~2.5-3.5 GB) never overlap with the incoming week, preventing
+        # quota exhaustion (< 8.0 GB) even as bookmarks grow up to 3 GB.
         if config.R2_ACCOUNT_ID:
-            if live_digest_unreadable:
-                logger.warning("Live digest unreadable; skipping previous-week purge "
-                               "so its videos survive (recover digest first).")
-            else:
-                storage_r2.purge_previous_weeks_videos(
-                    current_week_id=week_id, keep_week_ids=keep_weeks)
+            storage_r2.purge_previous_weeks_videos(current_week_id=week_id)
             # B1: on a same-day re-run the live digest references this very
             # week, so its ids are never strays (None = unreadable = skip).
             keep_ids = _current_week_stray_keep_ids(week_id, ranked_reels)
@@ -2952,25 +2935,21 @@ def _estimate_run(since_ts_override: int | None = None) -> int:
     if current_bytes < 0:
         logger.error("Cannot verify R2 usage (outage?); estimate unavailable.")
         return 1
-    live_week = _persisted_digest_week()
-    live_keys = storage_r2.get_existing_r2_keys(f"videos/{live_week}/") if live_week else set()
     try:
-        all_keys = storage_r2.get_existing_r2_keys("videos/")
-        purgeable_keys = [k for k in all_keys if k not in live_keys]
-        logger.info("JIT purge scope: %d previous-week keys would be deleted before upload.",
-                    len(purgeable_keys))
+        all_video_keys = storage_r2.get_existing_r2_keys("videos/")
+        logger.info("Pre-upload purge scope: %d previous-week keys would be deleted before upload.",
+                    len(all_video_keys))
     except Exception:
         pass
     quota = config.R2_STORAGE_QUOTA_BYTES
     print(f"Estimated batch : {batch_bytes / 1073741824:.2f} GB ({config.TOP_DIGEST_COUNT} reels)")
     print(f"R2 current     : {current_bytes / 1073741824:.2f} GB ({count} objects)")
-    print(f"Live week kept : {live_week or '(none)'} ({len(live_keys)} keys)")
     print(f"Quota (safety) : {quota / 1073741824:.2f} GB")
     projected = current_bytes + batch_bytes
     fits_raw = projected < quota
     print(f"Without purge  : {projected / 1073741824:.2f} GB -> {'FITS' if fits_raw else 'EXCEEDS quota'}")
-    print("With JIT purge : previous weeks are deleted before upload, so the "
-          "live-week + new-batch total applies (checked again pre-upload).")
+    print("With pre-upload purge: previous weeks are deleted before upload, so the "
+          "new batch does not overlap with older feed videos in R2.")
     return 0 if fits_raw else 1
 
 

@@ -233,10 +233,11 @@ def test_purge_before_upload_and_stray_before_upload(tmp_path, monkeypatch):
         assert first_stray_delete < first_upload, f"stray purge must precede upload: {kinds!r}"
         # Preflight runs after the purge (quota math sees post-purge usage).
         assert kinds.index("preflight") > first_purge
-        # Live week is kept by the JIT purge scoping.
+        # Previous weeks are fully purged pre-upload without retaining live week
+        # to strictly avoid overlapping video batches under the 8 GB quota ceiling.
         purge_evt = next(e for e in events if e[0] == "purge_previous")
         assert purge_evt[1] == week
-        assert "2026-09-10" in purge_evt[2]
+        assert purge_evt[2] == set()
         assert week not in purge_evt[2]  # current week passed as arg, not keep-set
         # All 42 strays deleted; referenced keys never deleted.
         deleted = [k for e in events if e[0] == "s3_delete" for k in e[1]]
