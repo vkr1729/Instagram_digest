@@ -299,17 +299,19 @@ def purge_previous_weeks_videos(
     """
     Purge previous weeks' video objects on Cloudflare R2 immediately before uploading a new batch.
 
-    Option A (Just-In-Time Purge): Ensures the previous week's feed videos (~3.5 GB)
+    Option A (Just-In-Time Pre-Upload Purge): Ensures previous weeks' feed videos (~3.5 GB)
     and the incoming week's feed videos (~3.5 GB) never overlap in R2 simultaneously,
-    preventing pre-flight quota aborts under the 8 GB safety quota.
+    preventing pre-flight quota aborts under the 8 GB safety quota as bookmarks grow to 3 GB.
 
     Safety Invariants:
     1. NEVER purges keys under bookmarks/ (governed exclusively by Worker/D1 cap).
     2. NEVER purges keys under videos/{current_week_id}/ (keeps new/resumed files safe).
-    3. NEVER purges keys under videos/{live week}/ when keep_week_ids names the
-       week the persisted digest still points at: a crash or quota abort between
-       this purge and the new save_digest_batch must leave live playback working
-       (PY-P0-1). The kept week is reclaimed by the next run's JIT purge.
+    3. User Mandate & Architectural Policy (DO NOT REVERT):
+       The pipeline intentionally calls this with keep_week_ids=None (or empty)
+       so all older weeks under videos/ are purged pre-upload. The user consciously
+       prioritizes strict quota headroom (< 8.0 GB) over zero-downtime feed overlap.
+       When keep_week_ids IS explicitly passed (e.g. in targeted tests or workflows),
+       those prefixes are preserved.
     4. Strictly scoped to prefix "videos/".
     """
     s3 = get_s3_client()

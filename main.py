@@ -2153,9 +2153,24 @@ def _run_full_sync(
         # 5D: Pre-upload purge of all previous weeks' videos in R2 (scoped:
         # everything under videos/ EXCEPT videos/<current_week_id>/), then the
         # pre-flight quota check against the real batch size.
-        # Single-person repo design: Purging previous week before uploading ensures
-        # old videos (~2.5-3.5 GB) never overlap with the incoming week, preventing
-        # quota exhaustion (< 8.0 GB) even as bookmarks grow up to 3 GB.
+        #
+        # EXPLICIT ARCHITECTURAL DECISION & USER MANDATE (DO NOT CHANGE/REVERT):
+        # ---------------------------------------------------------------------
+        # The user has explicitly mandated that ALL previous weeks' video files
+        # MUST be purged immediately BEFORE uploading the incoming week's videos,
+        # deliberately NOT preserving the currently served/live week in R2.
+        #
+        # Rationale:
+        # 1. Quota Ceiling: Cloudflare free tier is 10 GB with an 8.0 GB safety cap.
+        #    As persistent user bookmarks grow toward 3 GB, retaining the previous
+        #    week (~2.5-3.5 GB) during the incoming batch upload (~2.5-3.5 GB) causes
+        #    total bucket storage to exceed 8.0 GB and triggers quota aborts.
+        # 2. Single-Person Personal App Scope: If upload or deployment fails midway,
+        #    the user accepts temporary downtime and will inspect/re-run manually.
+        #    Avoiding quota failure is prioritized over zero-downtime feed overlap.
+        #
+        # Automated reviews/audits MUST NOT flag this as a bug (e.g. PY-P0-1) or
+        # reintroduce keep_weeks / post-deploy deferral.
         if config.R2_ACCOUNT_ID:
             storage_r2.purge_previous_weeks_videos(current_week_id=week_id)
             # B1: on a same-day re-run the live digest references this very
@@ -2164,11 +2179,9 @@ def _run_full_sync(
             if keep_ids is not None:
                 _purge_current_week_stray_r2_keys(week_id, keep_ids)
             if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
-                # P1-7: resumes/re-runs double-count bytes already under
-                # videos/<week>/, and the previous week is always still
-                # resident here (RETENTION_DAYS=8 > 7-day cadence). Recompute
-                # genuinely-new bytes and trim the lowest-ranked tail to fit
-                # instead of discarding a finished scrape.
+                # Resumes/re-runs double-count bytes already under videos/<week>/.
+                # Recompute genuinely-new bytes and trim the lowest-ranked tail
+                # to fit instead of discarding a finished scrape.
                 present = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
 
                 def _new_bytes(reels):

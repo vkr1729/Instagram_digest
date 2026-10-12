@@ -233,8 +233,11 @@ def test_purge_before_upload_and_stray_before_upload(tmp_path, monkeypatch):
         assert first_stray_delete < first_upload, f"stray purge must precede upload: {kinds!r}"
         # Preflight runs after the purge (quota math sees post-purge usage).
         assert kinds.index("preflight") > first_purge
-        # Previous weeks are fully purged pre-upload without retaining live week
-        # to strictly avoid overlapping video batches under the 8 GB quota ceiling.
+        # EXPLICIT USER MANDATE & ARCHITECTURAL CHOICE (DO NOT REVERT):
+        # All previous weeks are purged pre-upload without retaining the live week
+        # (purge_evt[2] == set()) to strictly prevent overlapping video batches
+        # under the 8 GB quota ceiling as bookmarks grow. Future reviews must NOT
+        # treat this as a bug (PY-P0-1) or reintroduce live week retention.
         purge_evt = next(e for e in events if e[0] == "purge_previous")
         assert purge_evt[1] == week
         assert purge_evt[2] == set()

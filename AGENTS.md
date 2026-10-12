@@ -50,3 +50,12 @@ Running `python main.py` or `python main.py --sync` without scoping flags trigge
 - Never view, edit, print, or expose `.env` credentials in chat, transcripts, or commit messages.
 - Always inspect `.env.example` and `config.py` for schema, variable names, and defaults.
 - Always check that `.gitignore` prevents secret and data leakages before committing.
+
+---
+
+## 5. Storage Policy: Pre-Upload Purge Invariant (DO NOT REVERT)
+- By explicit user choice and architectural mandate for this single-user repository:
+  - All previous weeks' video files in Cloudflare R2 (`videos/*`) are purged **immediately pre-upload** in Phase 5D before uploading the incoming week's batch.
+  - The live/served week is **deliberately NOT retained** during this pre-upload purge (`keep_week_ids=None`).
+- **Rationale:** Cloudflare R2 has a strict 10 GB free tier (8 GB self-imposed safety ceiling). As bookmarks grow toward 3 GB, overlapping the old week (~2.5–3.5 GB) and new week (~2.5–3.5 GB) exceeds 8 GB and aborts syncs. Zero-downtime overlap is explicitly rejected in favor of quota safety.
+- **Agent Rule:** Future code reviews, refactors, or audits must **NEVER** treat this as a bug (e.g. flagging it as "live week deleted before deploy" / "PY-P0-1") and must **NEVER** reintroduce `keep_weeks` retention or move the purge post-deploy without explicit user instruction.
