@@ -39,8 +39,8 @@ public struct HeaderBarView: View {
     }
 
     public var body: some View {
-        HStack(alignment: .center, spacing: 6) {
-            // 1. Cursive "Instagram" Brand Logo with Subtitle
+        HStack(alignment: .center, spacing: 8) {
+            // 1. Cursive "Instagram" Brand Logo with Subtitle (fixed horizontal size to prevent wrapping)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Instagram")
                     .font(instagramLogoFont(size: 24))
@@ -51,37 +51,14 @@ public struct HeaderBarView: View {
                     .foregroundColor(Color.white.opacity(0.6))
                     .lineLimit(1)
             }
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(2)
             .padding(.leading, 4)
 
-            Spacer()
+            Spacer(minLength: 6)
 
-            // 2. Action Controls Group (Manifesto, Settings, Timer, Grid, Download, Bookmarks)
+            // 2. Action Controls Group (Timer, Grid, Bookmarks, Settings)
             HStack(spacing: 6) {
-                // Manifesto Info Button
-                Button(action: onTapManifesto) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Color.white.opacity(0.12))
-                        .clipShape(Circle())
-                }
-                .contentShape(Rectangle())
-                .frame(width: 36, height: 44)
-                .accessibilityIdentifier("ManifestoIconButton")
-
-                // Settings Button
-                Button(action: onTapSettings) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Color.white.opacity(0.12))
-                        .clipShape(Circle())
-                }
-                .contentShape(Rectangle())
-                .frame(width: 36, height: 44)
-                .accessibilityIdentifier("SettingsIconButton")
                 // Watch Timer Pill (⏱ X.X hrs)
                 HStack(spacing: 4) {
                     Image(systemName: "stopwatch")
@@ -103,6 +80,7 @@ public struct HeaderBarView: View {
                 .contentShape(Rectangle())
                 .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
                 .accessibilityIdentifier("WatchTimerPill")
+
                 // Grid View Button (⊞)
                 Button(action: onTapGrid) {
                     Image(systemName: "square.grid.3x3.fill")
@@ -119,23 +97,7 @@ public struct HeaderBarView: View {
                 .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
                 .accessibilityIdentifier("GridIconButton")
 
-                // Download All / Offline Button (📥)
-                Button(action: onTapOffline) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: 32, height: 32)
-                        .background(Color.white.opacity(0.12))
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
-                        )
-                }
-                .contentShape(Rectangle())
-                .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
-                .accessibilityIdentifier("OfflineIconButton")
-
-                // Bookmarks Chip (🔖 18) with gold badge
+                // Bookmarks Chip (🔖 [count]) with gold badge
                 Button(action: onTapBookmarks) {
                     HStack(spacing: 4) {
                         Image(systemName: "bookmark.fill")
@@ -159,6 +121,22 @@ public struct HeaderBarView: View {
                 .frame(minHeight: 44) // ≥44pt hit target per Apple HIG
                 .layoutPriority(1)
                 .accessibilityIdentifier("BookmarksChipButton")
+
+                // Settings Button (⚙)
+                Button(action: onTapSettings) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle().stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                        )
+                }
+                .contentShape(Rectangle())
+                .frame(width: 44, height: 44) // ≥44pt hit target per Apple HIG (visual stays 32pt)
+                .accessibilityIdentifier("SettingsIconButton")
             }
         }
         .padding(.horizontal, 14)

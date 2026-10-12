@@ -350,6 +350,18 @@ struct FeedMainView: View {
                             }
                         )
                     }
+                    .background(
+                        LinearGradient(
+                            colors: [
+                                Color.black.opacity(0.80),
+                                Color.black.opacity(0.40),
+                                Color.black.opacity(0.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .ignoresSafeArea(edges: .top)
+                    )
                     .allowsHitTesting(isChromeVisible)
 
                     Spacer()
@@ -431,7 +443,17 @@ struct FeedMainView: View {
                 breatherEnabled: $breatherEnabled,
                 isGrayscale: $isGrayscale,
                 hideRanks: $hideRanks,
-                feedSortOrder: $feedSortOrder
+                feedSortOrder: $feedSortOrder,
+                onTapOffline: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        showDownloadSheet = true
+                    }
+                },
+                onTapManifesto: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        showManifestoSheet = true
+                    }
+                }
             )
         }
         .onChange(of: activeIndex) { _, newIndex in

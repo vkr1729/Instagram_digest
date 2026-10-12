@@ -34,12 +34,12 @@ final class InstagramDigestUITests: XCTestCase {
 
         // Verify Mock 2 header action controls (Jump pill retired)
         let gridButton = app.buttons["GridIconButton"]
-        let downloadButton = app.buttons["OfflineIconButton"]
+        let settingsButton = app.buttons["SettingsIconButton"]
         let bookmarksButton = app.buttons["BookmarksChipButton"]
 
         XCTAssertFalse(app.buttons["JumpPillButton"].exists, "JumpPillButton must not exist; grid + resume replace it")
         XCTAssertTrue(gridButton.exists, "GridIconButton must exist in header")
-        XCTAssertTrue(downloadButton.exists, "OfflineIconButton must exist in header")
+        XCTAssertTrue(settingsButton.exists, "SettingsIconButton must exist in header")
         XCTAssertTrue(bookmarksButton.exists, "BookmarksChipButton must exist in header")
 
         // Verify all 7 Story Category circles are present edge-to-edge
@@ -203,16 +203,19 @@ final class InstagramDigestUITests: XCTestCase {
     // MARK: - 6. Download All / Offline Sheet
 
     func testDownloadAllSheet() throws {
-        let downloadButton = app.buttons["OfflineIconButton"]
-        XCTAssertTrue(downloadButton.waitForExistence(timeout: 8.0))
+        let settingsButton = app.buttons["SettingsIconButton"]
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 8.0))
+        settingsButton.tap()
 
+        let downloadButton = app.buttons["OfflineIconButton"]
+        XCTAssertTrue(downloadButton.waitForExistence(timeout: 5.0))
         downloadButton.tap()
 
         let closeButton = app.buttons["DownloadCloseButton"]
         XCTAssertTrue(closeButton.waitForExistence(timeout: 5.0), "Download sheet should be presented")
         closeButton.tap()
 
-        XCTAssertTrue(downloadButton.waitForExistence(timeout: 3.0))
+        XCTAssertTrue(settingsButton.waitForExistence(timeout: 4.0))
     }
 
     // MARK: - 7. Vertical Paging
@@ -525,14 +528,21 @@ final class InstagramDigestUITests: XCTestCase {
         }
 
         // 3. Anti-Doomscroll Manifesto Sheet
-        let manifestoButton = app.buttons["ManifestoIconButton"]
-        if manifestoButton.waitForExistence(timeout: 4.0) {
-            manifestoButton.tap()
-            Thread.sleep(forTimeInterval: 0.8)
-            saveScreen("manifesto_view")
-            let doneButton = app.buttons["ManifestoDoneButton"]
-            if doneButton.exists { doneButton.tap() } else if app.buttons["Done"].exists { app.buttons["Done"].tap() }
-            _ = rankBadge.waitForExistence(timeout: 4.0)
+        let settingsButton = app.buttons["SettingsIconButton"]
+        if settingsButton.waitForExistence(timeout: 4.0) {
+            settingsButton.tap()
+            let manifestoButton = app.buttons["ManifestoIconButton"]
+            if manifestoButton.waitForExistence(timeout: 4.0) {
+                manifestoButton.tap()
+                Thread.sleep(forTimeInterval: 0.8)
+                saveScreen("manifesto_view")
+                let doneButton = app.buttons["ManifestoDoneButton"]
+                if doneButton.exists { doneButton.tap() } else if app.buttons["Done"].exists { app.buttons["Done"].tap() }
+                _ = rankBadge.waitForExistence(timeout: 4.0)
+            } else {
+                let doneButton = app.buttons["SettingsDoneButton"]
+                if doneButton.exists { doneButton.tap() }
+            }
         }
 
         // 4. Wellbeing Settings Sheet

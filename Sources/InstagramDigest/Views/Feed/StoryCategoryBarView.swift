@@ -25,9 +25,8 @@ public struct StoryCategoryBarView: View {
     public var offlineCaption: String = ""
 
     public static func standardCategories(totalCount: Int = 0) -> [StoryCategoryItem] {
-        let topTitle = totalCount > 0 ? "Top \(totalCount)" : "Top"
         return [
-            StoryCategoryItem(id: "all", title: topTitle, emoji: "🔥"),
+            StoryCategoryItem(id: "all", title: "All", emoji: "🔥"),
             StoryCategoryItem(id: "entertainment", title: "Entertain", emoji: "🎬"),
             StoryCategoryItem(id: "finance", title: "Finance", emoji: "💰"),
             StoryCategoryItem(id: "ai_tech", title: "AI & Tech", emoji: "💻"),
@@ -51,7 +50,7 @@ public struct StoryCategoryBarView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 3) {
             // Rec 4: offline chip — visible only while the offline filter
             // narrows the playlist to downloaded reels.
             if !offlineCaption.isEmpty {
@@ -64,71 +63,47 @@ public struct StoryCategoryBarView: View {
                     .clipShape(Capsule())
                     .accessibilityIdentifier("OfflinePlaylistChip")
             }
-            HStack(alignment: .top, spacing: 0) {
-            ForEach(categories) { cat in
-                let isSelected = cat.id == selectedCategoryId
 
-                Button {
-                    onSelectCategory(cat.id)
-                } label: {
-                    VStack(spacing: 3) {
-                        // 42px Story Ring Circle
-                        ZStack {
-                            if isSelected {
-                                Circle()
-                                    .stroke(Color.white, lineWidth: 2.0)
-                                    .frame(width: 44, height: 44)
-                            } else {
-                                Circle()
-                                    .stroke(Color.white.opacity(0.14), lineWidth: 1.2)
-                                    .frame(width: 44, height: 44)
+            // Compact horizontal pill row (low vertical profile, leaves creator face clear)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(categories) { cat in
+                        let isSelected = cat.id == selectedCategoryId
+
+                        Button {
+                            onSelectCategory(cat.id)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(cat.emoji)
+                                    .font(.system(size: 12))
+                                Text(cat.title)
+                                    .font(.system(size: 12, weight: isSelected ? .bold : .medium))
+                                    .lineLimit(1)
                             }
-
-                            // Inner circle with Emoji
-                            Circle()
-                                .fill(Color(white: 0.14))
-                                .frame(width: 38, height: 38)
-                                .overlay(
-                                    Text(cat.emoji)
-                                        .font(.system(size: 19))
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(
+                                isSelected
+                                    ? Color.white
+                                    : Color.white.opacity(0.12)
+                            )
+                            .foregroundColor(isSelected ? .black : .white)
+                            .clipShape(Capsule())
+                            .overlay(
+                                Capsule().stroke(
+                                    isSelected ? Color.clear : Color.white.opacity(0.2),
+                                    lineWidth: 0.5
                                 )
+                            )
                         }
-
-                        // Category Label (clean text, no count badges)
-                        Text(cat.title)
-                            .font(.system(size: 10, weight: isSelected ? .bold : .medium))
-                            .foregroundColor(isSelected ? .white : .white.opacity(0.75))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.70)
-                            .frame(maxWidth: .infinity)
-
-                        // Active Selection Dot
-                        if isSelected {
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 3.5, height: 3.5)
-                        } else {
-                            Circle()
-                                .fill(Color.clear)
-                                .frame(width: 3.5, height: 3.5)
-                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("Category_\(cat.id)")
+                        .accessibilityValue(isSelected ? "selected" : "unselected")
                     }
                 }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
-                .accessibilityIdentifier("Category_\(cat.id)")
-                .accessibilityValue(isSelected ? "selected" : "unselected")
-            }
+                .padding(.horizontal, 14)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            LinearGradient(
-                colors: [Color.black.opacity(0.5), Color.black.opacity(0.0)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        .padding(.vertical, 3)
     }
 }

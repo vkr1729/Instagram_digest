@@ -12,6 +12,9 @@ public struct SettingsSheetView: View {
     @Binding public var hideRanks: Bool
     @Binding public var feedSortOrder: String
 
+    public var onTapOffline: () -> Void
+    public var onTapManifesto: () -> Void
+
     public init(
         timeQuotaMinutes: Binding<Int>,
         enforcementMode: Binding<String>,
@@ -19,7 +22,9 @@ public struct SettingsSheetView: View {
         breatherEnabled: Binding<Bool>,
         isGrayscale: Binding<Bool>,
         hideRanks: Binding<Bool>,
-        feedSortOrder: Binding<String>
+        feedSortOrder: Binding<String>,
+        onTapOffline: @escaping () -> Void = {},
+        onTapManifesto: @escaping () -> Void = {}
     ) {
         self._timeQuotaMinutes = timeQuotaMinutes
         self._enforcementMode = enforcementMode
@@ -28,6 +33,8 @@ public struct SettingsSheetView: View {
         self._isGrayscale = isGrayscale
         self._hideRanks = hideRanks
         self._feedSortOrder = feedSortOrder
+        self.onTapOffline = onTapOffline
+        self.onTapManifesto = onTapManifesto
     }
 
     public var body: some View {
@@ -77,6 +84,39 @@ public struct SettingsSheetView: View {
                         Text("Chronological (Newest)").tag("chrono")
                     }
                     .pickerStyle(.segmented)
+                }
+                .listRowBackground(Color.white.opacity(0.08))
+
+                Section(header: Text("Features & Philosophy").foregroundColor(.white.opacity(0.6))) {
+                    Button {
+                        dismiss()
+                        onTapOffline()
+                    } label: {
+                        HStack {
+                            Label("Download All for Offline", systemImage: "arrow.down.circle")
+                                .foregroundColor(.white)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                    }
+                    .accessibilityIdentifier("OfflineIconButton")
+
+                    Button {
+                        dismiss()
+                        onTapManifesto()
+                    } label: {
+                        HStack {
+                            Label("The 10 Traps Manifesto", systemImage: "info.circle")
+                                .foregroundColor(.white)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                    }
+                    .accessibilityIdentifier("ManifestoIconButton")
                 }
                 .listRowBackground(Color.white.opacity(0.08))
             }
