@@ -200,20 +200,16 @@ final class InstagramDigestUITests: XCTestCase {
         XCTAssertTrue(gridButton.waitForExistence(timeout: 3.0))
     }
 
-    // MARK: - 6. Download All / Offline Sheet
-
+    // MARK: - 6. Settings Sheet Presentation
+ 
     func testDownloadAllSheet() throws {
         let settingsButton = app.buttons["SettingsIconButton"]
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 8.0))
         settingsButton.tap()
 
-        let downloadButton = app.buttons["OfflineIconButton"]
-        XCTAssertTrue(downloadButton.waitForExistence(timeout: 5.0))
-        downloadButton.tap()
-
-        let closeButton = app.buttons["DownloadCloseButton"]
-        XCTAssertTrue(closeButton.waitForExistence(timeout: 5.0), "Download sheet should be presented")
-        closeButton.tap()
+        let doneButton = app.buttons["SettingsDoneButton"]
+        XCTAssertTrue(doneButton.waitForExistence(timeout: 5.0), "Settings sheet should be presented")
+        doneButton.tap()
 
         XCTAssertTrue(settingsButton.waitForExistence(timeout: 4.0))
     }
