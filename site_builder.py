@@ -562,6 +562,40 @@ def _pages_bundle_is_remote(site_dir: Path) -> bool:
     return False
 
 
+_AMBIENT_GH_TOKEN_VARS = ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN")
+
+
+def _redact_secret(text: str | None, secret: str) -> str:
+    """Strip a secret (and its base64 header form) from git output before logging."""
+    out = text or ""
+    if secret:
+        import base64
+        out = out.replace(secret, "***")
+        out = out.replace(base64.b64encode(f"x-access-token:{secret}".encode()).decode(), "***")
+    return out
+
+
+def _gh_push_command(pat: str) -> tuple[list[str], dict[str, str]]:
+    """Build the gh-pages push command and environment.
+
+    With a PAT, authenticate via a one-shot http.extraheader so the token is
+    never written to site/.git/config, and drop the ambient credential helpers.
+    Without one, scrub stale GITHUB_TOKEN/GH_TOKEN exports so an expired shell
+    token cannot shadow the stored git credential for the right account.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _AMBIENT_GH_TOKEN_VARS}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if not pat:
+        return ["git", "push", "-f", "origin", "gh-pages"], env
+    import base64
+    basic = base64.b64encode(f"x-access-token:{pat}".encode()).decode()
+    return [
+        "git", "-c", "credential.helper=",
+        "-c", f"http.extraheader=Authorization: Basic {basic}",
+        "push", "-f", "origin", "gh-pages",
+    ], env
+
+
 def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.GH_PAGES_REPO) -> bool:
     """Deploy site_dir contents to orphan gh-pages branch with force push.
 
@@ -600,7 +634,8 @@ def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.
         subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=site_dir, check=True, timeout=300)
 
         logger.info("Pushing to origin gh-pages (force)...")
-        res = subprocess.run(["git", "push", "-f", "origin", "gh-pages"], cwd=site_dir, capture_output=True, text=True, timeout=300)
+        push_cmd, push_env = _gh_push_command(config.GH_PAGES_PAT)
+        res = subprocess.run(push_cmd, cwd=site_dir, capture_output=True, text=True, timeout=300, env=push_env)
         if res.returncode == 0:
             logger.info("Successfully deployed to GitHub Pages! Live at https://vkr1729.github.io/Instagram_digest/")
             # Rec #6: confirm Pages actually serves the new week the way the
@@ -654,7 +689,7 @@ def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.
                     logger.warning("Could not record deployed week: %s", exc)
             return True
         else:
-            logger.warning("Failed pushing to gh-pages: %s", res.stderr)
+            logger.warning("Failed pushing to gh-pages: %s", _redact_secret(res.stderr, config.GH_PAGES_PAT))
             return False
     except Exception as exc:
         logger.exception("Error during GitHub Pages deployment: %s", exc)

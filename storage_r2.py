@@ -507,3 +507,43 @@ def upload_reel_to_r2(
     if config.R2_ACCOUNT_ID:
         return ""
     return f"/videos/{week_id}/{key_name}"
+
+
+def upload_manifest_to_r2(manifest_path: Path, key: str = "data.json") -> str | None:
+    """Upload the compiled site/data.json manifest to the R2 bucket root.
+
+    Primary publication path for the iOS app, independent of GitHub Pages.
+    Refuses an unreadable, non-object, or item-less manifest so a bad build can
+    never overwrite the last good one. Returns the public URL, or None when
+    skipped/failed. Never raises.
+    """
+    try:
+        raw = Path(manifest_path).read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Manifest %s unreadable; skipping R2 manifest upload: %s", manifest_path, exc)
+        return None
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        logger.error("Manifest %s has no items; refusing to publish it to R2.", manifest_path)
+        return None
+
+    s3 = get_s3_client()
+    if not (s3 and config.R2_PUBLIC_DOMAIN and config.R2_BUCKET_NAME):
+        logger.warning("R2 not fully configured; skipping manifest upload to R2.")
+        return None
+
+    public_url = f"{config.R2_PUBLIC_DOMAIN.rstrip('/')}/{key}"
+    try:
+        s3.put_object(
+            Bucket=config.R2_BUCKET_NAME,
+            Key=key,
+            Body=raw,
+            ContentType="application/json",
+            CacheControl="no-cache, no-store, must-revalidate",
+        )
+        logger.info("Uploaded manifest (%d items) to R2 -> %s", len(items), public_url)
+        return public_url
+    except Exception as exc:
+        logger.error("Failed uploading manifest to R2: %s", exc)
+        return None

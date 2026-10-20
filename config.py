@@ -73,6 +73,7 @@ R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCO
 
 # GitHub Deployment
 GH_PAGES_REPO = os.getenv("GH_PAGES_REPO", "https://github.com/vkr1729/Instagram_digest.git").strip()
+GH_PAGES_PAT = (os.getenv("GH_PAGES_PAT") or os.getenv("GITHUB_PAT") or "").strip()
 PAGES_BASE_URL = os.getenv("PAGES_BASE_URL", "https://vkr1729.github.io/Instagram_digest").strip().rstrip("/")
 BOOKMARK_API_BASE = os.getenv("BOOKMARK_API_BASE", "").strip().rstrip("/")
 

@@ -4,7 +4,9 @@ import Foundation
 public actor DigestDataService {
     public static let shared = DigestDataService()
 
-    public static let defaultManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data.json")!
+    public static let primaryManifestURL = URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/data.json")!
+    public static let fallbackManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data.json")!
+    public static let defaultManifestURL = primaryManifestURL
     public static let defaultBookmarksURL = URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/manifest.json")!
 
     private let session: URLSession
@@ -40,25 +42,34 @@ public actor DigestDataService {
             }
         }
 
-        // 2. Attempt network fetch
-        do {
-            var request = URLRequest(url: url)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            request.timeoutInterval = 15.0
+        // 2. Attempt network fetch (try primary, fallback to secondary if applicable)
+        let urlsToAttempt: [URL]
+        if url == Self.primaryManifestURL {
+            urlsToAttempt = [Self.primaryManifestURL, Self.fallbackManifestURL]
+        } else {
+            urlsToAttempt = [url]
+        }
 
-            let (data, response) = try await session.data(for: request)
-            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
-                // Never cache an empty manifest — it would brick offline launch.
-                if !manifest.items.isEmpty {
-                    try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
-                    try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
-                    try? data.write(to: cacheFileURL, options: .atomic)
+        for attemptURL in urlsToAttempt {
+            do {
+                var request = URLRequest(url: attemptURL)
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                request.timeoutInterval = 15.0
+
+                let (data, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
+                    // Never cache an empty manifest — it would brick offline launch.
+                    if !manifest.items.isEmpty {
+                        try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
+                        try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
+                        try? data.write(to: cacheFileURL, options: .atomic)
+                    }
+                    return manifest
                 }
-                return manifest
+            } catch {
+                // Try next URL or fall through to cache
             }
-        } catch {
-            // Network fetch failed, fall through to cache
         }
 
         // 3. Fallback to cached manifest

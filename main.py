@@ -316,6 +316,62 @@ def _verify_digest_r2_keys(ranked_reels: list[dict[str, Any]]) -> list[str]:
     return missing
 
 
+def _publish_manifest_to_r2() -> str | None:
+    """Publish site/data.json to R2 (the app's primary manifest host).
+
+    Gated like a deploy: needs >= MIN_DEPLOY_ITEMS items and, after a HEAD
+    check of every referenced R2 video, >= MIN_DEPLOY_ITEMS definitely-present
+    ones. Records data/deployed_week.json once the manifest is live. Returns
+    the public URL, or None when skipped/failed. Never raises.
+    """
+    try:
+        manifest_path = config.SITE_DIR / "data.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        items = payload.get("items") if isinstance(payload, dict) else None
+        items = [i for i in (items or []) if isinstance(i, dict)]
+        if len(items) < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Manifest has %d items (minimum %d); not publishing to R2.",
+                len(items), MIN_DEPLOY_ITEMS,
+            )
+            return None
+        missing = _verify_digest_r2_keys(items)
+        if missing and len(items) - len(missing) < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "%d of %d reels missing from R2; not publishing manifest over the previous week.",
+                len(missing), len(items),
+            )
+            return None
+        url = storage_r2.upload_manifest_to_r2(manifest_path)
+        if url:
+            import atomic_io
+            atomic_io.durable_write_json(
+                config.DATA_DIR / "deployed_week.json",
+                {"run_date": str(payload.get("run_date") or "")},
+            )
+        return url
+    except Exception as exc:
+        logger.warning("R2 manifest publication failed: %s", exc)
+        return None
+
+
+def _publish_digest() -> bool:
+    """Publish the compiled site: R2 manifest first (app), GitHub Pages second.
+
+    Returns True when the app is served (R2 live or Pages deployed). A Pages
+    failure alone is a warning, never an abort.
+    """
+    r2_url = _publish_manifest_to_r2()
+    pages_ok = site_builder.deploy_to_gh_pages()
+    if not pages_ok and r2_url:
+        logger.warning(
+            "GitHub Pages deploy failed, but the manifest is live on R2 (%s). "
+            "The app continues normally; Pages is the secondary web mirror.",
+            r2_url,
+        )
+    return pages_ok or bool(r2_url)
+
+
 def _purge_current_week_stray_r2_keys(week_id: str, ranked_ids: set[str]) -> list[str]:
     """Delete current-week R2 keys not referenced by the final ranked list.
 
@@ -632,8 +688,8 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
             logger.error("Reconciled digest has %d items (< %d); refusing to deploy.",
                          len(items), MIN_DEPLOY_ITEMS)
             return 2
-        if not site_builder.deploy_to_gh_pages():
-            _alert_sync_abort("deploy failed", "reconcile: git push to gh-pages failed")
+        if not _publish_digest():
+            _alert_sync_abort("deploy failed", "reconcile: R2 manifest and gh-pages push both failed")
             return 2
     # Reconcile uploads media but never scrapes: kind="weekly" would move the
     # next weekly's anchor here and shrink its window to "since the reconcile".
@@ -2400,17 +2456,16 @@ def _run_full_sync(
         r2_uploaded_urls=uploaded_url_map if not dry_run else None,
     )
 
-    # 9. Deploy to GitHub Pages (Viability & Minimum items gate)
+    # 9. Publish: R2 manifest (primary, app) then GitHub Pages (secondary).
     if deploy and not dry_run:
-        if not site_builder.deploy_to_gh_pages():
-            # P0-1: a failed push must never exit 0 with a "Digest Ready"
-            # email — Pages still serves the previous week. Exit 2 means
-            # "main.py already emailed" to run_weekly.sh.
+        if not _publish_digest():
+            # P0-1: a failed publish must never exit 0 with a "Digest Ready"
+            # email. Exit 2 means "main.py already emailed" to run_weekly.sh.
             save_last_run_info(week_id, since_timestamp=since_timestamp, kind=kind)
             _alert_sync_abort(
                 "deploy failed",
-                "git push to gh-pages failed; Pages and the app still serve the previous week. "
-                "Fix the token/network, then run: main.py --deploy")
+                "neither the R2 manifest nor git push to gh-pages succeeded; the app still serves "
+                "the previous week. Fix the R2/GitHub credentials, then run: main.py --deploy")
             return 2
 
     if not dry_run:
@@ -2925,8 +2980,8 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             )
             _clear_expand_progress()
             return 2
-        if not site_builder.deploy_to_gh_pages():
-            _alert_sync_abort("deploy failed", "expand: git push to gh-pages failed")
+        if not _publish_digest():
+            _alert_sync_abort("deploy failed", "expand: R2 manifest and gh-pages push both failed")
             return 2
 
     _clear_expand_progress()
@@ -2975,14 +3030,14 @@ def _build_only(deploy: bool = False) -> int:
 
 
 def _deploy_only() -> int:
-    """Deploy the compiled site to GitHub Pages (lock must be held)."""
+    """Deploy the compiled site to GitHub Pages and Cloudflare R2 (lock must be held)."""
     if _digest_item_count() < MIN_DEPLOY_ITEMS:
         logger.error(
             "Digest has fewer than %d items; refusing to deploy over the previous digest.",
             MIN_DEPLOY_ITEMS,
         )
         return 2
-    return 0 if site_builder.deploy_to_gh_pages() else 1
+    return 0 if _publish_digest() else 1
 
 
 def cleanup_transient_checkpoints(week_id: str | None = None) -> None:
