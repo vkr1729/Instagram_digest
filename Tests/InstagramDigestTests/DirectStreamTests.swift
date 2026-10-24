@@ -826,4 +826,113 @@ final class DirectStreamTests: XCTestCase {
         let bytes = coordinator.calculateReclaimableRolloverBytes(incomingWeekID: "2026-10-24", pathResolver: pathResolver)
         XCTAssertGreaterThanOrEqual(bytes, 50_000)
     }
+
+    // MARK: - 5. GitHub Bookmark Sync & Export/Import Tests
+
+    @MainActor
+    func testExportBookmarksJSON() throws {
+        let bm1 = BookmarkItem(
+            reelID: "test_reel_1",
+            weekID: "2026-10-24",
+            creatorHandle: "creator_one",
+            caption: "Caption One",
+            rank: 1,
+            videoUrl: URL(string: "https://example.com/video1.mp4"),
+            localStatus: .cached,
+            sizeBytes: 12345
+        )
+        let bm2 = BookmarkItem(
+            reelID: "test_reel_2",
+            weekID: "2026-10-24",
+            creatorHandle: "creator_two",
+            caption: "Caption Two",
+            rank: 2,
+            videoUrl: URL(string: "https://example.com/video2.mp4"),
+            localStatus: .evicted,
+            sizeBytes: 67890
+        )
+
+        let service = GitHubBookmarkSyncService.shared
+        guard let exportURL = service.exportBookmarksJSON(bookmarks: [bm1, bm2]) else {
+            XCTFail("Failed to export bookmarks JSON")
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: exportURL) }
+
+        let data = try Data(contentsOf: exportURL)
+        let dtos = try JSONDecoder().decode([BookmarkSyncDTO].self, from: data)
+        XCTAssertEqual(dtos.count, 2)
+        XCTAssertEqual(dtos[0].id, "test_reel_1")
+        XCTAssertEqual(dtos[0].creator_handle, "creator_one")
+        XCTAssertEqual(dtos[0].video_asset_name, "test_reel_1.mp4")
+        XCTAssertEqual(dtos[1].id, "test_reel_2")
+    }
+
+    @MainActor
+    func testImportBookmarksJSON() throws {
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedReel.self, DailyProgress.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let json = """
+        [
+            {
+                "id": "imported_1",
+                "creator_handle": "alice",
+                "caption": "Imported reel 1",
+                "canonical_url": "https://www.instagram.com/reel/imported_1/",
+                "thumbnail_url": "https://example.com/thumb1.jpg",
+                "size_bytes": 5000000,
+                "bookmarked_at": "2026-10-24T12:00:00Z"
+            },
+            {
+                "id": "imported_2",
+                "creator_handle": "bob",
+                "caption": "Imported reel 2",
+                "canonical_url": "https://www.instagram.com/reel/imported_2/",
+                "thumbnail_url": "https://example.com/thumb2.jpg",
+                "size_bytes": 6000000,
+                "bookmarked_at": "2026-10-24T12:05:00Z"
+            }
+        ]
+        """.data(using: .utf8)!
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test_import_\(UUID().uuidString).json")
+        try json.write(to: tempFile)
+        defer { try? FileManager.default.removeItem(at: tempFile) }
+
+        let service = GitHubBookmarkSyncService.shared
+        let importedCount = try service.importBookmarks(from: tempFile, context: context)
+        XCTAssertEqual(importedCount, 2)
+
+        let descriptor = FetchDescriptor<BookmarkItem>()
+        let items = try context.fetch(descriptor)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items.contains { $0.reelID == "imported_1" })
+        XCTAssertTrue(items.contains { $0.reelID == "imported_2" })
+    }
+
+    @MainActor
+    func testSyncWithGitHubRequiresValidParams() async throws {
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedReel.self, DailyProgress.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let service = GitHubBookmarkSyncService.shared
+        do {
+            _ = try await service.syncWithGitHub(repo: "", pat: "token", localBookmarks: [], context: context)
+            XCTFail("Should throw for empty repo")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("not specified"))
+        }
+
+        do {
+            _ = try await service.syncWithGitHub(repo: "owner/repo", pat: "", localBookmarks: [], context: context)
+            XCTFail("Should throw for empty PAT")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("required"))
+        }
+    }
 }

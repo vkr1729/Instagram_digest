@@ -143,9 +143,9 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         }
         self.videoUrl = validVideoURL
 
-        // Resolve thumbnail URL, preferring stable GitHub Pages CDN over expired fbcdn links
+        // Resolve thumbnail URL, preferring vertical portrait poster over horizontal landscape
         var resolvedThumb: URL? = nil
-        for key in [CodingKeys.thumbnailUrl, .altThumbnailUrl, .camelThumbnailUrl, .poster] {
+        for key in [CodingKeys.poster, CodingKeys.thumbnailUrl, .altThumbnailUrl, .camelThumbnailUrl] {
             if let str = try? container.decode(String.self, forKey: key),
                let url = httpURL(from: str) {
                 if url.host?.contains("fbcdn.net") != true {

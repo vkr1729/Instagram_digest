@@ -549,13 +549,20 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
         report["notes"].append(f"Digest unreadable: {exc}")
     try:
         import config as _cfg3
-        import storage_r2 as _r2
-        cur, _n = _r2.get_bucket_storage_usage()
-        quota = int(getattr(_cfg3, "R2_STORAGE_QUOTA_BYTES", 8 * 1024**3))
-        report["r2_gb"] = f"{cur / 1024**3:.2f}" if cur >= 0 else "?"
-        report["quota_gb"] = f"{quota / 1024**3:.0f}"
-        report["r2_ok"] = 0 <= cur < quota
-        report["r2_status"] = f"{report['r2_gb']}/{report['quota_gb']} GB"
+        if getattr(_cfg3, "DIRECT_STREAM_MODE", False):
+            report["r2_gb"] = "0.00"
+            quota = int(getattr(_cfg3, "R2_STORAGE_QUOTA_BYTES", 8 * 1024**3))
+            report["quota_gb"] = f"{quota / 1024**3:.0f}"
+            report["r2_ok"] = True
+            report["r2_status"] = "0.00 GB (Direct-Meta Mode)"
+        else:
+            import storage_r2 as _r2
+            cur, _n = _r2.get_bucket_storage_usage()
+            quota = int(getattr(_cfg3, "R2_STORAGE_QUOTA_BYTES", 8 * 1024**3))
+            report["r2_gb"] = f"{cur / 1024**3:.2f}" if cur >= 0 else "?"
+            report["quota_gb"] = f"{quota / 1024**3:.0f}"
+            report["r2_ok"] = 0 <= cur < quota
+            report["r2_status"] = f"{report['r2_gb']}/{report['quota_gb']} GB"
     except Exception as exc:
         report["r2_ok"] = False
         report["r2_status"] = "unreachable"
@@ -563,9 +570,8 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
     try:
         import config as _cfg4
         base = str(getattr(_cfg4, "PAGES_BASE_URL", "")).rstrip("/")
-        # Rec #6: check what the phone actually gets (data.json content),
-        # not just that Pages answers HTTP 200.
-        with _url.urlopen(base + "/data.json", timeout=20) as r:
+        manifest_name = "data_direct.json" if getattr(_cfg4, "DIRECT_STREAM_MODE", False) else "data.json"
+        with _url.urlopen(f"{base}/{manifest_name}", timeout=20) as r:
             code = r.getcode()
             try:
                 live = _json.loads(r.read().decode("utf-8", "replace"))

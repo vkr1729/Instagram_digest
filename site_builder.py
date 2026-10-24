@@ -113,14 +113,15 @@ def write_direct_manifest(
         if reel_id and pages_base:
             thumb_file = thumb_dir / f"{reel_id}.jpg"
             portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
-            if thumb_file.exists():
+            # Prioritize vertical 9:16 portrait for mobile app reel cards & grid gallery
+            if portrait_file.exists():
+                it["thumbnail"] = f"{pages_base}/thumbnails/{reel_id}_portrait.jpg"
+                it["poster"] = f"{pages_base}/thumbnails/{reel_id}_portrait.jpg"
+            elif thumb_file.exists():
                 it["thumbnail"] = f"{pages_base}/thumbnails/{reel_id}.jpg"
+                it["poster"] = f"{pages_base}/thumbnails/{reel_id}.jpg"
             else:
                 it["thumbnail"] = f"{pages_base}/apple-touch-icon.png"
-
-            if portrait_file.exists():
-                it["poster"] = f"{pages_base}/thumbnails/{reel_id}_portrait.jpg"
-            else:
                 it["poster"] = it["thumbnail"]
 
         size_bytes = it.get("size_bytes")

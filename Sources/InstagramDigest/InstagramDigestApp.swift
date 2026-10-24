@@ -105,6 +105,7 @@ struct FeedMainView: View {
 
     @State private var manifest: DigestManifest?
     @State private var allReels: [ReelItem] = []
+    @State private var rawManifestItems: [ReelItem] = []
     @State private var isLoading: Bool = true
     @State private var errorMessage: String?
 
@@ -325,8 +326,7 @@ struct FeedMainView: View {
                         StoryCategoryBarView(
                             totalCount: allReels.count,
                             selectedCategoryId: selectedCategoryId,
-                            offlineCaption: offlineActive
-                                ? "Offline · \(pool.currentItems.count) downloaded" : "",
+                            offlineCaption: "",
                             onSelectCategory: { newCat in
                                 guard let m = manifest else { return }
                                 // B14: only adopt the selection when it matched
@@ -350,19 +350,6 @@ struct FeedMainView: View {
                                 }
                             }
                         )
-
-                        if DigestDataService.directMode, let m = manifest, !allReels.isEmpty {
-                            OfflineCacheBanner(
-                                reels: allReels,
-                                weekID: m.weekId,
-                                onTap: {
-                                    wasPlayingBeforeSheet = pool.isPlaying
-                                    pool.pause()
-                                    showDownloadSheet = true
-                                }
-                            )
-                            .padding(.top, 4)
-                        }
                     }
                     .background(
                         LinearGradient(
@@ -450,6 +437,7 @@ struct FeedMainView: View {
                     showDownloadSheet = true
                 }
             })
+            .grayscaleIf(isGrayscale)
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("TriggerDownloadAllNotification"))) { _ in
             showBookmarksSheet = false
@@ -506,6 +494,10 @@ struct FeedMainView: View {
             pool.breatherEnabled = breatherEnabled
             pool.isGrayscale = isGrayscale
             pool.hideRanks = hideRanks
+            applyFeedSortOrder(feedSortOrder)
+        }
+        .onChange(of: feedSortOrder) { _, newOrder in
+            applyFeedSortOrder(newOrder)
         }
         .onChange(of: scenePhase) { _, phase in
             // Rec 2: quiet foreground refresh — the new week appears without
@@ -552,7 +544,10 @@ struct FeedMainView: View {
         .onAppear {
             setupPoolCallbacks()
         }
-        .alert("Link Cloudflare Owner Key", isPresented: $showOwnerKeyAlert) {
+        .alert("Link Cloudflare Owner Key", isPresented: Binding(
+            get: { !DigestDataService.directMode && showOwnerKeyAlert },
+            set: { showOwnerKeyAlert = $0 }
+        )) {
             TextField("Enter Owner Key", text: $ownerKeyInput)
             Button("Save & Sync") {
                 let trimmed = ownerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -583,7 +578,9 @@ struct FeedMainView: View {
             do {
                 let fetched = try await DigestDataService.shared.fetchManifest()
                 self.manifest = fetched
-                self.allReels = fetched.items
+                self.rawManifestItems = fetched.items
+                let ordered = sortedReels(from: fetched.items, order: feedSortOrder)
+                self.allReels = ordered
                 self.isLoading = false
 
                 // Check AppState for weekly rollover and purge stale week cache
@@ -669,9 +666,12 @@ struct FeedMainView: View {
                 } else {
                     self.watchSeconds = UserDefaults.standard.double(forKey: "watchSeconds_\(fetched.weekId)")
                 }
-                if !fetched.items.isEmpty {
-                    self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: resumeIndex)
-                    // Keep chrome visible on initial load so the user sees the header, creator, and offline banner
+                if !ordered.isEmpty {
+                    let resumeID = fetched.items.indices.contains(resumeIndex) ? fetched.items[resumeIndex].id : nil
+                    let initialIndex = resumeID.flatMap { id in ordered.firstIndex { $0.id == id } } ?? resumeIndex
+                    self.activeIndex = initialIndex
+                    self.pool.setReels(ordered, weekID: fetched.weekId, startIndex: initialIndex)
+                    // Keep chrome visible on initial load so the user sees the header and creator
                     self.isChromeVisible = true
                 }
                 // Rec 4: the manifest arrived after the .task ordering — if
@@ -709,6 +709,27 @@ struct FeedMainView: View {
                 self.isLoading = false
             }
         }
+    }
+
+    // MARK: - Feed Sorting Helpers
+
+    private func sortedReels(from items: [ReelItem], order: String) -> [ReelItem] {
+        if order == "chrono" {
+            return items.sorted { ($0.takenAt ?? 0) > ($1.takenAt ?? 0) }
+        }
+        return items
+    }
+
+    private func applyFeedSortOrder(_ newOrder: String) {
+        UserDefaults.standard.set(newOrder, forKey: "ig_digest_sort_order")
+        guard let weekID = manifest?.weekId, !rawManifestItems.isEmpty else { return }
+        let currentID = pool.currentItems.isEmpty ? nil
+            : pool.currentItems[min(max(0, activeIndex), pool.currentItems.count - 1)].id
+        let ordered = sortedReels(from: rawManifestItems, order: newOrder)
+        self.allReels = ordered
+        let newIdx = currentID.flatMap { id in ordered.firstIndex { $0.id == id } } ?? 0
+        self.activeIndex = newIdx
+        self.pool.setReels(ordered, weekID: weekID, startIndex: newIdx)
     }
 
     // MARK: - Rec 4 offline playlist
@@ -985,19 +1006,19 @@ struct FeedMainView: View {
         } else {
             BookmarkController.add(reel: reel, weekID: weekID, context: modelContext)
 
-            // Rec 3: ask for the owner key once — afterwards it lives under
-            // "Link Key" in Bookmarks. Pending remote backups retry on launch.
-            let currentKey = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
-            if currentKey.isEmpty && !UserDefaults.standard.bool(forKey: "owner_key_prompted") {
-                UserDefaults.standard.set(true, forKey: "owner_key_prompted")
-                ownerKeyInput = ""
-                showOwnerKeyAlert = true
-                // Owner-key alert is modal and covers the pop: delay the pop
-                // so it shows after the UAT's Later-tap, not behind the alert.
-                triggerBookmarkPopAnimation(delayed: true)
-            } else {
-                triggerBookmarkPopAnimation()
+            if !DigestDataService.directMode {
+                let currentKey = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
+                if currentKey.isEmpty && !UserDefaults.standard.bool(forKey: "owner_key_prompted") {
+                    UserDefaults.standard.set(true, forKey: "owner_key_prompted")
+                    ownerKeyInput = ""
+                    showOwnerKeyAlert = true
+                    // Owner-key alert is modal and covers the pop: delay the pop
+                    // so it shows after the UAT's Later-tap, not behind the alert.
+                    triggerBookmarkPopAnimation(delayed: true)
+                    return
+                }
             }
+            triggerBookmarkPopAnimation()
         }
     }
 

@@ -20,13 +20,13 @@ public struct BookmarksSheet: View {
     @State private var isPurgingStorage: Bool = false
     @State private var errorMessage: String?
     @State private var activePlaybackIndex: Int? = nil
-    @State private var showOwnerKeyPrompt: Bool = false
-    @State private var ownerKeyInput: String = ""
-    @AppStorage("digest_owner_key") private var storedOwnerKey: String = ""
-
-    private var hasOwnerKey: Bool {
-        !storedOwnerKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    @AppStorage("ig_digest_grayscale_mode") private var isGrayscale: Bool = false
+    @AppStorage("gh_bookmark_repo") private var ghRepo: String = "vkreddy1729-ops/ig-bookmarks-2026"
+    @AppStorage("gh_bookmark_pat") private var ghPAT: String = ""
+    @State private var showGitHubSyncSheet: Bool = false
+    @State private var showFileImporter: Bool = false
+    @State private var exportShareURL: URL? = nil
+    @State private var syncStatusMessage: String? = nil
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -79,20 +79,6 @@ public struct BookmarksSheet: View {
                                 }
                                 Spacer()
 
-                                // Owner Key Link Button
-                                Button {
-                                    ownerKeyInput = storedOwnerKey
-                                    showOwnerKeyPrompt = true
-                                } label: {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: hasOwnerKey ? "key.fill" : "key")
-                                        Text(hasOwnerKey ? "Key Linked" : "Link Key")
-                                    }
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(hasOwnerKey ? .yellow : .cyan)
-                                }
-                                .accessibilityIdentifier("LinkOwnerKeyButton")
-
                                 // Free Local Storage Action Button
                                 Button {
                                     performFreeStorage()
@@ -113,15 +99,58 @@ public struct BookmarksSheet: View {
                         .padding(16)
                         .background(Color.white.opacity(0.06))
                     } else {
-                        // Direct mode header: suppresses legacy R2 1.5GB bar & Free Local Storage button
-                        HStack {
-                            Label("\(bookmarks.count) Saved Reels", systemImage: "bookmark.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
-                                .accessibilityIdentifier("BookmarksCountLabel")
-                            Spacer()
+                        // Direct mode header: provides Export, Import, and GitHub Sync
+                        VStack(spacing: 8) {
+                            HStack {
+                                Label("\(bookmarks.count) Saved Reels", systemImage: "bookmark.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.9))
+                                    .accessibilityIdentifier("BookmarksCountLabel")
+
+                                Spacer()
+
+                                Menu {
+                                    Button {
+                                        if let url = GitHubBookmarkSyncService.shared.exportBookmarksJSON(bookmarks: bookmarks) {
+                                            exportShareURL = url
+                                        }
+                                    } label: {
+                                        Label("Export Bookmarks (JSON)", systemImage: "square.and.arrow.up")
+                                    }
+
+                                    Button {
+                                        showFileImporter = true
+                                    } label: {
+                                        Label("Import Bookmarks (JSON)", systemImage: "square.and.arrow.down")
+                                    }
+
+                                    Button {
+                                        showGitHubSyncSheet = true
+                                    } label: {
+                                        Label("GitHub Sync", systemImage: "arrow.triangle.2.circlepath")
+                                    }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "ellipsis.circle")
+                                        Text("Backup & Sync")
+                                    }
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.cyan)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.white.opacity(0.08))
+                                    .cornerRadius(6)
+                                }
+                            }
+
+                            if let msg = syncStatusMessage {
+                                Text(msg)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.green)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
-                        .padding(16)
+                        .padding(14)
                         .background(Color.white.opacity(0.06))
                     }
 
@@ -162,7 +191,9 @@ public struct BookmarksSheet: View {
                                     } label: {
                                         ZStack(alignment: .bottomLeading) {
                                             AsyncThumbnailView(url: bookmark.thumbnailUrl, reelID: bookmark.reelID, weekID: bookmark.weekID)
-                                                .frame(height: 170)
+                                                .aspectRatio(9/16, contentMode: .fill)
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: 215)
                                                 .clipped()
 
                                             LinearGradient(
@@ -276,23 +307,40 @@ public struct BookmarksSheet: View {
                 await refreshLedger()
                 await retryPendingRemoteBookmarks()
             }
-            .alert("Cloudflare Owner Key", isPresented: $showOwnerKeyPrompt) {
-                TextField("Owner Key", text: $ownerKeyInput)
-                Button("Save") {
-                    let trimmed = ownerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    storedOwnerKey = trimmed
-                    UserDefaults.standard.set(trimmed, forKey: "digest_owner_key")
-                }
-                if hasOwnerKey {
-                    Button("Unlink Key", role: .destructive) {
-                        storedOwnerKey = ""
-                        UserDefaults.standard.removeObject(forKey: "digest_owner_key")
+            .sheet(isPresented: $showGitHubSyncSheet) {
+                GitHubSyncModal(
+                    repo: $ghRepo,
+                    pat: $ghPAT,
+                    localBookmarks: bookmarks,
+                    context: modelContext,
+                    onSuccess: { msg in
+                        syncStatusMessage = msg
                     }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Enter the OWNER_KEY secret configured in your Cloudflare Worker to enable Telegram sync and R2 bookmarks.")
+                )
             }
+            .sheet(item: Binding<IdentifiableShareURL?>(
+                get: { exportShareURL.map { IdentifiableShareURL(url: $0) } },
+                set: { exportShareURL = $0?.url }
+            )) { identifiable in
+                ActivityView(activityItems: [identifiable.url])
+            }
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [.json]
+            ) { result in
+                switch result {
+                case .success(let url):
+                    do {
+                        let count = try GitHubBookmarkSyncService.shared.importBookmarks(from: url, context: modelContext)
+                        syncStatusMessage = "Successfully imported \(count) bookmarks!"
+                    } catch {
+                        errorMessage = "Import failed: \(error.localizedDescription)"
+                    }
+                case .failure(let error):
+                    errorMessage = "File selection cancelled: \(error.localizedDescription)"
+                }
+            }
+            .grayscaleIf(isGrayscale)
         }
     }
 
@@ -301,6 +349,7 @@ public struct BookmarksSheet: View {
     }
 
     private func retryPendingRemoteBookmarks() async {
+        if DigestDataService.directMode { return }
         // Rec 3: under -ui-testing the Worker is unreachable by design, so
         // every CI bookmark stays pending and the badge XCUITest can see it.
         // Skipping the doomed POST keeps the test fast and hermetic.
@@ -545,6 +594,23 @@ public struct BookmarkPlayerOverlay: View {
                         }
                         .padding(.top, 4)
                         .accessibilityIdentifier("BookmarkPlayerRetryButton")
+
+                        if let igUrl = bm.canonicalUrl {
+                            Link(destination: igUrl) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "safari")
+                                    Text("Open on Instagram")
+                                }
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.18))
+                                .cornerRadius(8)
+                            }
+                            .padding(.top, 4)
+                            .accessibilityIdentifier("BookmarkPlayerOpenInstagramButton")
+                        }
                     }
                 }
                 .padding(24)
@@ -830,19 +896,14 @@ public struct BookmarkPlayerOverlay: View {
             return
         }
 
-        if !DigestDataService.directMode {
-            if let remoteURL = bookmark.videoUrl {
-                isResolving = false
-                playMedia(url: remoteURL, isLocal: false)
-            } else {
-                isResolving = false
-                resolutionError = "No playable stream URL available"
-                resolutionErrorIcon = "exclamationmark.triangle"
-            }
+        // Play directly if a video stream URL is already stored (Meta CDN, Cloudflare R2, or remote backup)
+        if let directURL = bookmark.videoUrl {
+            isResolving = false
+            playMedia(url: directURL, isLocal: false)
             return
         }
 
-        // Direct stream mode: resolve via Cobalt API
+        // Fallback: resolve via Cobalt API
         guard let canonical = bookmark.canonicalUrl else {
             isResolving = false
             resolutionError = "No playable stream URL available"
@@ -1046,4 +1107,9 @@ public struct BookmarkVideoContainer: UIViewRepresentable {
         uiView.playerLayer.videoGravity = .resizeAspect
         uiView.setNeedsLayout()
     }
+}
+
+public struct IdentifiableShareURL: Identifiable {
+    public let id = UUID()
+    public let url: URL
 }

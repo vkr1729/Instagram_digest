@@ -69,7 +69,9 @@ public struct GridView: View {
                                 ZStack(alignment: .bottomLeading) {
                                     // Thumbnail (prefers offline cache from Download All)
                                     AsyncThumbnailView(url: reel.thumbnailUrl, reelID: reel.id, weekID: weekID)
-                                        .frame(height: 170)
+                                        .aspectRatio(9/16, contentMode: .fill)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 215)
                                         .clipped()
                                         .opacity(isWatched ? 0.6 : 1.0)
 

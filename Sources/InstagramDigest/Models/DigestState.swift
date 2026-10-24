@@ -95,6 +95,9 @@ public final class BookmarkItem {
 
     public var thumbnailUrl: URL? {
         if let s = thumbnailUrlString, let u = URL(string: s), u.host?.contains("fbcdn.net") != true {
+            if s.contains("/thumbnails/") && !s.contains("_portrait.jpg") {
+                return URL(string: s.replacingOccurrences(of: ".jpg", with: "_portrait.jpg"))
+            }
             return u
         }
         return URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(reelID)_portrait.jpg")

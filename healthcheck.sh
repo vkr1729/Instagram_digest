@@ -46,6 +46,9 @@ $PY - <<'EOF' || fail "R2 unreachable or quota headroom insufficient"
 import sys
 sys.path.insert(0, ".")
 import config, storage_r2
+if getattr(config, "DIRECT_STREAM_MODE", False):
+    print("ok: DIRECT_STREAM_MODE active; skipping R2 check (0 GB used)")
+    sys.exit(0)
 est = storage_r2.estimate_weekly_batch_bytes()
 cur, n = storage_r2.get_bucket_storage_usage()
 if cur < 0:
