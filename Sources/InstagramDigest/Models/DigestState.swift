@@ -62,7 +62,7 @@ public final class BookmarkItem {
         self.creatorHandle = creatorHandle
         self.caption = caption
         self.rank = rank
-        self.videoUrlString = videoUrl?.absoluteString
+        self.videoUrlString = videoUrl?.absoluteString ?? ""
         self.thumbnailUrlString = thumbnailUrl?.absoluteString
         let safeReel = LibraryPathResolver.sanitizeComponent(reelID, fallback: "unknown")
         self.canonicalUrlString = canonicalUrl?.absoluteString ?? "https://www.instagram.com/reel/\(safeReel)/"
