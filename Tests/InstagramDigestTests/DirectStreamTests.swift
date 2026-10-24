@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import SwiftData
 @testable import InstagramDigest
 
 /// URLProtocol mock for hermetic testing of BookmarkResolver and DigestDataService network requests.
@@ -870,7 +871,7 @@ final class DirectStreamTests: XCTestCase {
 
     @MainActor
     func testImportBookmarksJSON() throws {
-        let schema = Schema([BookmarkItem.self, AppState.self, WatchedReel.self, DailyProgress.self])
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedEvent.self, DailyProgress.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -915,7 +916,7 @@ final class DirectStreamTests: XCTestCase {
 
     @MainActor
     func testSyncWithGitHubRequiresValidParams() async throws {
-        let schema = Schema([BookmarkItem.self, AppState.self, WatchedReel.self, DailyProgress.self])
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedEvent.self, DailyProgress.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
