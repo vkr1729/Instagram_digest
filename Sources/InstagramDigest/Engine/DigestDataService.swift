@@ -1,13 +1,27 @@
 import Foundation
 
+public enum DigestDataServiceError: Error, LocalizedError {
+    case emptyManifest
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyManifest:
+            return "Digest manifest is empty"
+        }
+    }
+}
+
 /// Service responsible for fetching remote or cached data.json manifest.
 public actor DigestDataService {
     public static let shared = DigestDataService()
 
+    public static let directManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data_direct.json")!
     public static let primaryManifestURL = URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/data.json")!
     public static let fallbackManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data.json")!
-    public static let defaultManifestURL = primaryManifestURL
+    public static let defaultManifestURL = directManifestURL
+    public static let directManifestCacheFilename = "manifest_cache_direct.json"
     public static let defaultBookmarksURL = URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/bookmarks/manifest.json")!
+    public static let directMode: Bool = true
 
     private let session: URLSession
     private let pathResolver: LibraryPathResolver
@@ -21,11 +35,13 @@ public actor DigestDataService {
     }
 
     /// Fetches manifest from network with fallback to cached manifest on disk
-    public func fetchManifest(from url: URL = defaultManifestURL) async throws -> DigestManifest {
-        let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent("manifest_cache.json")
+    public func fetchManifest(from url: URL = defaultManifestURL, bypassCache: Bool = false) async throws -> DigestManifest {
+        let cacheFilename = (url == Self.directManifestURL) ? Self.directManifestCacheFilename : "manifest_cache.json"
+        let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent(cacheFilename)
+        let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing") || CommandLine.arguments.contains("-ui-testing")
 
         // 0. In UI test environment, prioritize bundled manifest for instant deterministic testing
-        if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+        if isUITesting,
            let bundleURL = Bundle.main.url(forResource: "data", withExtension: "json"),
            let bundleData = try? Data(contentsOf: bundleURL),
            let manifest = try? JSONDecoder().decode(DigestManifest.self, from: bundleData) {
@@ -36,7 +52,11 @@ public actor DigestDataService {
         if url.isFileURL {
             do {
                 let data = try Data(contentsOf: url)
-                return try JSONDecoder().decode(DigestManifest.self, from: data)
+                let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
+                if manifest.items.isEmpty {
+                    throw DigestDataServiceError.emptyManifest
+                }
+                return manifest
             } catch {
                 // Corrupt/unreadable file URL — fall through to cache/bundle fallback below
             }
@@ -59,12 +79,13 @@ public actor DigestDataService {
                 let (data, response) = try await session.data(for: request)
                 if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                     let manifest = try JSONDecoder().decode(DigestManifest.self, from: data)
-                    // Never cache an empty manifest — it would brick offline launch.
-                    if !manifest.items.isEmpty {
-                        try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
-                        try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
-                        try? data.write(to: cacheFileURL, options: .atomic)
+                    // AUDIT-022: Reject empty manifests atomically - throw instead of returning
+                    guard !manifest.items.isEmpty else {
+                        throw DigestDataServiceError.emptyManifest
                     }
+                    try? pathResolver.ensureDirectoryExists(at: pathResolver.mediaCacheBaseURL)
+                    try? pathResolver.ensureDirectoriesExist(for: manifest.weekId)
+                    try? data.write(to: cacheFileURL, options: .atomic)
                     return manifest
                 }
             } catch {
@@ -72,24 +93,32 @@ public actor DigestDataService {
             }
         }
 
+        if bypassCache {
+            throw URLError(.cannotConnectToHost)
+        }
+
         // 3. Fallback to cached manifest
         if FileManager.default.fileExists(atPath: cacheFileURL.path),
            let cachedData = try? Data(contentsOf: cacheFileURL) {
             do {
-                return try JSONDecoder().decode(DigestManifest.self, from: cachedData)
+                let cachedManifest = try JSONDecoder().decode(DigestManifest.self, from: cachedData)
+                if !cachedManifest.items.isEmpty {
+                    return cachedManifest
+                }
             } catch {
                 // Corrupted cache file, delete it and fall through to bundle
                 try? FileManager.default.removeItem(at: cacheFileURL)
             }
         }
 
-        // 4. Fallback to bundle if present
+        // 4. Fallback to bundle if present (AUDIT-023: In direct mode, only accept if channel == "direct" or in ui-testing)
         if let bundleURL = Bundle.main.url(forResource: "data", withExtension: "json"),
-           let bundleData = try? Data(contentsOf: bundleURL) {
-            do {
-                return try JSONDecoder().decode(DigestManifest.self, from: bundleData)
-            } catch {
-                // Bundle decode error
+           let bundleData = try? Data(contentsOf: bundleURL),
+           let manifest = try? JSONDecoder().decode(DigestManifest.self, from: bundleData) {
+            if !Self.directMode || manifest.channel == "direct" || isUITesting {
+                if !manifest.items.isEmpty {
+                    return manifest
+                }
             }
         }
 
@@ -100,6 +129,9 @@ public actor DigestDataService {
     /// Falls back to the last good disk cache (mirroring fetchManifest) so a
     /// flaky worker serves stale bookmarks instead of an empty list.
     public func fetchRemoteBookmarks(from url: URL = defaultBookmarksURL) async throws -> [BookmarkRemoteDTO] {
+        if Self.directMode {
+            return []
+        }
         let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent("bookmarks_cache.json")
 
         do {
@@ -155,6 +187,9 @@ public actor DigestDataService {
         ownerKey: String? = nil,
         apiBase: URL = defaultBookmarkApiBase
     ) async throws -> Bool {
+        if Self.directMode {
+            return true
+        }
         let key = ownerKey ?? UserDefaults.standard.string(forKey: "digest_owner_key") ?? ProcessInfo.processInfo.environment["OWNER_KEY"] ?? ""
         let endpoint = apiBase.appendingPathComponent("api/bookmark")
         var request = URLRequest(url: endpoint)
@@ -185,6 +220,9 @@ public actor DigestDataService {
         ownerKey: String? = nil,
         apiBase: URL = defaultBookmarkApiBase
     ) async throws -> Bool {
+        if Self.directMode {
+            return true
+        }
         let key = ownerKey ?? UserDefaults.standard.string(forKey: "digest_owner_key") ?? ProcessInfo.processInfo.environment["OWNER_KEY"] ?? ""
         let safeID = reelID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? reelID
         let endpoint = apiBase.appendingPathComponent("api/bookmark/\(safeID)")

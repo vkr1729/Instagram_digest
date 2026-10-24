@@ -157,6 +157,7 @@ final class AuditFixesTests: XCTestCase {
     // MARK: - Rec 3: pending remote-bookmark backup drains on retry
 
     func testPendingRemoteBookmarksDrainOnRetry() async throws {
+        try XCTSkipIf(DigestDataService.directMode, "Legacy R2 remote bookmark sync is bypassed in directMode")
         // Rec 3: a 500 must keep the id pending; a later 200 must clear it.
         StubURLProtocol.responses = []
         let config = URLSessionConfiguration.ephemeral

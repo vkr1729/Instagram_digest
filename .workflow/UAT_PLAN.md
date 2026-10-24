@@ -1,242 +1,177 @@
-# UAT Plan — Anti-Doomscroll Rebrand & Engine (Independent)
+# UAT Plan — Direct-Meta Stream (Stage 4e, Independent)
 
-Date: 2026-10-11 (UTC) · Scope: `.workflow/REQUIREMENTS.md` §2 (D1–D5 + parity matrix) + `.workflow/AUDIT_AND_REMEDIATION_REPORT.md` R1–R19
-Scale anchor: single-person personal use — functional app over stringent gates. No new services, no live-Instagram-gated CI.
-Supersedes: 2026-09-27 cookie-free UAT plan (preserved in git history). Cookie-free pipeline behavior is untouched; this plan re-verifies it only as regression (§L).
+Date: 2026-10-24 (UTC) · Branch: `arch/direct-meta-stream` · Scope: `.workflow/REQUIREMENTS.md` (§2 scope matrix, §3 decisions, §4 offline matrix) + `.workflow/AUDIT_AND_REMEDIATION_REPORT.md` (Stage 4d)
+Scale anchor: single-person personal use (Kedarnath Reddy) on iPhone, iOS 17+. No multi-user, no enterprise gates, no live-Instagram-gated CI.
 
-## 1. Independence principles
+Supersedes: the 2026-10-11 Anti-Doomscroll UAT plan previously in this file (preserved in git history).
 
-- Black-box first: verify via observable surfaces — rendered DOM/CSS, `localStorage`, built `site/`, CLI exit codes + stdout, JSON outputs, `/channels` + `/api/channels` HTTP behavior, iOS Simulator UI. Do not assert on internal function names except where the contract names them (`extract_external_reels_from_feed`, `MIN_DEPLOY_ITEMS`, `merge_imported_channels`, `reconcile_following`).
-- Isolation: every pipeline/onboarding case runs against a temp `DATA_DIR` (see `tests/conftest.py` pattern) or `--dry-run --limit-per-creator 1 --days-back 1`. Never run bare `python main.py` or `python main.py --sync` (full production sync). Never touch live `data/`. Tripwire: no new `data/sync_progress_*`, `data/expand_checkpoint_*`, `data/digests/*.json`, `cookies.json`/`cookies.txt` writes after the run.
-- Mock the network, not the contract: Playwright / yt-dlp / SMTP stubbed or `--dry-run` / `--build-only` where noted. No live-Instagram assertion gates pass/fail (nondeterministic 429s). iOS Swift compile proof is delegated to GitHub Actions `build-ipa.yml` (no SwiftUI SDK on Linux).
+## 1. Independence principles & safety rails
+
+- Black-box first: verify via observable surfaces — served `data_direct.json`, built `site/`, CLI exit codes + stdout, on-device playback behavior, badges, storage used. Assert on internals only where the contract names them (`DIRECT_STREAM_MODE`, `MIN_DEPLOY_ITEMS`, `data_direct.json`, `BookmarkBadge_<i>_<state>`).
+- Never run bare `python main.py` or `python main.py --sync` (full production sync: real downloads, R2 quota, Pages deploy, durable state). Allowed pipeline probes only:
+  - `.venv/bin/python main.py --dry-run --limit-per-creator 1 --days-back 1`
+  - `.venv/bin/python main.py --build-only`
+  - `.venv/bin/python main.py --expand 3 --dry-run`
+- After any interrupted run: `rm -f data/sync_progress_*.json data/expand_checkpoint_*.json data/expand_progress_*.json`. Tripwire: no new files under `data/` and no `data.json` byte change after any UAT probe.
 - Secrets: never inspect `.env`; use `.env.example` + `config.py` for schema.
-- Regression symmetry: each fix from audit R1–R19 has a re-verification case below; any red automated suite is P0 regardless of matrix result.
-- Single-person rule (taste): only crashes or drastically terrible usage are major bugs. A P1 failing >~3 verification rounds without crash/data-loss risk gets relaxed or converted to a test seam — stop line-tuning.
+- Network mocking: pytest and CI stub the network. Only §6 (on-device) uses live network, and only the user's own phone on their own data/Wi-Fi.
+- Any red automated suite is a P0 regardless of matrix results.
 
 ## 2. Entry criteria / environment
 
-- `requirements.txt` installed; `pytest` collects cleanly.
-- Baseline: `git status` + `git log --oneline -5` recorded; live `data/` snapshotted.
-- Env scrubbed for automated runs: `VIEWING_PIN=""`, `SMTP_*=""`, `NOTIFICATION_EMAIL=""` (conftest pattern).
-- Entry probes (must pass before matrix):
-  - `python main.py --build-only` clean.
-  - `grep -rn "conic-gradient(#f09433" templates/ || echo "neon-free OK"`.
-  - `python -m pytest tests/test_ranker.py tests/test_interactive_onboarding.py -q` green (R8/R9/R10/R13/R15 guards).
+- Branch `arch/direct-meta-stream` checked out; `git status` + `git log --oneline -5` recorded.
+- Stage 4d ship gates (a)+(b) met: §4 one-line test fix landed, `build-ipa.yml` green on the branch.
+- Python: `.venv` installed per `requirements.txt`; `pytest` collects cleanly.
+- iOS: unsigned IPA artifact from the green CI run, installed per `docs/RE_SIGN_AND_INSTALL.md`; iPhone on iOS 17+, no native Instagram app installed (per REQ).
+- Entry probes (must pass before the matrix):
+  - `.venv/bin/python -m pytest tests/test_direct_stream_mode.py -q` → 23 passed.
+  - `.venv/bin/python main.py --build-only` clean.
+  - Served production `data.json` sha256 recorded before/after (must be identical).
 
-## 3. Exit criteria
+## 3. Automated verification
 
-- All P0 cases pass. P1 may have at most documented non-blocker waivers (§8).
-- No live-state tripwire firing; `py_compile` clean on touched Python modules.
-- Any failure reproduced on a clean checkout before filing as defect (dirty-tree guard).
-- iOS CI (`build-ipa.yml`) green for Swift parity cases (UAT-PA-*, UAT-VI-06/07, UAT-QT-07b/08, UAT-AD-06, UAT-CH-04, UAT-GR-02).
+Run in this order. All must be green (see §7 for the single accepted skip).
 
-## 4. Test matrix
+```bash
+# 3a. Direct-stream Python suite (bypass, parity, gates, byte-preservation, expand, URL edges)
+.venv/bin/python -m pytest tests/test_direct_stream_mode.py -q
 
-Conventions: `P0` = blocker, `P1` = fix soon, `P2` = waiver-candidate. Web = `local_server.py` + built `site/`; iOS = Simulator / CI.
+# 3b. Adjacent suites (builder + JIT publish path)
+.venv/bin/python -m pytest tests/test_site_builder.py tests/test_jit_publish.py -q
 
-### A. Brand, manifesto, docs (REQ D1; audit R19)
+# 3c. Full Python regression (optional but recommended pre-ship; ~3 min)
+.venv/bin/python -m pytest -q -x --ignore=tests/test_browser_uut.py
+
+# 3d. Static compile probe (no network, no deploy)
+.venv/bin/python main.py --build-only
+
+# 3e. Pollution tripwire (must print nothing / no such files)
+git status --short data/; ls data/sync_progress_*.json data/expand_checkpoint_*.json data/deployed_direct_week.json
+# NOTE: data/deployed_direct_week.json may exist from earlier runs; it must be byte-identical to HEAD (git status clean).
+```
+
+Swift / Xcode (delegated to CI — no SwiftUI SDK on Linux):
+
+```bash
+# 3f. CI gate (runs on push to arch/direct-meta-stream): unit tests + XCUITest + unsigned IPA
+# .github/workflows/build-ipa.yml — requires green run; artifact: InstagramDigest-Unsigned-IPA
+# Local equivalent on a Mac with Xcode 16.2:
+xcodegen generate
+xcodebuild test -project InstagramDigest.xcodeproj -scheme InstagramDigest \
+  -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:InstagramDigestTests \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+```
+
+## 4. Test matrix (REQ-traceable)
+
+Conventions: P0 = ship blocker, P1 = fix soon, P2 = waiver-candidate. "Auto" = pytest/CI; "Sim" = Simulator/XCUITest; "Device" = §6 manual.
+
+### A. Weekly pipeline & manifest channel (REQ §2-pipeline, §3-D5/D7)
 
 | ID | Requirement | Procedure | Expected (observable) | P |
 |---|---|---|---|---|
-| UAT-BR-01 | Keep "Instagram Digest" + subtitle (Web) | Build (`--build-only`), open `site/index.html`, inspect header | Brand "Instagram Digest" + subtitle "The Anti-Doomscroll Briefing" visible; no old tagline | P0 |
-| UAT-BR-02 | Subtitle parity (iOS) | Simulator: launch, inspect header bar | Same brand + subtitle; `HeaderBarView` renders both | P1 |
-| UAT-BR-03 | 10-traps manifesto modal (Web) | Click info `ℹ️` → manifesto modal | 10 traps listed, each with how Digest neutralizes it; styled quiet-luxury, opens/closes cleanly, playback resumes after dismiss (see PA-03) | P0 |
-| UAT-BR-04 | Video reference in modal (both) | In modal / `ManifestoSheetView` | Link `https://youtu.be/FmLJbYBu094` present and tappable in Web modal and iOS sheet | P0 |
-| UAT-BR-05 | README contract | Inspect `README.md` | Title "Instagram Digest — The Anti-Doomscroll Briefing", quota copy (time-based, not 50-reel), philosophy block with video link | P1 |
-| UAT-BR-06 | Progressive icon (Web) | Inspect `assets/icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, PWA manifest | Diagonal gradient muted IG (`#d97736`/`#be436b` bottom-left) → slate/graphite (`#27272a`/`#18181b` top-right); PNGs exist; `sw.js` cache bumped | P1 |
-| UAT-BR-07 | Progressive icon (iOS) | Inspect `Resources/Assets.xcassets/AppIcon.appiconset` / CI artifact | Same progressive artwork; app installs with new icon (CI-gated) | P2 |
+| UAT-PL-01 | Discover/rank Top 250, local processing continues | Scoped dry run (§1) | Ranked reels discovered; local downloads/validation occur; zero R2 calls in log | P0 |
+| UAT-PL-02 | R2 bypass via `DIRECT_STREAM_MODE=True` | Auto: poison-stub bypass suite (3a) | All 10 R2 call sites provably untouched; suite green | P0 |
+| UAT-PL-03 | Legacy parity (`DIRECT_STREAM_MODE=False` still does R2) | Auto: `test_legacy_parity` (3a) | R2 stubs called in legacy mode; suite green | P0 |
+| UAT-PL-04 | `data_direct.json` embeds fresh Meta CDN URLs + thumbs + `size_bytes` | `--build-only`, inspect `site/data_direct.json` | `channel: direct`, Meta-host `video_url`s, `/thumbnails/{id}.jpg`, `size_bytes` present | P0 |
+| UAT-PL-05 | Production `data.json` byte-identical | sha256 before/after any probe + Auto byte cases (3a) | Identical hash; mutation/missing-data cases abort deploy | P0 |
+| UAT-PL-06 | Dead reels never ship; deploy gates effective | Auto: AUDIT-001/006/008/011 cases (3a) | Unplayable filtered, `count == len(items)`, 60% quorum enforced, expand filtered | P0 |
+| UAT-PL-07 | Serve-check failures fail closed | Auto: AUDIT-009 case (3a) | Deploy returns False, no week marker written | P1 |
+| UAT-PL-08 | Stale thumbnails pruned on deploy | Auto: AUDIT-024 case (3a) | Unreferenced jpgs deleted, `.nojekyll`/transients kept | P1 |
+| UAT-PL-09 | Stranded legacy outbox surfaces, not orphaned | Auto: AUDIT-028 case (3a) | Warning + exit 1 with parked reels present | P1 |
+| UAT-PL-10 | Non-destructive refactor (R2/Telegram files intact) | `git ls-files \| grep -E 'storage_r2|cloudflare|telegram'` | Files present; referenced only behind the legacy toggle | P1 |
 
-### B. Pipeline hardening — Tier 3 strip + floor (REQ D2a; plan Phase 2)
+### B. Bulk caching & storage discipline (REQ §2-iOS, §3-D1/D6/D8)
 
-| ID | Procedure | Expected | P |
+| ID | Requirement | Procedure | Expected (observable) | P |
+|---|---|---|---|---|
+| UAT-BC-01 | 1-tap "Download Week for Offline" auto-prompt on new week | Sim/Device: fresh week arrives | Prominent prompt + home-screen action with live progress | P0 |
+| UAT-BC-02 | Immediate old-week purge on Download tap (~3 GB cap) | Sim/Device: tap with old week cached | Old week dir gone before first new byte; footprint never spans two weeks | P0 |
+| UAT-BC-03 | Pre-purge space abort (never strand with zero weeks) | Sim: fill disk below batch need, tap Download | "Insufficient free space" before any wipe; old cache intact | P0 |
+| UAT-BC-04 | Empty batch never wipes, never reports success | Sim: all-watched week, unwatchedOnly on, tap Start | Start/Retry disabled, "already downloaded or watched"; no purge, no false `.completed` | P0 |
+| UAT-BC-05 | Partial success honest (`ready` vs `failed`) + targeted retry | Sim: stub 1 of N to fail | "Ready Offline (N-1/N, 1 failed)" + retry-failed-only; banner matches | P1 |
+| UAT-BC-06 | Expired-URL 403 recovers once via manifest refresh | Sim: stub first-item 403 then fresh manifest | Single refresh, pending URLs rebuilt, resume; honest "Links expired" fail-fast if unchanged | P1 |
+| UAT-BC-07 | Legacy `Bookmarks/*.mp4` one-time migration | Sim: seed legacy files, first launch | Files purged once, ledger zeroed, flag set; never re-runs | P1 |
+| UAT-BC-08 | Paused vs failed banner copy distinct | Sim: pause mid-batch; then fail a batch | "Paused — tap to resume" vs "Download failed: msg"; no CTA-where-paused confusion | P2 |
+
+### C. Bookmarks & dynamic resolver (REQ §2-bookmarks, §3-D2/D3/D4/D9)
+
+| ID | Requirement | Procedure | Expected (observable) | P |
+|---|---|---|---|---|
+| UAT-BM-01 | Bookmarks store reference only (no R2/Telegram) | Auto: routing tests (3f) + inspect stored row | ID/URL/handle/caption/thumb/date only; zero network on save in directMode | P0 |
+| UAT-BM-02 | Active-week bookmark plays from local cache | Device: bookmark cached reel, play | Instant playback, zero network (verify in airplane mode, §6) | P0 |
+| UAT-BM-03 | Expired bookmark resolves via Cobalt online | Device: play purged-week bookmark on Wi-Fi | Fresh MP4 resolves with bounded retries; plays in-app (no IG app) | P0 |
+| UAT-BM-04 | Resolver honors cancellation (swipe-away) | Sim: cancel during backoff | No second request fires after cancel | P1 |
+| UAT-BM-05 | Challenge/auth errors honest, not generic | Sim/Device: stub or force 400-auth/HTML-200 | "Auth/challenge" message surfaced, `.failed` mapping kept for true failures | P1 |
+| UAT-BM-06 | Endpoint/key override usable (Settings) | Device: set custom endpoint + key, resolve | Request carries `Authorization`, hits custom host; omission path sends none | P1 |
+| UAT-BM-07 | Re-bookmark updates week in place, no dup crash | Device: bookmark same reel across two weeks | Single row, current weekID, badge resolves new local copy | P1 |
+| UAT-BM-08 | Unsave never plays next after unmount | Device: unsave during playback | Overlay closes, silence; no phantom audio, no wasted resolve | P1 |
+
+### D. Offline matrix (REQ §4) — all P0, verified in §6
+
+| ID | Item state | Offline expected | Online expected |
 |---|---|---|---|
-| UAT-PL-01 | Scoped dry run: `main.py --dry-run --limit-per-creator 1 --days-back 1`; grep `extract_external_reels_from_feed` call sites in `main.py` + `scripts/topup_digest.py` | Tier 3 skipped at all 3 sites with descriptive log; function never invoked; no session-challenge/bot-detection path | P0 |
-| UAT-PL-02 | Same dry run with decoy `cookies.json`/`cookies.txt` present in temp DATA_DIR | Neither file read/injected; extraction strictly cookie-free | P0 |
-| UAT-PL-03 | Force thin week (banked candidates < floor) in temp DATA_DIR | Stage `shortfall_paused`, exit 2, zero R2 mutation, previous weekly digest untouched | P0 |
-| UAT-PL-04 | Assert `MIN_DEPLOY_ITEMS == int(TOP_DIGEST_COUNT*0.6)` (=150 at defaults); grep for hardcoded `150` bypass | Shared constant used; no hardcoded floor fork | P1 |
-| UAT-PL-05 | `--expand` in cookie-free mode | Refuses with "external feed expand is deprecated; use `--limit-per-creator`" (exit 2) | P0 |
-| UAT-PL-06 | Confirm no second depth knob | `--limit-per-creator` is the only depth control; no `ANON_REELS_PER_CREATOR_DEPTH` env | P2 |
+| UAT-OF-01 | Active week, cached | 100% playback from local file | Local file, zero bandwidth |
+| UAT-OF-02 | Active week, uncached | "Download required — get this week for offline" + Download Week button (never mislabeled "older") | Streams fresh CDN URL or downloads |
+| UAT-OF-03 | Older bookmark (purged) | "Online required for older bookmarks" badge, no hang/spinner | Cobalt resolve + stream |
+| UAT-OF-04 | Metadata/caption/thumbnail | Instant from local cache | Instant from local cache |
 
-### C. Interactive additive onboarding (REQ D2b; audit R7/R10/R13/R15; plan Phase 5)
+### E. Grid badges & player honesty (REQ §2/§4; audit UI contract)
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-OB-01 | `python main.py --import-following` (headed Playwright, manual login/2FA) against temp `sources.json` | Launches temp-profile browser; user completes login manually; following list scraped from DOM; lands on selection review | P0 |
-| UAT-OB-02 | Review screen with mix of existing + new handles | Existing channels flagged "Already Present" with category/favorite preserved; new rows have selectable checkboxes | P0 |
-| UAT-03 | Confirm selection | Non-destructive merge into `sources.json`; unpicked rows skipped; existing entries untouched. New imports default `category: "niche"`, `archetype: null` (audit-corrected contract — REQ text saying `educational` is superseded) | P0 |
-| UAT-OB-04 | Post-run forensics on temp dir | Temp browser profile wiped; zero session cookies persisted (`cookies.json`/`cookies.txt` absent/unmodified) | P0 |
-| UAT-OB-05 | `/channels` dashboard on local server (`is_local`) | "Import Following" button visible locally (hidden remotely); opens modal diff table (present rows disabled, new checkboxes); commit via `/api/channels/import-following` is additive | P0 |
-| UAT-OB-06 | Malformed inputs: `reconcile_following(None)`, non-dict rows, `handle: None`, `merge_imported_channels([None])`, `candidates=None` | Skip-and-continue, never raise; corrupt non-list `sources.json` resets to `[]` under merge | P0 |
-| UAT-OB-07 | Inference spot-check: food handles, health→health (not niche), compound handles (`monitormunchies`, `hubermanlab`-style) | Food set hits; health→health; substring pre-pass before token match. Bare zero-signal handles stay untagged lifestyle/entertainment by design → triage in `/channels` | P1 |
-| UAT-OB-08 | CSV / handle-paste fallback input | Same review + merge path works without browser scrape | P1 |
+| ID | Requirement | Procedure | Expected (observable) | P |
+|---|---|---|---|---|
+| UAT-UI-01 | 3-state badges (cached / download-required / resolver) | Sim/Device: week with all three states | Green/orange/globe badges correct per cell; `BookmarkBadge_<i>_<state>` identifiers present | P0 |
+| UAT-UI-02 | Badge agrees with playback (zero-byte files) | Sim: seed zero-byte mp4 | Badge does NOT claim offline-ready; playback falls through consistently | P1 |
+| UAT-UI-03 | No silent black screen when nothing playable | Sim: nil local + nil remote URL | Error + Retry affordance in both modes | P1 |
+| UAT-UI-04 | No stale R2 gauge in direct mode | Device: bookmarks header | No zero 1.5 GB bar, no dead Free-Storage button | P2 |
+| UAT-UI-05 | Per-case error icons | Device: force rateLimited/auth/unsupported/offline | Distinct icons (hourglass/lock/film/wifi.slash), not one wifi.slash | P2 |
 
-### D. Time quota + lockout (REQ D3; audit R6/R11/R17; plan Phase 3.1)
+### F. Audit-regression sampling (Stage 4d findings → re-verify)
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-QT-01 | Play video, then pause / let buffer / switch tab hidden; watch `daily_watch_seconds` in `localStorage` | Accrues only while `!paused && !ended && visibilityState==='visible'`. Pause, buffering, background tabs, and breather time add nothing | P0 |
-| UAT-QT-02 | Spoof date key to yesterday, reload | New local `YYYY-MM-DD` bucket starts at 0; old date keys pruned (regex) | P0 |
-| UAT-QT-03 | Settings quota picker | Options 10/20/30/45m, default 20m; persists per-platform locally | P0 |
-| UAT-QT-04 | Hit quota in Gentle (default) | Peaceful check-in modal with elapsed time + "Take a Break" / "Continue"; playback pauses; Continue resumes | P0 |
-| UAT-QT-05 | Switch to Hard Lockout, set 4-digit PIN, hit quota; then try override with wrong PIN, no-PIN state, correct PIN | Locks until next calendar day; PIN row visible only in hard mode; 4–6 digit validation, field cleared after save; override refuses with setup guidance when no PIN stored; no `'1234'` fallback; correct PIN unlocks (emergency use) | P0 |
-| UAT-QT-06 | `updateQuotaSetting("garbage")` + invalid enforcement/advance/sort writes via console | Rejected (allowlist `ALLOWED_QUOTAS`, `gentle`/`hard`, `auto`/`manual`, `rank`/`chrono`); stored value unchanged; quota never silently disabled by `NaN` | P0 |
-| UAT-QT-07a | Web storage | `localStorage` keys per date; no server round-trip | P1 |
-| UAT-QT-07b | iOS storage | `DailyProgress.watchDurationSeconds/targetMinutes/enforcementMode` persist to today's row; `accrueWatchSeconds` guards `0<delta<5`, ignores non-finite/oversized | P0 |
-| UAT-QT-08 | iOS quota hit | Playback pauses + mindful modal surfaces, honoring snooze; count-based legacy modal path untouched | P0 |
+| ID | Finding | Procedure | Expected | P |
+|---|---|---|---|---|
+| UAT-AR-01 | 002/033/034 rollover safety | CI unit suite (3f) green | Purge isolated to tmp in tests; LivePinSet + resume-data protection hold | P0 |
+| UAT-AR-02 | 013 hostile reelID | CI unit suite (3f) green | No crash on hostile IDs; Optional canonical URL | P0 |
+| UAT-AR-03 | 022/023 manifest guards | CI unit suite (3f) green | Empty manifests rejected to cache; bundle R2 fallback refused in directMode | P1 |
+| UAT-AR-04 | 019 main-actor state writes | Sim: purge + delete flows | No purple runtime warnings; state consistent | P1 |
+| UAT-AR-05 | 021/041/042 supply chain | Inspect CI run + repo | No binaries committed, pins logged, runbook linked in logs | P2 |
 
-### E. Quiet-luxury visual sweep (REQ D4; audit R4/R5/R19)
+## 5. Known limitations & pre-accepted waivers (from Stage 4d §3)
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-VI-01 | Watch ≥1 reel (marks category progress), inspect rings in DevTools | Rings are frosted slate (active solid `#ffffff`, inactive `rgba(255,255,255,0.14)`); no inline `conic-gradient(#f09433,#dc2743,#bc1888)` from JS | P0 |
-| UAT-VI-02 | Inspect ring/button shadows | Zero glowing pink drop shadows anywhere | P1 |
-| UAT-VI-03 | Buttons + badges | Monochrome white/black pills or frosted glass; no neon gradient buttons | P1 |
-| UAT-VI-04 | Progress bars | Calm neutral zinc/amber fill, not neon pink | P1 |
-| UAT-VI-05 | `grep -rn "ig-gradient\|#f09433\|#dc2743\|#bc1888" templates/ assets/` | Zero hits (channels.html swept) | P0 |
-| UAT-VI-06 | iOS story bar | Active solid white 2pt, inactive `rgba(255,255,255,0.14)`; no `AngularGradient` orange/pink/purple, no pink shadow | P1 |
+These do NOT fail UAT; they are documented and dispositioned. Do not file them as new defects.
 
-### F. Advance mode + breather (REQ D5.1; audit R1/R2/R3/R18)
+1. Cobalt has one hardcoded default instance (overridable in Settings); no fallback doc or live smoke yet — needs your self-host-vs-API-key call (UAT-BM-05/06 cover the honest-error and override paths).
+2. After an unwatched-only subset download, the banner may print the full manifest count ("All N cached") — cosmetic; failed/paused/partial copy is correct.
+3. A double-403 inside one bulk batch fails the batch with retry (single-403 recovery works).
+4. Grid scroll may show minor jank on full 250-cell grids during progress updates (banner path is async).
+5. The legacy-remote-bookmark Swift test skips under `directMode` by design (AUDIT-005) — an accepted skip, not a gap.
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-AD-01 | Default `auto`: let reel end | 0.5s countdown toast appears (`.countdown-toast.visible` renders, opacity 1) then advances | P0 |
-| UAT-AD-02 | Settings → `manual`: let reel end, then scroll-settle without swiping | Parks on final frame with "Swipe for next ↓"; `IntersectionObserver` + `checkCenteredCard` scroll tick do NOT advance past parked reel; swipe advances once | P0 |
-| UAT-AD-03 | Enable breather: let reel end; tap toast mid-countdown on one reel, let it expire on next | 3s skippable countdown "(tap to skip)" visible both times; tap skips immediately; expiry advances once; no double-advance in either path | P0 |
-| UAT-AD-04 | Breather + quota accumulator | Breather seconds excluded from `daily_watch_seconds` | P1 |
-| UAT-AD-05 | Reload | `advance_mode` + `breather_enabled` (default `auto`/`false`) persist; invalid writes rejected | P1 |
-| UAT-AD-06 | iOS: enable breather, swipe mid-pause | Departed reel's pending `Task.sleep` cancelled (`breatherTask` + `Task.isCancelled` re-check); no stale auto-advance after navigation | P0 |
+## 6. On-device manual checklist (iPhone, iOS 17+, no IG app installed)
 
-### G. Grayscale dopamine-detox (REQ D5.2)
+Setup: install the CI unsigned IPA per `docs/RE_SIGN_AND_INSTALL.md`. Connect to Wi-Fi. Have one full week cached and ≥1 older-week bookmark saved from a previous week.
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-GR-01 | Web player grayscale toggle on/off | `filter: grayscale(100%)` on feed container (hardware-accelerated), persists; toggle off restores color | P1 |
-| UAT-GR-02 | iOS grayscale toggle | `.grayscale(1.0)` modifier applied; persists | P1 |
+- [ ] **M1. 1-tap bulk download (UAT-BC-01/02).** With a new week available, confirm the auto-prompt appears; tap "Download Week for Offline". Confirm: old week storage drops first, live progress shows, completion banner states the true ready count. (P0)
+- [ ] **M2. Overnight-scale soak (UAT-BC-05/06).** Let a full ~250-reel batch run to completion on Wi-Fi. Confirm: it finishes inside the fresh-URL window, any failures show `ready/failed` counts with retry-failed-only, and no silent zero-byte files (spot-play 5 reels). (P0)
+- [ ] **M3. Underground MRT simulation (UAT-OF-01..04).** Enable Airplane Mode. Confirm: cached reels play instantly with zero buffering; an uncached current-week reel shows "Download required — get this week for offline" with a Download Week button (NOT "older bookmarks"); an older bookmark shows "Online required for older bookmarks" with no hang; captions/thumbnails render. Disable Airplane Mode and confirm the older bookmark then resolves and plays. (P0)
+- [ ] **M4. 3-state badges (UAT-UI-01/02).** In the bookmarks grid with cached + uncached-current + older bookmarks present, confirm green/orange/globe badges match reality cell-by-cell, and tapping each behaves per §4-D. (P0)
+- [ ] **M5. Older-bookmark resolver playback (UAT-BM-03/05/06).** On Wi-Fi, play 3 purged-week bookmarks. Confirm: each resolves and plays in-app; kill Wi-Fi mid-resolve once and confirm an honest error (no spinner forever). If you use a custom Cobalt endpoint/key, confirm it is honored. (P0)
+- [ ] **M6. Storage ceiling (UAT-BC-02/03).** In iPhone Settings → General → iPhone Storage, confirm the app holds roughly one week (~2.5–3.5 GB), never two. If the device is nearly full, confirm a pre-wipe "insufficient space" refusal that preserves the old week. (P0)
+- [ ] **M7. Unwatched-only empty batch (UAT-BC-04).** With unwatchedOnly on and everything watched, open the download sheet. Confirm Start/Retry are disabled with the "already downloaded or watched" state, and nothing is purged. (P1)
+- [ ] **M8. Pause/resume + failed copy (UAT-BC-08).** Pause mid-batch, confirm "Paused — tap to resume" and clean resume. (P2)
+- [ ] **M9. Personal-scale sanity.** No interaction should require the Instagram app, an account login beyond your own Apple ID signing, or any cloud/R2/Telegram artifact. App must feel instant on cached content. (P0 on violation)
 
-### H. Session pill (REQ D5.3; plan Phase 3.1 header)
+Record: device model, iOS version, IPA run number, wall-clock batch duration, storage before/after, and any deviation with screenshot.
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-SE-01 | Header during playback (Web) | Pill shows `⏱️ m/m` tracking accumulator vs target; replaces legacy `🎯 0/50`; no 50-copy strings in player/settings UI | P0 |
-| UAT-SE-02 | iOS feed header | `WatchTimerPill` equivalent, same values | P1 |
-| UAT-SE-03 | Legacy compat note | `DailyProgress.viewedCount`/50-reel modal may remain as additive legacy; quota flows through seconds accumulator only; `recordDailyView` no-op shim retained — not a defect | P2 |
+## 7. Pass/fail criteria for shipping
 
-### I. Archetype plumbing + filters (REQ D5.4; audit R13/R14/R15; plan Phase 1)
+**SHIP (GO) requires all of:**
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-AR-01 | Inspect `sources.json` + category chips | Additive optional `archetype` (`educational`/`craft`/`lifestyle`/`vlog`/`null`); `null` = untagged shown in All; existing category chips unbroken | P0 |
-| UAT-AR-02 | `--build-only`, inspect `.reel-card` nodes + `site/data.json` | Ranker→`site_builder` preserves `archetype` + `timestamp`/`taken_at`; feed emits `data-archetype` + `data-timestamp`; grid cards carry both | P0 |
-| UAT-AR-03 | `GET /api/channels`; `POST /api/channels/add` | Listing includes `archetype`; add stamps `archetype: None` (untagged) | P0 |
-| UAT-AR-04 | `/channels` filter row | Pills All/Educational/Craft/Lifestyle/Vlog/Untagged, composable with category/search filters | P0 |
-| UAT-AR-05 | Viewer archetype filter | Feed filters by archetype without breaking chrono/hide-rank toggles | P1 |
-| UAT-AR-06 | `rank_top_reels(sources=None)`, candidates `"junk"`/`None`/`{}`, `timestamp: "abc"` | No TypeError; dict-only coercion with warning; garbage timestamps coerce to 0; `taken_at` preserved | P0 |
+1. §3 automated suites green: 3a (23 passed), 3b, 3d clean, 3e tripwire silent; 3c recommended.
+2. §3f CI green on `arch/direct-meta-stream` (unit + XCUITest + IPA artifact); the single accepted skip is the AUDIT-005 legacy test under `directMode`.
+3. All P0 matrix cases pass (§4-A/B/C/D/E/F): no dead-manifest deploy path, byte preservation holds, offline matrix exact, badges exact, empty-batch safe.
+4. All §6 P0 manual items (M1–M6, M9) pass on the physical iPhone.
+5. Zero new defects beyond the §5 waiver list; any new crash, data-loss, or wrong-purge observation fails the run regardless of matrix score.
 
-### J. Chrono + hide-ranks neutrality (REQ D5.5; audit R9/R12/R16)
+**P1/P2 handling:** a P1 may ship with a dated waiver note appended to §5 (owner: future session); a P2 may ship with §5 listing alone. Waivers never cover §7(5) violations.
 
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-CH-01 | Ranker output vs viewer default | Pool is finite Top 250 from ranker; viewer default order = rank; chrono is client-side reorder only | P0 |
-| UAT-CH-02 | Chrono toggle with mixed `data-timestamp` (seconds, ms, garbage) | Sorts `taken_at` desc; s-vs-ms normalized (`new Date` on raw seconds is fixed); non-numeric → 0 stable, never mis-sorts | P0 |
-| UAT-CH-03 | Hide-ranks toggle | Rank pills (`#01`, `#02`) hidden in feed and grid (`.hide-ranks` covers both) | P0 |
-| UAT-CH-04 | iOS `hideRanks` + `sortOrder` | Feed badge + grid pills hidden; grid sorts `takenAt` desc (nil → `.distantPast` stable); original indices preserved for `onSelectReel` | P0 |
-| UAT-CH-05 | Reload | Both toggles persist (`rank`/`chrono` validated) | P1 |
-
-### K. Sheet / parity wiring (audit R16–R19; parity matrix)
-
-| ID | Procedure | Expected | P |
-|---|---|---|---|
-| UAT-PA-01 | iOS Manifesto sheet | 10 traps + video link, parity with Web modal content | P1 |
-| UAT-PA-02 | iOS Settings sheet | Hosts quota slider, mode, PIN, advance, breather, grayscale, hide-rank, chrono toggles | P0 |
-| UAT-PA-03 | Open each of the 5 sheets during playback, dismiss | Pre-sheet playing feed resumes in all 5 cases (`resumeFeedAfterSheet` 5-sheet guard) | P0 |
-| UAT-PA-04 | Model compat | `ReelItem.takenAt`/`archetype` `decodeIfPresent` — old archives without keys load; `DigestState` init call sites compile (CI-gated) | P1 |
-
-### L. Automated regression gate (REQUIREMENTS §4)
-
-| ID | Suite | Gate |
-|---|---|---|
-| UAT-RG-01 | Full Python suite minus browser (`pytest tests/ --ignore` browser) | Green (audit baseline 563 passed; any red = P0) |
-| UAT-RG-02 | Browser UAT: `test_grid_view` (10) + `test_mobile_pwa_uat` (14) | 24/24 green |
-| UAT-RG-03 | `main.py --build-only` + built-site contract probe (PIN row, breather skip affordance, modals, quota badge, hide-ranks/grayscale CSS, toast rule, subtitle, `data-archetype`, manifesto link, quota validation, manual guard, zero neon conic) | Clean build + 14/14 probe |
-| UAT-RG-04 | iOS CI `build-ipa.yml` (XcodeGen + unit + XCUITest) | Green — sole compile proof for Swift changes |
-
-## 5. Copy-paste manual probes
-
-```bash
-# Entry probes (§2)
-.venv/bin/python main.py --build-only
-grep -rn "conic-gradient(#f09433\|#dc2743\|#bc1888\|ig-gradient" templates/ assets/ || echo "neon-free OK"
-.venv/bin/python -m pytest tests/test_ranker.py tests/test_interactive_onboarding.py -q
-
-# Scoped pipeline probes (never bare --sync)
-.venv/bin/python main.py --dry-run --limit-per-creator 1 --days-back 1
-.venv/bin/python main.py --expand 3 --dry-run   # expect Tier-3 deprecation refusal path
-
-# Built-site contract probe (audit §5 pattern, 14 checks)
-python - <<'EOF'
-import pathlib
-html = pathlib.Path("site/index.html").read_text()
-checks = ["manifestoModal","settingsModal","PIN","tap to skip","hide-ranks",
-  "grayscale-mode","countdown-toast.visible","Anti-Doomscroll Briefing",
-  "data-archetype","youtu.be/FmLJbYBu094","ALLOWED_QUOTAS","advanceMode",
-  "daily_watch_seconds","conic-gradient(#f09433"]
-for c in checks[:-1]: assert c in html, f"MISSING {c}"
-assert checks[-1] not in html, "neon leak"
-print("contract 14/14 OK")
-EOF
-
-# API parity probes (local server only)
-# GET /api/channels → each row has archetype key; POST /api/channels/add → archetype None
-# /channels page → Import Following button + archetype pill row present
-
-# Full automated gate (UAT-RG-01/02)
-.venv/bin/python -m pytest tests/ -q --ignore=tests/test_mobile_pwa_uat.py --ignore=tests/test_grid_view.py
-.venv/bin/python -m pytest tests/test_grid_view.py tests/test_mobile_pwa_uat.py -q
-
-# Tripwire (must print nothing new)
-ls data/sync_progress_*.json data/expand_checkpoint_*.json data/expand_progress_*.json 2>/dev/null || echo "no checkpoints OK"
-git status --short data/ | grep -v "^ M .workflow" || echo "no live-data mutation OK"
-```
-
-Web interactive checks (QT/AD/GR/CH/SE): open local server → DevTools → Application → `localStorage` (`daily_watch_seconds`, `advance_mode`, `breather_enabled`, quota/enforcement keys); throttle network to force buffering; toggle `document.visibilityState` via tab switch; assert accumulator behavior per QT-01.
-
-## 6. Defect triage
-
-- P0 (blocker): Tier-3 invoked (PL-01), shortfall mutating R2 (PL-03), onboarding cookie persistence (OB-04) or destructive merge (OB-03), quota silently disabled (QT-06) or accruing while paused/hidden (QT-01), hardcoded PIN fallback (QT-05), manual mode auto-advancing (AD-02), untappable breather (AD-03), invisible toast (AD-01 CSS), neon conic in JS/CSS (VI-01/05), `archetype` dropped end-to-end (AR-02/03), chrono mis-sort (CH-02), sheets stranding playback (PA-03), any RG red.
-- P1 (fix soon): subtitle/icon copy drift, shadow/pill/bar polish, inference misses on signal-bearing handles, persistence edge cases, iOS pill/modal copy.
-- P2 (waiver-candidate): icon PNG rendering nuance, Friday-overnight prompt wording, doc polish, legacy 50-count compat notes.
-- Single-person rule: a P1 failing >~3 rounds with no crash/data-loss gets relaxed or seamed, trusting post-usage feedback.
-
-## 7. Traceability
-
-| REQUIREMENTS | UAT cover | Audit fix re-verified |
-|---|---|---|
-| D1 brand + subtitle | BR-01/02 | — (pre-existing) |
-| D1 manifesto + video link | BR-03/04, PA-01 | — (pre-existing) |
-| D1 README video ref | BR-05 | R19 |
-| D2 Tier 3 stripped, cookie-free | PL-01/02 | — (pre-existing, untouched) |
-| D2 floor 150 + shortfall_paused | PL-03/04 | — (pre-existing, untouched) |
-| D2 `--import-following` CLI + `/channels` review | OB-01/02/03/05 | R7 |
-| D2 already-present, non-destructive, zero cookies | OB-02/03/04/06 | R10/R15 |
-| D3 active-playback accumulator | QT-01 | — (pre-existing) |
-| D3 date boundary, 20m default, 10/20/30/45 | QT-02/03 | R11 (hardened) |
-| D3 gentle + hard + PIN | QT-04/05/06 | R6 |
-| D3 per-platform local storage | QT-07a/07b/08 | R17 |
-| D4 progressive icon | BR-06/07 | — (pre-existing) |
-| D4 quiet luxury (rings/pills/bars) | VI-01–06 | R4/R5/R19 |
-| D5.1 advance auto/manual + skippable breather | AD-01–06 | R1/R2/R3/R18 |
-| D5.2 grayscale | GR-01/02 | — (pre-existing) |
-| D5.3 session pill + lockout | SE-01/02, QT-04/05/08 | R17 |
-| D5.4 archetype field + filters | AR-01–06, OB-07 | R13/R14/R15 |
-| D5.5 chrono + hide-rank, Top-250 unchanged | CH-01–05 | R9/R12/R16 |
-| Parity: sheets, DailyProgress, ReelItem | PA-01–04 | R16/R17/R18/R19 |
-| Verify: pytest, PWA build, iOS CI | RG-01–04 | §5 (587 passed) |
-
-## 8. Out of scope / known non-blockers (audit §6, accepted)
-
-- Live-Instagram end-to-end (nondeterministic 429s never gate CI).
-- `data/top100_digest.json` + `site/data.json` predate the ranker fix → live items show `data-archetype=""` until next weekly run backfills; render-safe, chrono/hide-rank unaffected. Do not hand-edit the batch.
-- Bare-handle imports with zero signal stay untagged by design; triage in `/channels`.
-- Web `recordDailyView` no-op shim retained (legacy `DAILY_SET_KEY` pruner); quota flows through seconds accumulator only.
-- iOS hard-lockout pauses + shows mindful modal (not a dedicated until-midnight overlay); accrual + snooze contract holds. Full lock screen only if real usage demands it.
-- `DailyProgress.viewedCount`/50-reel modal left intact alongside time quota (additive, not a migration).
+**On failure:** record the failing ID, observed vs expected, and environment (§6 record line); fix on the branch; re-run the failed leg plus §3a/§3f before re-grading. Do not bulk-waive P0s at personal scale — each P0 maps to a real commute-day failure (dead feed, wiped cache, stranded offline).

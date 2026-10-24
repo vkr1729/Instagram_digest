@@ -63,6 +63,8 @@ def _isolate_test_environment(monkeypatch, request):
     monkeypatch.setattr(config, "SMTP_PASS", "")
     monkeypatch.setattr(config, "NOTIFICATION_EMAIL", "")
     monkeypatch.setattr(config, "COOKIE_FREE_MODE", False)
+    monkeypatch.setattr(config, "DIRECT_STREAM_MODE", False)
+    monkeypatch.setenv("DIRECT_STREAM_MODE", "false")
 
     # For any test outside the dedicated email unit tests, mock notifier methods
     # to guarantee zero network traffic or external side effects.
@@ -103,6 +105,7 @@ def _live_data_snapshot():
     try:
         return ({p.name for p in live.glob("expand_checkpoint_*")}
                 | {p.name for p in live.glob("sync_progress_*")}
+                | {p.name for p in [live / "deployed_direct_week.json", live / "deployed_week.json"] if p.exists()}
                 | {(live / "digests" / p.name).as_posix()
                    for p in (live / "digests").glob("*.json")} if live.exists() else set())
     except Exception:
@@ -117,11 +120,12 @@ def pytest_sessionfinish(session, exitstatus):
     live = ROOT_DIR / "data"
     now_sync = {p.name for p in live.glob("expand_checkpoint_*")} if live.exists() else set()
     now_prog = {p.name for p in live.glob("sync_progress_*")} if live.exists() else set()
+    now_deploy = {p.name for p in [live / "deployed_direct_week.json", live / "deployed_week.json"] if p.exists()}
     now_dig = set()
     if (live / "digests").exists():
         now_dig = {(live / "digests" / p.name).as_posix()
                    for p in (live / "digests").glob("*.json")}
-    new = (now_sync | now_prog | now_dig) - _LIVE_BASELINE
+    new = (now_sync | now_prog | now_deploy | now_dig) - _LIVE_BASELINE
     if new:
         session.exitstatus = 1
         print(f"\nFAIL: tests wrote live state into data/: {sorted(new)}")

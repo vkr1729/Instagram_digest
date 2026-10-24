@@ -9,10 +9,17 @@ public struct LibraryPathResolver: Sendable {
     public static let bookmarksFolderName = "Bookmarks"
     public static let resumeDataFolderName = "ResumeData"
 
-    public init() {}
+    private let customBaseURL: URL?
+
+    public init(baseURL: URL? = nil) {
+        self.customBaseURL = baseURL
+    }
 
     /// Root directory URL for media cache inside Library/Application Support/
     public var mediaCacheBaseURL: URL {
+        if let customBaseURL {
+            return customBaseURL.appendingPathComponent(Self.mediaCacheFolderName, isDirectory: true)
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         return appSupport.appendingPathComponent(Self.mediaCacheFolderName, isDirectory: true)
@@ -176,6 +183,10 @@ public struct LibraryPathResolver: Sendable {
 
     /// Best-effort pre-creation of Application Support directory before SwiftData initialization
     public func ensureApplicationSupportExists() {
+        if let customBaseURL {
+            try? FileManager.default.createDirectory(at: customBaseURL, withIntermediateDirectories: true)
+            return
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         if let appSupport {
             try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)

@@ -99,6 +99,26 @@ public actor MediaCacheManager {
         }
     }
 
+    // MARK: - Legacy Direct Migration
+
+    /// AUDIT-032: One-time migration purging legacy isolated Bookmarks/*.mp4 files to enforce ~3 GB direct mode ceiling.
+    public func migrateLegacyDirectBookmarksIfNeeded() async {
+        let migrationKey = "hasMigratedLegacyDirectBookmarks"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+
+        let fm = FileManager.default
+        let bookmarksDir = pathResolver.bookmarksDirectoryURL
+        if let bmFiles = try? fm.contentsOfDirectory(at: bookmarksDir, includingPropertiesForKeys: nil) {
+            for f in bmFiles where f.pathExtension == "mp4" {
+                try? fm.removeItem(at: f)
+            }
+        }
+        totalBookmarkBytes = 0
+        reservedBookmarkBytes = 0
+        await reconcileBookmarkStorageLedger()
+        UserDefaults.standard.set(true, forKey: migrationKey)
+    }
+
     // MARK: - Reconcile Ledger
 
     /// Reconciles in-memory totalBookmarkBytes ledger on app launch.
@@ -176,6 +196,124 @@ public actor MediaCacheManager {
             }
         }
         return pinSet
+    }
+
+    /// Executes a single-transaction rollover purge when a new week's download begins.
+    /// Strictly guarantees that device storage holds only the active week (~2.5–3.5 GB ceiling).
+    ///
+    /// Caller Contract:
+    /// The caller must pause AV playback (e.g. `AVPlayerPool.shared.pause()`) and cancel or pass active in-flight tasks in `protectedReelIDs`.
+    /// This method invokes `downloadSuspensionHandler?(true)` on entry and `downloadSuspensionHandler?(false)` on exit.
+    /// Directories and files protected by `LivePinSet` or `protectedReelIDs` are strictly preserved.
+    public func executeRolloverPurge(forNewWeek incomingWeekID: String, protectedReelIDs: Set<String> = []) async {
+        isPurging = true
+        await downloadSuspensionHandler?(true)
+        defer {
+            isPurging = false
+            Task { [weak self] in
+                await self?.downloadSuspensionHandler?(false)
+            }
+        }
+
+        let fm = FileManager.default
+        let safeIncoming = LibraryPathResolver.sanitizeComponent(incomingWeekID)
+
+        // Compute LivePinSet and protected stems upfront
+        let livePins = await computeLivePinSet()
+        var protectedStems = Set(livePins.map { LibraryPathResolver.sanitizeComponent($0) })
+        for id in protectedReelIDs {
+            protectedStems.insert(LibraryPathResolver.sanitizeComponent(id))
+        }
+
+        let incomingWeekDir = pathResolver.weekDirectoryURL(for: incomingWeekID)
+        if let incomingFiles = try? fm.contentsOfDirectory(at: incomingWeekDir, includingPropertiesForKeys: nil) {
+            for file in incomingFiles {
+                var stem = file.lastPathComponent
+                if stem.hasSuffix(".part") {
+                    stem = (stem as NSString).deletingPathExtension
+                }
+                if stem.hasSuffix(".mp4") {
+                    stem = (stem as NSString).deletingPathExtension
+                } else if stem.hasSuffix(".thumb.jpg") {
+                    stem = String(stem.dropLast(".thumb.jpg".count))
+                }
+                protectedStems.insert(stem)
+            }
+        }
+
+        // 1. Delete all previous weeks' directories under mediaCacheBaseURL (respecting LivePinSet and protectedStems)
+        if let subdirs = try? fm.contentsOfDirectory(at: pathResolver.mediaCacheBaseURL, includingPropertiesForKeys: [.isDirectoryKey]) {
+            for dir in subdirs {
+                let name = dir.lastPathComponent
+                if name == safeIncoming || name == LibraryPathResolver.bookmarksFolderName || name == LibraryPathResolver.resumeDataFolderName {
+                    continue
+                }
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue {
+                    if let weekFiles = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                        for fileURL in weekFiles {
+                            var baseName = fileURL.lastPathComponent
+                            if baseName.hasSuffix(".part") {
+                                baseName = (baseName as NSString).deletingPathExtension
+                            }
+                            if baseName.hasSuffix(".thumb.jpg") {
+                                baseName = String(baseName.dropLast(".thumb.jpg".count))
+                            } else if baseName.hasSuffix(".mp4") {
+                                baseName = (baseName as NSString).deletingPathExtension
+                            }
+                            if !protectedStems.contains(baseName) {
+                                try? fm.removeItem(at: fileURL)
+                            }
+                        }
+                        if let remaining = try? fm.contentsOfDirectory(atPath: dir.path), remaining.isEmpty {
+                            try? fm.removeItem(at: dir)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Clear legacy isolated Bookmarks directory MP4s to enforce ~3 GB cap (respecting protectedStems)
+        let bookmarksDir = pathResolver.bookmarksDirectoryURL
+        if let bmFiles = try? fm.contentsOfDirectory(at: bookmarksDir, includingPropertiesForKeys: nil) {
+            for f in bmFiles {
+                let baseName = f.deletingPathExtension().lastPathComponent
+                if !protectedStems.contains(baseName) {
+                    try? fm.removeItem(at: f)
+                }
+            }
+        }
+
+        // 3. Clear stale resume data not belonging to incoming week, in-flight batch, or LivePinSet
+        let resumeDir = pathResolver.resumeDataDirectoryURL
+        if let resumeFiles = try? fm.contentsOfDirectory(at: resumeDir, includingPropertiesForKeys: nil) {
+            for f in resumeFiles {
+                let stem = f.deletingPathExtension().lastPathComponent
+                if !protectedStems.contains(stem) {
+                    try? fm.removeItem(at: f)
+                }
+            }
+        }
+
+        // 4. Transition evicted bookmark rows in SwiftData (AUDIT-030)
+        if let container = modelContainer {
+            let context = ModelContext(container)
+            let descriptor = FetchDescriptor<BookmarkItem>()
+            if let bookmarks = try? context.fetch(descriptor) {
+                for bookmark in bookmarks {
+                    let feedURL = pathResolver.localFileURL(for: bookmark.weekID, reelID: bookmark.reelID)
+                    let bmURL = pathResolver.bookmarkFileURL(for: bookmark.reelID)
+                    let fileExists = fm.fileExists(atPath: feedURL.path) || fm.fileExists(atPath: bmURL.path)
+                    if !fileExists && bookmark.localStatus == .cached {
+                        bookmark.localStatus = .evicted
+                        bookmark.sizeBytes = 0
+                    }
+                }
+                try? context.save()
+            }
+        }
+
+        await reconcileBookmarkStorageLedger()
     }
 
     /// Purges an older week's cache directory during weekly rollover, strictly protecting the LivePinSet.

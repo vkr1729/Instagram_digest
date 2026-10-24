@@ -324,6 +324,8 @@ def _publish_manifest_to_r2() -> str | None:
     ones. Records data/deployed_week.json once the manifest is live. Returns
     the public URL, or None when skipped/failed. Never raises.
     """
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        return None
     try:
         manifest_path = config.SITE_DIR / "data.json"
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -361,6 +363,9 @@ def _publish_digest() -> bool:
     Returns True when the app is served (R2 live or Pages deployed). A Pages
     failure alone is a warning, never an abort.
     """
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        return site_builder.deploy_to_gh_pages()
+
     r2_url = _publish_manifest_to_r2()
     pages_ok = site_builder.deploy_to_gh_pages()
     if not pages_ok and r2_url:
@@ -558,6 +563,28 @@ def run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
 
 
 def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        check_week = week_id
+        if not check_week:
+            try:
+                digest = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+                check_week = digest.get("run_date") or ""
+            except Exception:
+                check_week = ""
+        if check_week:
+            box = _read_upload_outbox(check_week)
+            stranded = [r for r in (box.get("reels") or []) if isinstance(r, dict) and r.get("id")] if box else []
+            if stranded:
+                logger.warning(
+                    "Direct mode: %d legacy-parked reels stranded in upload outbox for week %s. "
+                    "Reconcile cannot run in direct stream mode; switch to legacy mode to reconcile.",
+                    len(stranded),
+                    check_week,
+                )
+                return 1
+        logger.info("Direct stream mode active: reconcile not required (R2 is bypassed).")
+        return 0
+
     if week_id is None:
         try:
             digest = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
@@ -572,6 +599,7 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
         logger.info("Upload outbox for %s is empty; nothing to reconcile.", week_id)
         return 1
     reels = [r for r in box["reels"] if isinstance(r, dict) and r.get("id")]
+
     paths = {rid: Path(p) for rid, p in (box.get("local_paths") or {}).items()}
     # P2-16: check the live week BEFORE burning upload bandwidth — a
     # cross-week outbox must refuse fast, not after a 4-worker upload loop.
@@ -953,7 +981,7 @@ def _run_full_sync(
     # R2 mutation until the full digest is prepared locally (Phase 5C+); the
     # rolling purges run post-publish instead of here, so a shortfall abort
     # returns without touching R2 at all.
-    if not dry_run and config.R2_ACCOUNT_ID:
+    if not dry_run and config.R2_ACCOUNT_ID and not getattr(config, "DIRECT_STREAM_MODE", False):
         usage_bytes, _ = storage_r2.get_bucket_storage_usage()
         if usage_bytes < 0:
             logger.error("CRITICAL: cannot verify R2 usage (outage?); refusing to start sync.")
@@ -2227,109 +2255,132 @@ def _run_full_sync(
         #
         # Automated reviews/audits MUST NOT flag this as a bug (e.g. PY-P0-1) or
         # reintroduce keep_weeks / post-deploy deferral.
-        if config.R2_ACCOUNT_ID:
-            storage_r2.purge_previous_weeks_videos(current_week_id=week_id)
-            # B1: on a same-day re-run the live digest references this very
-            # week, so its ids are never strays (None = unreadable = skip).
-            keep_ids = _current_week_stray_keep_ids(week_id, ranked_reels)
-            if keep_ids is not None:
-                _purge_current_week_stray_r2_keys(week_id, keep_ids)
-            if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
-                # Resumes/re-runs double-count bytes already under videos/<week>/.
-                # Recompute genuinely-new bytes and trim the lowest-ranked tail
-                # to fit instead of discarding a finished scrape.
-                present = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
-
-                def _new_bytes(reels):
-                    return sum(p.stat().st_size for r in reels
-                               if (p := downloaded_paths.get(r["id"])) and p.exists()
-                               and f"videos/{week_id}/{p.name}" not in present)
-
-                used, _ = storage_r2.get_bucket_storage_usage()
-                headroom = config.R2_STORAGE_QUOTA_BYTES - 200 * 1024 * 1024
-                while used >= 0 and len(ranked_reels) > MIN_DEPLOY_ITEMS \
-                        and used + _new_bytes(ranked_reels) >= headroom:
-                    ranked_reels = ranked_reels[:max(MIN_DEPLOY_ITEMS, len(ranked_reels) - 5)]
-                    budget_capped = True
-                total_batch_bytes = _new_bytes(ranked_reels)
+        if getattr(config, "DIRECT_STREAM_MODE", False):
+            logger.info("DIRECT_STREAM_MODE active: skipping R2 JIT purge and R2 upload pool.")
+            from site_builder import is_direct_stream_url
+            playable = []
+            dead = []
+            for reel in ranked_reels:
+                cand = reel.get("video_cdn_url") or reel.get("video_url") or ""
+                if cand and is_direct_stream_url(cand):
+                    uploaded_url_map[reel["id"]] = cand
+                    playable.append(reel)
+                else:
+                    dead.append(reel.get("id"))
+            if dead:
+                logger.warning("Direct mode: dropping %d reels with no valid Meta CDN URL: %s", len(dead), dead[:10])
+            ranked_reels = playable
+            publish_set = list(playable)
+            dropped = dead
+        else:
+            if config.R2_ACCOUNT_ID:
+                storage_r2.purge_previous_weeks_videos(current_week_id=week_id)
+                # B1: on a same-day re-run the live digest references this very
+                # week, so its ids are never strays (None = unreadable = skip).
+                keep_ids = _current_week_stray_keep_ids(week_id, ranked_reels)
+                if keep_ids is not None:
+                    _purge_current_week_stray_r2_keys(week_id, keep_ids)
                 if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
-                    logger.error("Pre-flight quota check failed after JIT purge. Aborting to protect Cloudflare free limits.")
-                    _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
-                    return 1
+                    # Resumes/re-runs double-count bytes already under videos/<week>/.
+                    # Recompute genuinely-new bytes and trim the lowest-ranked tail
+                    # to fit instead of discarding a finished scrape.
+                    present = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
 
-        # 5E: Parallel R2 Upload Phase
-        existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
-        logger.info("Phase 5E: Syncing %d reels (%.1f MB) to Cloudflare R2...", len(ranked_reels), total_batch_bytes / (1024 * 1024))
+                    def _new_bytes(reels):
+                        return sum(p.stat().st_size for r in reels
+                                   if (p := downloaded_paths.get(r["id"])) and p.exists()
+                                   and f"videos/{week_id}/{p.name}" not in present)
 
-        def upload_reel(reel: dict[str, Any]) -> tuple[str, str]:
-            reel_id = reel["id"]
-            if reel_id in uploaded_url_map and uploaded_url_map[reel_id]:
-                return (reel_id, uploaded_url_map[reel_id])
-            local_video_path = downloaded_paths.get(reel_id)
-            if not local_video_path or not local_video_path.exists():
-                return (reel_id, "")
-            filename = local_video_path.name
-            public_url = storage_r2.upload_reel_to_r2(
-                local_video_path,
-                week_id=week_id,
-                key_name=filename,
-                existing_keys=existing_r2_keys,
-            )
-            return (reel_id, public_url)
+                    used, _ = storage_r2.get_bucket_storage_usage()
+                    headroom = config.R2_STORAGE_QUOTA_BYTES - 200 * 1024 * 1024
+                    while used >= 0 and len(ranked_reels) > MIN_DEPLOY_ITEMS \
+                            and used + _new_bytes(ranked_reels) >= headroom:
+                        ranked_reels = ranked_reels[:max(MIN_DEPLOY_ITEMS, len(ranked_reels) - 5)]
+                        budget_capped = True
+                    total_batch_bytes = _new_bytes(ranked_reels)
+                    if not storage_r2.check_preflight_quota(estimated_new_bytes=total_batch_bytes):
+                        logger.error("Pre-flight quota check failed after JIT purge. Aborting to protect Cloudflare free limits.")
+                        _alert_sync_abort("r2 quota exceeded", f"batch {total_batch_bytes} bytes exceeds remaining quota")
+                        return 1
 
-        to_upload = [r for r in ranked_reels if r["id"] not in uploaded_url_map or not uploaded_url_map[r["id"]]]
-        if uploaded_url_map:
-            logger.info("Reusing %d already uploaded reels from banked progress.", len([r for r in ranked_reels if r["id"] in uploaded_url_map]))
+            # 5E: Parallel R2 Upload Phase
+            existing_r2_keys = set() if getattr(config, "DIRECT_STREAM_MODE", False) else storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+            logger.info("Phase 5E: Syncing %d reels (%.1f MB) to Cloudflare R2...", len(ranked_reels), total_batch_bytes / (1024 * 1024))
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_id = {executor.submit(upload_reel, r): r["id"] for r in to_upload}
-            published_done = len(ranked_reels) - len(to_upload)
-            for future in as_completed(future_to_id):
-                try:
-                    rid, url = future.result()
-                    if url:
-                        uploaded_url_map[rid] = url
-                except Exception as exc:
-                    rid = future_to_id[future]
-                    logger.warning("Worker error uploading reel %s: %s", rid, exc)
-                published_done += 1
-                _write_sync_progress("publishing", {
-                    "ranked": ranked_reels,
-                    "published": published_done,
-                    "published_total": len(ranked_reels),
-                    "recommended_creators": recommended_creators,
-                    "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
-                    "uploaded_url_map": uploaded_url_map,
-                })
-
-        # Drop unplayable reels (C2). Downloads were already filtered before
-        # the shortfall gate, so this post-upload filter should be ~empty —
-        # it only catches reels whose upload itself failed. Those are NOT
-        # discarded: they go to the persistent upload outbox
-        # (data/upload_outbox_<week>.json) so --reconcile can finish them
-        # later without re-scraping anything.
-        dropped = [r["id"] for r in ranked_reels if r["id"] not in uploaded_url_map]
-        # P2-16: capture the pre-drop list so a total outage can resume from
-        # "publishing" with downloads intact instead of re-scraping.
-        publish_set = list(ranked_reels)
-        if dropped:
-            logger.warning("Parking %d upload-failed reels in the outbox (not dropping): %s",
-                           len(dropped), ", ".join(dropped))
-            try:
-                _write_upload_outbox(
-                    week_id,
-                    [r for r in ranked_reels if r["id"] not in uploaded_url_map],
-                    {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+            def upload_reel(reel: dict[str, Any]) -> tuple[str, str]:
+                reel_id = reel["id"]
+                if reel_id in uploaded_url_map and uploaded_url_map[reel_id]:
+                    return (reel_id, uploaded_url_map[reel_id])
+                local_video_path = downloaded_paths.get(reel_id)
+                if not local_video_path or not local_video_path.exists():
+                    return (reel_id, "")
+                filename = local_video_path.name
+                public_url = storage_r2.upload_reel_to_r2(
+                    local_video_path,
+                    week_id=week_id,
+                    key_name=filename,
+                    existing_keys=existing_r2_keys,
                 )
-            except Exception as ob_err:
-                logger.warning("Failed writing upload outbox: %s", ob_err)
-            ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
+                return (reel_id, public_url)
+
+            to_upload = [r for r in ranked_reels if r["id"] not in uploaded_url_map or not uploaded_url_map[r["id"]]]
+            if uploaded_url_map:
+                logger.info("Reusing %d already uploaded reels from banked progress.", len([r for r in ranked_reels if r["id"] in uploaded_url_map]))
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_id = {executor.submit(upload_reel, r): r["id"] for r in to_upload}
+                published_done = len(ranked_reels) - len(to_upload)
+                for future in as_completed(future_to_id):
+                    try:
+                        rid, url = future.result()
+                        if url:
+                            uploaded_url_map[rid] = url
+                    except Exception as exc:
+                        rid = future_to_id[future]
+                        logger.warning("Worker error uploading reel %s: %s", rid, exc)
+                    published_done += 1
+                    _write_sync_progress("publishing", {
+                        "ranked": ranked_reels,
+                        "published": published_done,
+                        "published_total": len(ranked_reels),
+                        "recommended_creators": recommended_creators,
+                        "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                        "uploaded_url_map": uploaded_url_map,
+                    })
+
+            # Drop unplayable reels (C2). Downloads were already filtered before
+            # the shortfall gate, so this post-upload filter should be ~empty —
+            # it only catches reels whose upload itself failed. Those are NOT
+            # discarded: they go to the persistent upload outbox
+            # (data/upload_outbox_<week>.json) so --reconcile can finish them
+            # later without re-scraping anything.
+            dropped = [r["id"] for r in ranked_reels if r["id"] not in uploaded_url_map]
+            # P2-16: capture the pre-drop list so a total outage can resume from
+            # "publishing" with downloads intact instead of re-scraping.
+            publish_set = list(ranked_reels)
+            if dropped:
+                logger.warning("Parking %d upload-failed reels in the outbox (not dropping): %s",
+                               len(dropped), ", ".join(dropped))
+                try:
+                    _write_upload_outbox(
+                        week_id,
+                        [r for r in ranked_reels if r["id"] not in uploaded_url_map],
+                        {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                    )
+                except Exception as ob_err:
+                    logger.warning("Failed writing upload outbox: %s", ob_err)
+                ranked_reels = [r for r in ranked_reels if r["id"] in uploaded_url_map]
 
         # Persist the real object URL so later expansions never derive keys
         # from the calendar day they run on (week-drift fix).
-        for r in ranked_reels:
-            if r.get("id") in uploaded_url_map:
-                r["r2_url"] = r["video_url"] = uploaded_url_map[r["id"]]
+        if getattr(config, "DIRECT_STREAM_MODE", False):
+            for r in ranked_reels:
+                r["video_url"] = uploaded_url_map.get(r.get("id")) or ""
+                r.pop("r2_url", None)
+        else:
+            for r in ranked_reels:
+                if r.get("id") in uploaded_url_map:
+                    r["r2_url"] = r["video_url"] = uploaded_url_map[r["id"]]
 
         # 6. Save digest batch payload (only playable reels saved!).
         # Cross-week dedup ledger: record these reel IDs as seen for 30 days
@@ -2375,7 +2426,7 @@ def _run_full_sync(
         # on R2 so a corrupt digest never deploys. The pre-persist gate above
         # already refused short lists; a verify shrink below minimum is also
         # a refused deploy that must not overwrite the healthy live digest.
-        missing_ids = _verify_digest_r2_keys(ranked_reels)
+        missing_ids = [] if getattr(config, "DIRECT_STREAM_MODE", False) else _verify_digest_r2_keys(ranked_reels)
         if missing_ids:
             gone = set(missing_ids)
             logger.error("Post-publish R2 check: %d reels missing remotely; dropping: %s",
@@ -2428,8 +2479,9 @@ def _run_full_sync(
         # P2-12: a network loss here must never crash the run between saving
         # the digest and deploying it.
         try:
-            storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
-            storage_r2.purge_unreferenced_r2_videos()
+            if not getattr(config, "DIRECT_STREAM_MODE", False):
+                storage_r2.purge_expired_r2_objects(max_age_days=config.RETENTION_DAYS)
+                storage_r2.purge_unreferenced_r2_videos()
             storage_r2.purge_expired_local_videos(max_age_days=config.RETENTION_DAYS)
         except Exception as exc:
             logger.warning("Post-publish purge skipped: %s", exc)
@@ -2486,13 +2538,16 @@ def _run_full_sync(
             # Rec #6 (slim): one storage-vs-cap line so Saturday's email
             # says what shipped and what it cost. Best-effort, never fatal.
             storage_note = None
-            try:
-                cur_b, _ = storage_r2.get_bucket_storage_usage()
-                if cur_b >= 0:
-                    quota_gb = config.R2_STORAGE_QUOTA_BYTES / 1073741824
-                    storage_note = (f"R2 {cur_b / 1073741824:.2f} / {quota_gb:.0f} GB used")
-            except Exception:
-                pass
+            if getattr(config, "DIRECT_STREAM_MODE", False):
+                storage_note = "Direct-Meta stream mode (0 GB Cloudflare R2 used)"
+            else:
+                try:
+                    cur_b, _ = storage_r2.get_bucket_storage_usage()
+                    if cur_b >= 0:
+                        quota_gb = config.R2_STORAGE_QUOTA_BYTES / 1073741824
+                        storage_note = (f"R2 {cur_b / 1073741824:.2f} / {quota_gb:.0f} GB used")
+                except Exception:
+                    pass
             notifier.send_digest_email(
                 week_id=week_id,
                 count=len(ranked_reels),
@@ -2805,19 +2860,36 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             stale.unlink()
         except OSError:
             pass
-    existing_r2_keys = storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
+    existing_r2_keys = set() if getattr(config, "DIRECT_STREAM_MODE", False) else storage_r2.get_existing_r2_keys(f"videos/{week_id}/")
 
     uploaded_url_map: dict[str, str] = {}
     from urllib.parse import quote as _urlquote
-    for item in existing_items:
-        rid = item.get("id")
-        if rid:
-            r2_url = item.get("r2_url") or item.get("video_url") or (
-                f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_"
-                f"{_urlquote(_safe_component(item.get('creator_handle'), 'creator'), safe='')}_"
-                f"{_urlquote(_safe_component(rid, 'reel'), safe='')}.mp4"
-            )
-            uploaded_url_map[rid] = r2_url
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        from site_builder import is_direct_stream_url
+        carried_over_count = 0
+        for item in existing_items:
+            rid = item.get("id")
+            if not rid:
+                continue
+            cand = item.get("video_cdn_url") or item.get("video_url") or ""
+            if cand and is_direct_stream_url(cand):
+                uploaded_url_map[rid] = cand
+                carried_over_count += 1
+        logger.warning(
+            "Direct mode expand: carried over %d validated CDN URLs for existing items. "
+            "Note: Expand cannot refresh expired Meta CDN URLs without re-scraping; run a full sync if URLs are expired.",
+            carried_over_count,
+        )
+    else:
+        for item in existing_items:
+            rid = item.get("id")
+            if rid:
+                r2_url = item.get("r2_url") or item.get("video_url") or (
+                    f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{item.get('rank', 1):02d}_"
+                    f"{_urlquote(_safe_component(item.get('creator_handle'), 'creator'), safe='')}_"
+                    f"{_urlquote(_safe_component(rid, 'reel'), safe='')}.mp4"
+                )
+                uploaded_url_map[rid] = r2_url
 
     def _pending_path(reel: dict[str, Any]) -> Path:
         return week_videos_dir / (
@@ -2893,6 +2965,12 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             reel["rank_display"] = f"#{rank_num:02d}"
 
     def upload_new_reel(reel: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
+        if getattr(config, "DIRECT_STREAM_MODE", False):
+            cand = reel.get("video_cdn_url") or reel.get("video_url") or ""
+            from site_builder import is_direct_stream_url
+            if cand and is_direct_stream_url(cand):
+                return (reel["id"], cand, reel)
+            return (reel["id"], "", reel)
         filename = _final_name(reel, reel["rank"])
         public_url = storage_r2.upload_reel_to_r2(
             week_videos_dir / filename,
@@ -2902,7 +2980,7 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
         )
         return (reel["id"], public_url, reel)
 
-    if config.R2_ACCOUNT_ID and config.R2_PUBLIC_DOMAIN:
+    if config.R2_ACCOUNT_ID and config.R2_PUBLIC_DOMAIN and not getattr(config, "DIRECT_STREAM_MODE", False):
         new_bytes = 0
         for r in downloadable:
             try:
@@ -2923,7 +3001,8 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
                 rid, pub_url, reel_obj = f.result()
                 if pub_url:
                     uploaded_url_map[rid] = pub_url
-                    reel_obj["r2_url"] = pub_url
+                    if not getattr(config, "DIRECT_STREAM_MODE", False):
+                        reel_obj["r2_url"] = pub_url
                     reel_obj["video_url"] = pub_url
                     new_ranked.append(reel_obj)
                 else:
@@ -2935,6 +3014,22 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
 
     new_ranked.sort(key=lambda r: r.get("rank", 9999))
     combined_items = existing_items + new_ranked
+
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        from site_builder import is_direct_stream_url
+        playable = []
+        dead = []
+        for reel in combined_items:
+            cand = uploaded_url_map.get(reel.get("id") or "") or reel.get("video_cdn_url") or reel.get("video_url") or ""
+            if cand and is_direct_stream_url(cand):
+                reel["video_url"] = cand
+                reel.pop("r2_url", None)
+                playable.append(reel)
+            else:
+                dead.append(reel.get("id"))
+        if dead:
+            logger.warning("Direct mode expand: dropping %d unplayable reels with invalid Meta CDN URL: %s", len(dead), dead[:10])
+        combined_items = playable
 
     logger.info("Expansion successfully integrated: %d existing + %d new = %d total reels.",
                 len(existing_items), len(new_ranked), len(combined_items))
@@ -2989,15 +3084,10 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
 
 
 def _estimate_run(since_ts_override: int | None = None) -> int:
-    """Read-only pre-flight estimate: project R2 usage for the next digest.
-
-    Sizes the upcoming batch from storage_r2.estimate_weekly_batch_bytes
-    (most recent real week dir + 10% headroom) and compares against current
-    R2 usage and the 8 GB safety quota, accounting for the JIT purge of
-    previous weeks that runs before upload. Never downloads, uploads,
-    purges, or writes anything. Prints the projection and returns 0 when
-    the batch fits, 1 when it would exceed quota.
-    """
+    """Read-only pre-flight estimate: project R2 usage for the next digest."""
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        print("Direct-Meta Stream Mode is ACTIVE: zero bytes used in Cloudflare R2 (no cloud storage).")
+        return 0
     batch_bytes = storage_r2.estimate_weekly_batch_bytes()
     current_bytes, count = storage_r2.get_bucket_storage_usage()
     if current_bytes < 0:

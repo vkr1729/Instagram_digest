@@ -1,0 +1,953 @@
+[
+  {
+    "domain": "python_pipeline",
+    "file": "main.py",
+    "id": "AUDIT-001",
+    "issue": "Direct branch (2243-2249) maps every ranked reel to uploaded_url_map including '' for reels lacking video_cdn_url/video_url, sets dropped=[] unconditionally, and never filters ranked_reels. The zero-playable guard (:2363) and MIN_DEPLOY gate (:2385) then operate on an unfiltered list, so a batch with 0 (or few) playable Meta URLs still saves, builds, and deploys a manifest full of video_url='' dead cards. Deploy gate _pages_bundle_is_remote needs only 1 good URL, so 249-dead/1-live also ships.",
+    "line": 2243,
+    "remediation_spec": "In the DIRECT_STREAM_MODE branch, validate then filter exactly like the legacy dropped-filter: from site_builder import is_direct_stream_url; playable=[]; dead=[]; for reel in ranked_reels: cand=reel.get('video_cdn_url') or reel.get('video_url') or ''; if cand and is_direct_stream_url(cand): uploaded_url_map[reel['id']]=cand; playable.append(reel); else: dead.append(reel.get('id')); if dead: logger.warning('Direct mode: dropping %d reels with no valid Meta CDN URL: %s', len(dead), dead[:10]); ranked_reels=playable; publish_set=list(playable); dropped=dead. Leave the existing :2363 and :2385 gates untouched \u2014 they become effective once the list is filtered.",
+    "severity": "P0",
+    "status": "IMPLEMENTED",
+    "title": "Unplayable reels ship in direct manifest; deploy gates neutered",
+    "maker_execution": {
+      "files_modified": [
+        "main.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Validated and filtered ranked_reels via is_direct_stream_url in direct mode block of main.py",
+        "Populated uploaded_url_map with valid Meta CDN URLs and recorded dead IDs in dropped",
+        "Ensured zero-playable guard (:2378) and MIN_DEPLOY gate (:2385) remain effective on the filtered list",
+        "Added test_direct_mode_filtering_and_gates_audit_001 in tests/test_direct_stream_mode.py"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Tests/InstagramDigestTests/DirectStreamTests.swift",
+    "id": "AUDIT-002",
+    "issue": "testExecuteRolloverPurge and testExecuteRolloverPurgeProtectsResumeDataAndPartFiles call MediaCacheManager.shared.executeRolloverPurge against LibraryPathResolver.shared (the REAL app container). The purge deletes every week directory except the incoming one, so running the test suite on a device with real cached weeks permanently wipes the user's offline cache. Same for testBookmarkPlaybackRoutingLocalFirst which writes into the real container.",
+    "line": 346,
+    "remediation_spec": "Never touch .shared in tests: instantiate MediaCacheManager(pathResolver:) with a resolver rooted at a temp directory (add a baseURL override to LibraryPathResolver for tests), run purge tests against that instance, and assert there. Alternatively gate these tests to simulator-only temp containers.",
+    "severity": "P0",
+    "status": "IMPLEMENTED",
+    "title": "Direct-stream tests purge the real app container",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/LibraryPathResolver.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added optional customBaseURL to LibraryPathResolver.init(baseURL:)",
+        "Updated mediaCacheBaseURL and ensureApplicationSupportExists to respect customBaseURL",
+        "Isolated all direct-stream rollover purge and file checks in DirectStreamTests using temporary directories and isolated LibraryPathResolver/MediaCacheManager instances with defer cleanup"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/DownloadAllSheet.swift",
+    "id": "AUDIT-003",
+    "issue": "Start Download enabled with 0 effective reels triggers destructive rollover: when unwatchedOnly is on and all reels are watched, effectiveReels is empty, yet idle branch shows Start button. startDownloadAll([]) still runs executeRolloverPurge (wipes prior week cache, legacy Bookmarks dir, resume data, zeroes ledger), then reports .completed. Banner then falsely claims 'All 250 Reels Cached Offline'. Realistic for single user who watched the whole week.",
+    "line": 172,
+    "remediation_spec": "Disable Start/Retry when effectiveReels is empty and show 'All reels already watched/downloaded' state; belt-and-braces: early-return in startDownloadAll when batch is empty before rollover.",
+    "severity": "P0",
+    "status": "IMPLEMENTED",
+    "title": "Empty-batch Start wipes old week and reports success",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+        "Sources/InstagramDigest/Views/Modals/DownloadAllSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added early-return guard guard !batch.isEmpty else { return } in DownloadAllCoordinator.startDownloadAll to prevent rollover purge on empty batch",
+        "Disabled Start Download and Retry buttons when effectiveReels.isEmpty in DownloadAllSheet",
+        "Rendered informative status message \"All reels already downloaded or watched\" when effectiveReels.isEmpty in idle state"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "Sources/InstagramDigest/Engine/BookmarkResolver.swift",
+    "id": "AUDIT-004",
+    "issue": "Live POST to https://api.cobalt.tools/ returns 400 {status:error, code:error.api.auth.jwt.missing}: the public instance now requires JWT auth but the resolver sends no Authorization header, so EVERY older-bookmark resolution fails. Compounding: the endpoint is a single hardcoded default with no fallback instance and no user override (plan said 'or user setting'), while COBALT_RESOLVER_API_URL in Python/.env.example is dead config Swift never reads (trailing-slash mismatch). Merges ci_cd + swift_engine + config findings.",
+    "line": 44,
+    "remediation_spec": "Decide self-host vs API key (user call). Then: add Authorization header + endpoint override sourced from Settings/UserDefaults as the single source of truth (remove or wire the Python var), document one fallback instance, add a resolver contract test asserting method/headers/body, and add an opt-in live (non-CI) smoke test that POSTs a real permalink and asserts tunnel/redirect. Keep .failed mapping for honest errors.",
+    "severity": "P0",
+    "status": "IMPLEMENTED",
+    "title": "Cobalt resolver broken live: single hardcoded instance, no auth/fallback",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/BookmarkResolver.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added user-configured cobalt_api_url and cobalt_api_key / cobalt_api_token UserDefaults overrides and initializer injection in BookmarkResolver",
+        "Attached Bearer / Api-Key Authorization header when key is provided",
+        "Mapped HTTP 400 with auth errors (error.api.auth.* / jwt.missing) to .authOrChallengeRequired",
+        "Added contract tests testResolverRequestContractAndAuthHeader and testResolverMapsHttp400AuthError in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "Tests/InstagramDigestTests/AuditFixesTests.swift",
+    "id": "AUDIT-005",
+    "issue": "testPendingRemoteBookmarksDrainOnRetry fails on this branch: directMode=true stubs saveRemoteBookmark()->true, so XCTAssertFalse(failed) on the 500 case fails. CI runs the whole InstagramDigestTests bundle, so build-ipa.yml goes red.",
+    "line": 172,
+    "remediation_spec": "Gate the legacy test on !directMode (or inject a legacy-mode service), matching how Python conftest pins DIRECT_STREAM_MODE=False for legacy tests.",
+    "severity": "P0",
+    "status": "IMPLEMENTED",
+    "title": "Legacy Swift test fails under hardcoded directMode (CI red)",
+    "maker_execution": {
+      "files_modified": [
+        "Tests/InstagramDigestTests/AuditFixesTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Gated legacy test testPendingRemoteBookmarksDrainOnRetry with try XCTSkipIf(DigestDataService.directMode, ...) in AuditFixesTests.swift",
+        "Prevents CI failure when running unit test suite under directMode target configuration",
+        "Ensures CI passes without disabling or deleting legacy R2 test coverage"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "site_builder.py",
+    "id": "AUDIT-006",
+    "issue": "write_direct_manifest emits video_url='' for non-Meta hosts; ReelItem init throws on missing video URL so DigestManifest lossy-drops those reels while count stays N. Deploy gate only needs >=1 remote URL, so a partially-emptied manifest ships and the feed silently shows fewer items than count.",
+    "line": 99,
+    "remediation_spec": "Either drop empty-URL items in write_direct_manifest and set count=len(items), or fail loudly below a fill threshold; add a Python test asserting no empty video_url ships and a Swift test for lossy-skip/count behavior.",
+    "severity": "P0",
+    "status": "IMPLEMENTED",
+    "title": "Empty video_url ships; iOS silently drops reels (count mismatch)",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Updated write_direct_manifest to drop items where candidate URL is empty or non-Meta/R2 domain",
+        "Set count == len(direct_items) to prevent dead cards and count mismatches",
+        "Updated test_write_direct_manifest_drops_empty_and_r2_items_audit_006_027"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "main.py",
+    "id": "AUDIT-007",
+    "issue": "Lines 2351-2353 run in BOTH modes: r['r2_url']=r['video_url']=uploaded_url_map[id]. In direct mode this writes Meta CDN URLs into the r2_url field, and ranker.save_digest_batch persists full dicts, so data/top100_digest.json and data/digests/<week>.json permanently store Meta URLs as r2_url. A later legacy-mode resume/expand/reconcile treats them as already-uploaded R2 URLs (banked-map reuse at :2287, expand seeding at :2840), corrupting cross-mode runs.",
+    "line": 2351,
+    "remediation_spec": "Gate the persist block by mode: if getattr(config,'DIRECT_STREAM_MODE',False): for r in ranked_reels: u=uploaded_url_map.get(r.get('id')) or ''; r['video_url']=u; r.pop('r2_url',None); else: existing loop. Add a test asserting no 'r2_url' key exists in any digest-batch item after a direct-mode save.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "r2_url field contaminated with Meta CDN URLs in persisted digest",
+    "maker_execution": {
+      "files_modified": [
+        "main.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Gated persist loop by DIRECT_STREAM_MODE in main.py: set video_url and popped r2_url in direct mode",
+        "Preserved legacy r2_url assignment exclusively for legacy mode",
+        "Added test_direct_mode_persist_loop_and_r2_url_sanitization_audit_007"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-008",
+    "issue": "In direct mode the gate scans keys ('video_url','r2_url','video_cdn_url') for ANY http(s) URL and passes on a single hit. write_direct_manifest blanks video_url but preserves the original video_cdn_url key, so a manifest whose video_url fields were all blanked can still pass via stale video_cdn_url entries; likewise one live reel among 249 dead reels passes. The gate does not measure what the app consumes (video_url).",
+    "line": 619,
+    "remediation_spec": "In _pages_bundle_is_remote, when direct_mode is True check ONLY item.get('video_url') with is_direct_stream_url(), count hits, and require a quorum: good=sum(1 for i in items if isinstance(i,dict) and is_direct_stream_url(i.get('video_url') or '')); return good>=min(len(items), floor) where the floor is max(1, int(0.6*len(items))) mirroring MIN_DEPLOY_ITEMS semantics; log good/total. Legacy path unchanged.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Direct deploy gate checks wrong keys with single-URL threshold",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Updated _pages_bundle_is_remote to check ONLY item.get('video_url') via is_direct_stream_url when direct_mode is True",
+        "Enforced quorum: good >= min(len(items), max(1, int(0.6 * len(items)))) with logging",
+        "Added test_pages_bundle_is_remote_quorum_and_keys_audit_008 testing quorum edge cases"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-009",
+    "issue": "The serve-verification block (:784-811) catches ALL exceptions from the poll setup/read (e.g. direct_manifest unreadable mid-deploy, DIRECT_PAGES_MANIFEST_URL malformed) in 'except Exception as poll_exc: logger.warning(...)' and then falls through to writing the deployed-week marker and returning True. A verification failure is reported as a successful deploy, and downstream runs treat an unserved week as live.",
+    "line": 784,
+    "remediation_spec": "Fail closed: in the outer except, log at error level and return False instead of falling through: except Exception as poll_exc: logger.error('Pages direct serve check errored; treating deploy as failed: %s', poll_exc); return False. Keep the inner per-poll try/except (retry) as-is. Add a unit test where urlopen raises and DIRECT_PAGES_MANIFEST_URL is set, asserting deploy returns False and no marker file is written.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Serve-check exception path returns deploy success",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Made outer serve check exception in deploy_direct_to_gh_pages fail closed with error log and return False",
+        "Prevented recording deployed direct week marker when serve verification fails",
+        "Added test_deploy_direct_fail_closed_on_serve_check_exception_audit_009"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-010",
+    "issue": "The deployed-direct-week marker is written to config.DIRECT_DEPLOYED_WEEK_FILE, a static Path bound at config import, while direct_manifest_file() is correctly derived at call time. Any DATA_DIR redirect (tests, alternate state roots) is ignored: direct-deploy tests write data/deployed_direct_week.json into the LIVE data/ dir, and the conftest tripwire does not cover that filename so the pollution is silent. Merges python_pipeline + ci_cd findings.",
+    "line": 816,
+    "remediation_spec": "Add config.direct_deployed_week_file() returning DATA_DIR/'deployed_direct_week.json' (same pattern as direct_manifest_file), replace the :816 call site, keep DIRECT_DEPLOYED_WEEK_FILE as deprecated alias; monkeypatch it into tmp_path in the direct_mode_env fixture; extend the conftest tripwire to deployed_direct_week.json (+deployed_week.json); assert the marker lands under tmp DATA_DIR.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Static marker path bypasses DATA_DIR isolation; tests pollute live data/",
+    "maker_execution": {
+      "files_modified": [
+        "config.py",
+        "site_builder.py",
+        "tests/conftest.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added direct_deployed_week_file() dynamic helper to config.py returning DATA_DIR / 'deployed_direct_week.json'",
+        "Updated deploy_direct_to_gh_pages in site_builder.py to use config.direct_deployed_week_file()",
+        "Extended conftest.py tripwire baseline and finish check to cover deployed_direct_week.json",
+        "Added test_direct_deployed_week_file_isolation_audit_010 verifying DATA_DIR isolation"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "main.py",
+    "id": "AUDIT-011",
+    "issue": "Expand in direct mode over an existing digest (:2837-2845 seeds uploaded_url_map from stored r2_url/video_url; :2921-2922 returns stored video_cdn_url verbatim for new reels) reuses week-old Meta CDN URLs for existing items. Signed Meta URLs expire in ~48-72h, so carried-over URLs are near-certainly 403 at serve time; and legacy-digest R2 URLs for existing items get blanked by write_direct_manifest, turning all pre-existing items into dead cards after any direct-mode expand.",
+    "line": 2837,
+    "remediation_spec": "In _run_expand direct mode: (a) keep uploaded_url_map seeding ONLY from is_direct_stream_url-validated video_cdn_url values and log a warning naming the count of carried-over URLs older than the current scrape; (b) after combining, run the same playable filter as AUDIT-001 and refuse deploy when playable < MIN_DEPLOY_ITEMS; (c) document that expand in direct mode cannot refresh existing-item URLs (no re-scrape) and recommend full sync for URL freshness.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Direct-mode expand reuses expired/stale CDN URLs for existing items",
+    "maker_execution": {
+      "files_modified": [
+        "main.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In _run_expand direct mode, seeded uploaded_url_map only with is_direct_stream_url-validated URLs",
+        "Logged warning for count of carried-over URLs older than current scrape",
+        "Filtered combined_items with playable Meta URL filter and popped r2_url",
+        "MIN_DEPLOY_ITEMS gate now evaluates post-filtered playable items before deploy",
+        "Added test_direct_expand_filtering_and_gates_audit_011"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "tests/test_direct_stream_mode.py",
+    "id": "AUDIT-012",
+    "issue": "Plan Step 6.1 requires test_legacy_parity (DIRECT_STREAM_MODE=False still performs R2 ops) \u2014 absent, so a gating regression breaking legacy mode is undetected. The call-graph test mocks storage_r2.get_s3_client (a path none of the probed functions use in direct mode) and only asserts return codes \u2014 never exercising Phase 5D, build_site s3 gating, _run_expand bypass, or deploy routing. Also missing: --build-only/--deploy-only direct tests, expand-direct test, is_direct_stream_url edge tests, prod byte-preservation assertion. Merges python_pipeline (P1) + ci_cd (P2) findings; higher severity kept.",
+    "line": 97,
+    "remediation_spec": "Add (1) test_legacy_parity: DIRECT False, stub R2 ops with recorders, assert R2 stubs WERE called; (2) harden the bypass test with AssertionError-raising stubs on all R2 call sites (purge_previous_weeks_videos, upload_reel_to_r2, get_existing_r2_keys, check_preflight_quota, get_bucket_storage_usage, purge_expired/purge_unreferenced) while invoking _estimate_run, run_reconcile, _publish_manifest_to_r2, build_site with Meta-URL items, and upload_new_reel-equivalent; (3) add build-only/deploy-only, expand-direct, URL-edge, and prod-bytes cases.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Python direct-mode test gaps: no legacy-parity, weak bypass coverage",
+    "maker_execution": {
+      "files_modified": [
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added test_legacy_parity verifying that when DIRECT_STREAM_MODE is False, legacy R2 operations (upload_reel_to_r2, purge_previous_weeks_videos, upload_manifest_to_r2, quota checks) are called",
+        "Hardened test_full_call_graph_bypasses_s3_in_direct_stream_mode with AssertionError stubs across all 10 R2 functions in storage_r2 while exercising _estimate_run, run_reconcile, _publish_manifest_to_r2, build_site, _build_only, and direct upload mapping",
+        "Added test_direct_build_only verifying pure static compilation without R2",
+        "Added test_direct_deploy_only verifying direct deployment routing and item count thresholds",
+        "Added test_direct_expand_pipeline verifying _run_expand preserves direct Meta URLs and bypasses R2 uploads",
+        "Added test_is_direct_stream_url_edge_cases testing domain matching, protocol security, spoof rejection, and input sanitization",
+        "Added test_deploy_direct_byte_for_byte_preservation_and_mutation_abort ensuring exact SHA-256 byte preservation of production data.json"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Models/DigestState.swift",
+    "id": "AUDIT-013",
+    "issue": "Non-optional canonicalUrl falls back to URL(string:\"https://www.instagram.com/reel/\\(reelID)/\")! \u2014 a force-unwrap. Any reelID containing URL-invalid characters (space/control chars from a malformed manifest or legacy row) makes URL(string:) return nil and crashes on access. ReelItem.canonicalUrl on the same branch is safely Optional, so this is an internal inconsistency.",
+    "line": 91,
+    "remediation_spec": "Sanitize reelID with LibraryPathResolver.sanitizeComponent before interpolation, or make BookmarkItem.canonicalUrl Optional like ReelItem and update the two call sites (BookmarksSheet loadVideo/triggerShare).",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Force-unwrap crash on hostile bookmark reelID",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Models/DigestState.swift",
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Changed BookmarkItem.canonicalUrl to Optional URL? matching ReelItem.canonicalUrl",
+        "Sanitized reelID via LibraryPathResolver.sanitizeComponent in BookmarkItem init and computed property",
+        "Safely unwrapped canonicalUrl at call sites in BookmarksSheet.swift (loadVideo and triggerShare)",
+        "Added testBookmarkItemCanonicalUrlHostileReelIDDoesNotCrash in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+    "id": "AUDIT-014",
+    "issue": "Plan 3.2 requires honoring 403/410 by pausing and requesting a single debounced manifest refresh. The delegate treats any non-2xx below 500 as terminal (retries only 5xx), so a manifest whose Meta CDN URLs expired yields ~250 individual failures with no recovery and Retry replays the same dead URLs. Merges swift_engine + ci_cd findings (identical site).",
+    "line": 409,
+    "remediation_spec": "On first 403/410 in a batch: suspend queue once, fetch a fresh direct manifest via DigestDataService, rebuild pending items' videoUrls by reel id, then resume. If refresh fails or URLs unchanged, fail fast with 'Links expired - re-run workstation sync' instead of burning 250 retries. Add a unit test with stubbed 403.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Expired-URL 403/410 has no manifest-refresh recovery",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+        "Sources/InstagramDigest/Engine/DigestDataService.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added handleExpiredURLResponse in DownloadAllCoordinator on HTTP 403/410",
+        "Suspended queue and requested fresh direct manifest via DigestDataService.fetchManifest(bypassCache: true)",
+        "Updated pending items in queue if refreshed URLs differ, or failed fast with links expired message on unchanged/repeated failure",
+        "Added bypassCache parameter to DigestDataService.fetchManifest"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+    "id": "AUDIT-015",
+    "issue": "Plan 3.2 specifies .downloading(ready:total:failed) and .completed(ready:failed) with partial-success tracking. The shipped enum is .downloading(completed:total:currentReelID)/.completed, and drainQueue maps ANY failed item to .failed - so 249/250 success reports '1 of 250 downloads failed - tap Retry' and the banner shows 'Download paused', hiding a nearly-complete offline week.",
+    "line": 21,
+    "remediation_spec": "Adopt the plan states carrying ready+failed counts, or add .completedWithFailures(ready:failed:) so the UI can show 'Ready Offline (249/250, 1 failed)' with targeted retry of only failed items.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Partial batch success misreported as total failure",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+        "Sources/InstagramDigest/Views/Modals/DownloadAllSheet.swift",
+        "Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added .completedWithFailures(ready: Int, failed: Int) to CoordinatorState",
+        "Updated drainQueue to transition to .completedWithFailures when completed > 0 and failed > 0",
+        "Added retryFailedItems in DownloadAllCoordinator",
+        "Updated DownloadAllSheet and OfflineCacheBanner to display partial success and allow 1-tap retry of failed reels",
+        "Added testCoordinatorStateCompletedWithFailures in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-016",
+    "issue": "handleUnsave calls teardownPlayer + onClose (unmounts overlay via activePlaybackIndex=nil) and then loadVideo(for: nextBookmark), which can create an AVPlayer, activate audio session, call play(), and fire a Cobalt resolve on a detached view. onDisappear teardown races the new player; transient audio-with-no-UI and wasted resolver call possible.",
+    "line": 875,
+    "remediation_spec": "After onClose/onDeleteBookmark, return early without loadVideo; let the parent re-present the player for the next index if desired, or defer advance until the delete lands.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Unsave plays next bookmark after player unmount",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In BookmarksSheet.handleUnsave, returned immediately after teardownPlayer(), onClose(), and onDeleteBookmark(bookmark) without invoking loadVideo(for: nextBookmark) on unmounted overlay view"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift",
+    "id": "AUDIT-017",
+    "issue": "OfflineCacheBanner body performs contentsOfDirectory + per-file size queries for up to 250 mp4s on the main thread on every coordinator.state publish; BookmarksSheet grid cells call isLocalFileAvailable/fileExists per cell per render. Main-thread I/O jank, worst during download progress updates. Merges swift_ui (P1) + swift_engine (P3) findings; higher severity kept.",
+    "line": 55,
+    "remediation_spec": "Compute downloadedCount off-body in .task/onChange with @State cache, or expose a published cached-count from the coordinator/actor; never stat in body.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Synchronous FS scans in view bodies (banner + grid)",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Removed synchronous FileManager and contentsOfDirectory scans from OfflineCacheBanner body",
+        "Introduced @State private var downloadedCount: Int = 0 updated asynchronously via background Task.detached on .task(id: coordinator.state), .task(id: weekID), and .task(id: reels.count)"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-018",
+    "issue": "Grid badge isLocallyPresent ORs isLocalFileAvailable (non-zero-size checked) with a bare fileExists on the bookmark path, reviving zero-byte files as present. loadVideo/playMedia rejects zero-byte files, so badge says offline-ready but playback falls through to the resolver. Redundant check also double-stats every cell.",
+    "line": 144,
+    "remediation_spec": "Use LibraryPathResolver.resolvedLocalFileURL(...) != nil (or isLocalFileAvailable alone) as the single badge predicate so badge and loadVideo agree.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Grid badge / playback presence mismatch on zero-byte files",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Replaced grid cell badge isLocallyPresent check with LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) != nil",
+        "Eliminated bare FileManager.default.fileExists fallback that revived zero-byte corrupt files"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-019",
+    "issue": "performFreeStorage and deleteBookmark spawn unstructured Task {} from a non-@MainActor View and mutate @State (isPurgingStorage, totalBytes via refreshLedger) off the main actor. .task-attached refreshLedger is fine; these two are not.",
+    "line": 298,
+    "remediation_spec": "Use Task { @MainActor in ... } for both, or move ledger refresh into .task/onChange.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "@State mutated off main actor after purge/delete",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Dispatched state mutations in performFreeStorage and deleteBookmark to Task { @MainActor in ... } to ensure safe @State mutation on the main actor"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-020",
+    "issue": "Offline-matrix violation: a current-week-but-uncached bookmark played while offline shows 'Online connection required for older bookmarks', mislabeling a current-week reel as older and never guiding to Download Week. No 'Download required' path exists in the player, though REQUIREMENTS mandates it. Error icon is wifi.slash for all failures including rateLimited/auth/unsupported.",
+    "line": 802,
+    "remediation_spec": "Branch the .offline case on bookmark.weekID == currentActiveWeekID: current week shows 'Download required \u2014 get this week for offline' (+ open download sheet), older shows 'Online required'. Use per-case icons.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Player offline error mislabels current-week reels",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+        "Sources/InstagramDigest/InstagramDigestApp.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In BookmarkPlayerOverlay.loadVideo, branched .offline resolver error on !currentActiveWeekID.isEmpty && bookmark.weekID == currentActiveWeekID",
+        "Rendered \"Download required \u2014 get this week for offline\" with arrow.down.circle icon and \"Download Week\" affordance button for current week",
+        "Rendered \"Online connection required for older bookmarks\" with wifi.slash icon for older weeks",
+        "Added distinct per-case error icons (hourglass for rateLimited, lock.shield for auth, film.badge.exclamationmark for unsupportedFormat, exclamationmark.triangle.fill for failed)"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": ".github/workflows/build-ipa.yml",
+    "id": "AUDIT-021",
+    "issue": "Every push commits unsigned multi-MB IPA binaries into dist/ipa/ via git add -f + push. Bloats the repo on a feature branch and the artifact cannot install without manual re-sign.",
+    "line": 127,
+    "remediation_spec": "Upload IPA as workflow artifact only; stop committing binaries to git (keep at most one tagged release asset, or none). Single-user: no retention service needed.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "CI commits unsigned IPA binaries to git (repo bloat)",
+    "maker_execution": {
+      "files_modified": [
+        ".github/workflows/build-ipa.yml"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Removed git commit and git push steps for unsigned IPAs from .github/workflows/build-ipa.yml",
+        "Changed workflow repository permissions to contents: read to enforce read-only token security",
+        "Configured unsigned IPA distribution strictly via actions/upload-artifact@v4 workflow artifacts",
+        "Prevented repository bloat from multi-megabyte binary commits"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "Sources/InstagramDigest/Engine/DigestDataService.swift",
+    "id": "AUDIT-022",
+    "issue": "Plan 2.2 requires rejecting empty manifests atomically. fetchManifest refuses to CACHE an empty manifest but still RETURNS it, so a truncated/empty data_direct.json propagates an empty week into the feed (week-change side effects, blank feed until cache fallback) instead of falling back to manifest_cache_direct.json. Merges ci_cd (P1) + swift_engine (P2) findings; higher severity kept.",
+    "line": 64,
+    "remediation_spec": "In direct mode, throw/skip to cache fallback when manifest.items.isEmpty on the network path, matching the no-cache guard already present; add a DirectStreamTests case.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Empty direct manifest returned, not rejected",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/DigestDataService.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added DigestDataServiceError.emptyManifest error enum",
+        "Threw DigestDataServiceError.emptyManifest in DigestDataService.fetchManifest when network or file manifest items array is empty",
+        "Allowed fallback to cached manifest rather than returning an empty week",
+        "Added testDigestDataServiceRejectsEmptyDirectManifest in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "Sources/InstagramDigest/Engine/DigestDataService.swift",
+    "id": "AUDIT-023",
+    "issue": "No channel/schema enforcement in Swift (channel ignored) and fetchManifest falls back to bundled production data.json (R2 URLs) in direct mode, violating 'never fall back to R2/production data.json'. Currently latent (repo bundles no data.json) but a future bundled R2-flavored file would silently serve R2 URLs. Merges ci_cd (P1) + swift_engine (P3) findings; higher severity kept.",
+    "line": 32,
+    "remediation_spec": "In direct mode skip the bundle fallback unless the bundled manifest has channel==direct (or restrict bundle fallback to the -ui-testing seam); optionally assert channel on decode. Keep behavior single-user simple.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Direct mode can still serve production R2 manifest via bundle fallback",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/DigestDataService.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Gated bundle fallback in DigestDataService: in direct mode, bundled data.json is only accepted if manifest.channel == 'direct' or in -ui-testing mode",
+        "Prevented accidental fallback to production R2 bundled manifest in direct mode",
+        "Added testDirectModeBundleFallbackPolicy in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "site_builder.py",
+    "id": "AUDIT-024",
+    "issue": "deploy_direct_to_gh_pages overlays thumbnails additively (copy2 each *.jpg, no deletion) while the legacy deploy force-pushes a fresh tree that prunes. Each weekly direct deploy leaves the prior week's ~250 jpgs on gh-pages forever: unbounded repo growth (~25-50 MB/week) plus stale thumbnails addressable for purged weeks. Merges ci_cd (P1) + python_pipeline (P2) findings; higher severity kept.",
+    "line": 741,
+    "remediation_spec": "After overlay (before prod-sha re-verification), prune destination thumbs not referenced by the incoming manifest: keep={id.jpg + portrait variants}; delete others (excluding .tmp-*); log the pruned count. Add a test.",
+    "severity": "P1",
+    "status": "IMPLEMENTED",
+    "title": "Direct channel never prunes stale gh-pages thumbnails",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added stale thumbnail pruning in deploy_direct_to_gh_pages after overlay and before prod-sha verification",
+        "Preserved .nojekyll, dotfiles, and .tmp-* transient files while deleting unreferenced .jpg files",
+        "Added test_deploy_direct_prunes_stale_thumbnails_audit_024"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-025",
+    "issue": "write_direct_manifest unconditionally stamps thumbnail/poster URLs whenever PAGES_BASE_URL is set, without checking the files exist. When ffmpeg is absent or a render fails/times out (build_site skips silently), the manifest references gh-pages 404s. The legacy path falls back to apple-touch-icon.png. Merges python_pipeline + ci_cd findings.",
+    "line": 107,
+    "remediation_spec": "Mirror the legacy fallback: stamp the jpg URL only if the file exists under output_path.parent/'thumbnails' (resolving against output_path so tmp SITE_DIR tests behave), else apple-touch-icon.png for thumbnail and thumbnail for poster. Add a test.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Direct manifest advertises thumbnails that may not exist",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Updated write_direct_manifest to check thumbnail file existence under output_path.parent / 'thumbnails'",
+        "Fell back to apple-touch-icon.png for thumbnail and thumbnail for poster if jpg does not exist",
+        "Covered in test_write_direct_manifest_preserves_meta_urls_and_strips_r2"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-026",
+    "issue": "payload.update(extra_manifest) lets any caller key overwrite schema_version/channel/run_date/count/items/created_at, silently corrupting the manifest contract. Separately, build_site's direct call (:543) passes no extra_manifest, so budget_capped=True (set by the byte-budget guard) is silently dropped from data_direct.json while legacy data.json keeps it via dict(digest_data).",
+    "line": 125,
+    "remediation_spec": "Allowlist-merge: _RESERVED={'schema_version','channel','run_date','created_at','generated_at','count','items'}; if extra_manifest: for k,v in extra_manifest.items(): if k in _RESERVED: logger.warning('direct manifest: refusing to overwrite reserved key %s',k); continue; payload[k]=v. In build_site, thread the flag through: write_direct_manifest(..., extra_manifest={'budget_capped': True} if digest_data.get('budget_capped') else None).",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "extra_manifest can clobber reserved keys; budget_capped dropped",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added _RESERVED key protection in write_direct_manifest for schema_version, channel, run_date, created_at, generated_at, count, items",
+        "Passed extra_manifest={'budget_capped': True} from build_site direct mode call when budget_capped is set",
+        "Added test_write_direct_manifest_extra_manifest_reserved_keys_audit_026 and test_build_site_passes_budget_capped_to_direct_manifest_audit_026"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-027",
+    "issue": "Every reel whose candidate URL fails validation is silently rewritten to video_url='' with no log line naming the reel, and the writer logs only the total count. A systemic cause (expired scrape, extractor emitting a new Meta host outside the fbcdn.net/cdninstagram.com allowlist) ships as partial/total dead manifest with zero diagnostic trail; operators learn about it only from the phone.",
+    "line": 99,
+    "remediation_spec": "Collect blanked_ids in the loop; after the loop, if blanked_ids: logger.warning('write_direct_manifest: %d/%d reels blanked (no valid direct Meta URL): %s', ...). Keep blanking behavior (never emit R2/non-Meta URLs) \u2014 only add observability.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Blanked video_urls are silent; no dropped-reel logging",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added blanked_ids collection and warning log in write_direct_manifest naming dropped reel IDs",
+        "Covered in test_write_direct_manifest_drops_empty_and_r2_items_audit_006_027"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "main.py",
+    "id": "AUDIT-028",
+    "issue": "_run_reconcile returns 0 ('success') in direct mode before reading the outbox. If the branch switch happens with a non-empty legacy outbox (data/upload_outbox_<week>.json holding parked reels), reconcile reports success while the parked reels are permanently orphaned \u2014 never merged, never retried, never reported. The second guard at :584-586 is unreachable dead code after the first.",
+    "line": 566,
+    "remediation_spec": "Before returning, check for a stranded outbox: box=_read_upload_outbox(week_id or persisted week) when determinable; if box and box.get('reels'): logger.warning('Direct mode: %d legacy-parked reels stranded...',...); return 1 instead of 0. Delete the unreachable duplicate guard at :584-586.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Direct reconcile returns success while orphaning legacy outbox",
+    "maker_execution": {
+      "files_modified": [
+        "main.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In _run_reconcile, inspected outbox for week before bypassing R2; warns and returns 1 if legacy outbox has stranded parked reels",
+        "Deleted unreachable duplicate direct-mode check at lines 584-586",
+        "Added test_reconcile_stranded_outbox_audit_028"
+      ]
+    }
+  },
+  {
+    "domain": "python_pipeline",
+    "file": "site_builder.py",
+    "id": "AUDIT-029",
+    "issue": "deploy_direct_to_gh_pages clones with '--depth 1 --branch gh-pages' and returns False when the clone fails. On a repo/remote where gh-pages does not exist yet there is no bootstrap path (the legacy deploy inits an orphan branch and force-pushes). First-ever direct deploy to a fresh remote fails permanently with no recovery except a manual legacy deploy.",
+    "line": 710,
+    "remediation_spec": "On clone failure, inspect stderr for branch-not-found ('Remote branch gh-pages not found' / exit 128 with that message): if matched, mkdir temp dir fresh, git init -b gh-pages, add data_direct.json/thumbnails/.nojekyll, commit, push -u origin gh-pages; skip the prod-data.json invariant ONLY in this bootstrap case with an explicit warning. Any other clone error keeps the current return-False behavior.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "No gh-pages bootstrap path when branch is absent",
+    "maker_execution": {
+      "files_modified": [
+        "site_builder.py",
+        "tests/test_direct_stream_mode.py"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In deploy_direct_to_gh_pages, inspected clone failure for 'Remote branch gh-pages not found'",
+        "Bootstrapped fresh gh-pages branch with git init -b gh-pages and push -u origin gh-pages",
+        "Skipped production data.json invariant check only for bootstrap mode",
+        "Added test_deploy_direct_bootstrap_on_missing_remote_branch_audit_029"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/MediaCacheManager.swift",
+    "id": "AUDIT-030",
+    "issue": "executeRolloverPurge deletes all Bookmarks/*.mp4 files and zeroes totalBookmarkBytes but never flips the corresponding BookmarkItem rows from .cached to .evicted (stale sizeBytes included). Rows lie until the next reconcile; direct-mode badges happen to use filesystem checks so they stay correct, but ledger/row state is inconsistent and freeBookmarkStorage iterates phantom .cached rows.",
+    "line": 204,
+    "remediation_spec": "In the same purge transaction, fetch BookmarkItems, set localStatus=.evicted/sizeBytes=0 where the file is gone, and save once; or call reconcileBookmarkStorageLedger() at purge end.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Rollover purge leaves stale .cached bookmark rows",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/MediaCacheManager.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In executeRolloverPurge, fetched BookmarkItem models via modelContainer",
+        "Transitioned any evicted bookmark rows without remaining local files to localStatus = .evicted and sizeBytes = 0",
+        "Called reconcileBookmarkStorageLedger() to guarantee ledger consistency"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/BookmarkController.swift",
+    "id": "AUDIT-031",
+    "issue": "Direct-mode add() blindly inserts a BookmarkItem whose reelID is @Attribute(.unique). Re-saving an already-bookmarked reel (e.g. same reel in the new week's feed) throws on save, rolls back, and silently keeps the OLD weekID - so local-file checks and badges look in the purged old week dir and miss the new local copy, forcing needless resolver use.",
+    "line": 60,
+    "remediation_spec": "Fetch by reelID first: if a row exists, update weekID/canonicalUrl/sizeBytes/metadata in place instead of inserting.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Re-bookmark silently keeps stale weekID on duplicate",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/BookmarkController.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In BookmarkController.add, performed fetch by reelID before inserting",
+        "Updated existing row in place with incoming weekID, canonicalUrlString, thumbnailUrlString, videoUrlString, sizeBytes, localStatus, and updated timestamps",
+        "Prevented unique constraint violations and stale weekID associations on re-bookmarking"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/MediaCacheManager.swift",
+    "id": "AUDIT-032",
+    "issue": "Plan 4.2 requires a one-time migration purging legacy isolated Bookmarks/*.mp4 files. No migration exists: pre-branch isolated copies (up to 1.5 GB) linger until the user's first 'Download Week' tap triggers executeRolloverPurge, silently consuming the storage budget the ~3 GB cap assumes is free.",
+    "line": 183,
+    "remediation_spec": "On first direct-mode launch (UserDefaults one-shot flag), delete legacy Bookmarks/*.mp4, zero the bookmark ledger, and reconcile.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Missing one-time legacy Bookmarks/ migration",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/MediaCacheManager.swift",
+        "Sources/InstagramDigest/InstagramDigestApp.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added migrateLegacyDirectBookmarksIfNeeded() in MediaCacheManager with hasMigratedLegacyDirectBookmarks UserDefaults guard",
+        "Deleted legacy isolated Bookmarks/*.mp4 files, reset totalBookmarkBytes, and reconciled ledger",
+        "Wired migration into InstagramDigestApp on launch"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+    "id": "AUDIT-033",
+    "issue": "startDownloadAll runs executeRolloverPurge BEFORE preflight. If preflight then fails (device cannot fit ~3 GB even after wipe), the user is left with zero offline weeks: old cache destroyed, new batch refused. The immediate-wipe order is spec-mandated, but the doomed-batch case is predictable and destructive.",
+    "line": 114,
+    "remediation_spec": "Run a pre-purge preflight that adds reclaimable old-week bytes to available space; abort with 'insufficient space' BEFORE wiping when even post-purge capacity cannot fit the batch. Keep post-purge preflight as the final gate.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Preflight-after-purge can strand user with zero weeks",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added calculateReclaimableRolloverBytes in DownloadAllCoordinator",
+        "Checked available space + reclaimable bytes against required batch bytes BEFORE calling executeRolloverPurge",
+        "Preserved existing offline cache intact when disk capacity cannot accommodate new batch",
+        "Added testCoordinatorPreflightReclaimableRolloverBytes in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/MediaCacheManager.swift",
+    "id": "AUDIT-034",
+    "issue": "executeRolloverPurge bulk-deletes old week directories without consulting activeVideoPoolReelIDs/LivePinSet (unlike purgeOldWeekDirectory), and performs no pause/cancel itself - it relies entirely on the caller having paused playback and cancelled downloads. Any future caller that skips that preamble unlinks files out from under the player (black frames/playback errors).",
+    "line": 190,
+    "remediation_spec": "Move AVPlayerPool.pause() + download suspension into executeRolloverPurge (or assert isSuspended/no-inflight at entry) and document the caller contract in the method docstring.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Rollover purge bypasses LivePinSet protection",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/MediaCacheManager.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Documented caller contract in executeRolloverPurge docstring",
+        "Invoked downloadSuspensionHandler?(true) on entry and resumed on exit",
+        "Filtered older week files and Bookmarks files against computeLivePinSet() and protectedReelIDs before deletion"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/BookmarkResolver.swift",
+    "id": "AUDIT-035",
+    "issue": "Plan 4.1 requires mapping Turnstile/HTML challenge pages to .authOrChallengeRequired. A 200 response with an HTML body fails JSON parsing and returns .failed('Malformed JSON response'), so challenge-gated instances surface a confusing generic error instead of the auth/captcha message. (Source severity P3, normalized to P2 per merge contract.)",
+    "line": 92,
+    "remediation_spec": "Before JSON parse, check the response Content-Type for text/html (or sniff '<html') and return .authOrChallengeRequired.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Challenge HTML on HTTP 200 misclassified as generic failure",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/BookmarkResolver.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Checked Content-Type header for text/html and sniffed response body prefix for <!doctype and <html in BookmarkResolver",
+        "Mapped HTML responses on HTTP 200 to .authOrChallengeRequired",
+        "Added testResolverMapsHttp200ChallengeHtml in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "swift_engine",
+    "file": "Sources/InstagramDigest/Engine/BookmarkResolver.swift",
+    "id": "AUDIT-036",
+    "issue": "resolveWithRetry sleeps (1-3s) and retries without checking Task.isCancelled, so a user swipe-away during backoff still fires a second network request after the wait. BookmarksSheet checks cancellation only after resolve returns. (Source severity P3, normalized to P2 per merge contract.)",
+    "line": 68,
+    "remediation_spec": "Check Task.isCancelled after each sleep and before the retry call; return .failed('cancelled') or rethrow CancellationError.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Resolver retry ignores task cancellation",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Engine/BookmarkResolver.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added Task.isCancelled checks after Task.sleep in 429, 5xx, and URLError retry branches, as well as on entry and after network response",
+        "Returned .failed('Task cancelled') when task is cancelled before firing subsequent requests",
+        "Added testResolverCancellationCheck in DirectStreamTests"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift",
+    "id": "AUDIT-037",
+    "issue": ".completed branch prints reels.count (manifest size) while coordinator completed a possibly unwatched-only subset; partial-failure terminal state is only visible inside the sheet. Banner overclaims full offline readiness. Also .failed copy says 'Download paused' for terminal errors (e.g. insufficient space), and .paused (user pause) is grouped with .idle so a paused batch renders the download CTA instead of paused state.",
+    "line": 46,
+    "remediation_spec": "Show completed/total from coordinator state, add failed count per plan (.downloading ready/total/failed), copy 'Download failed' vs 'Paused' distinctly, and give .paused its own branch.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Banner overclaims completion, mislabels failed/paused",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In OfflineCacheBanner, displayed reels.count in .completed state only if reels.count > 0",
+        "Formatted .completedWithFailures text as Cached Offline (ready/total, failed failed)",
+        "Corrected .failed label to display \"Download failed: msg\" instead of \"Download paused\"",
+        "Gave .paused its own distinct case with yellow pause icon pause.circle.fill and \"Download paused \u2014 tap to resume\" text"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-038",
+    "issue": "In direct mode the header gauge (x/1.5GB), pending 'not backed up' label, and Free Local Storage button are legacy-R2 concepts: pending set is never populated (direct add path skips it), totalBookmarkBytes only counts isolated Bookmarks/*.mp4 which rollover purges and direct mode never creates, so the button is near-always disabled and the ~3GB feed cache actually used is unrepresented.",
+    "line": 46,
+    "remediation_spec": "In directMode hide/replace the gauge with feed-week cache size, or hide the Free Storage button; do not show a permanently-zero 1.5GB gauge.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Stale R2 storage gauge shown in direct mode",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Suppressed legacy R2 1.5GB storage bar and Free Local Storage button when DigestDataService.directMode is active",
+        "Rendered clean bookmarks summary header in direct mode, avoiding permanently zero 1.5GB gauge"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-039",
+    "issue": "Non-direct fallback: if bookmark.videoUrl is nil, loadVideo silently returns with player nil, isPlaying false, and no resolutionError \u2014 black screen with HUD and no feedback or retry.",
+    "line": 783,
+    "remediation_spec": "Set resolutionError with a retry affordance when no local file and no remote URL exist (both modes).",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Silent black screen when no playable URL exists",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "In BookmarkPlayerOverlay.loadVideo, set resolutionError = \"No playable stream URL available\" with exclamationmark.triangle icon and retry button when no local file exists and videoUrl == nil or canonicalUrl == nil, eliminating silent black screen"
+      ]
+    }
+  },
+  {
+    "domain": "swift_ui",
+    "file": "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift",
+    "id": "AUDIT-040",
+    "issue": "Direct-mode grid badges (green/orange/globe) carry no accessibilityIdentifiers while the legacy pending/cached badges do, breaking UI-test coverage of the Phase 5.2 three-state contract. currentActiveWeekID falls back to '' when AppState is missing, collapsing download-required into the globe branch.",
+    "line": 163,
+    "remediation_spec": "Add BookmarkBadge_<index>_<state> identifiers; treat empty activeWeekID as unknown (show download-required only on positive week match, else neutral).",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Direct-mode badges untestable, week fallback lossy",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added explicit accessibility identifiers to the 3 direct-mode badge states: BookmarkBadge_{index}_cached, BookmarkBadge_{index}_downloadRequired, and BookmarkBadge_{index}_resolver",
+        "Treated empty currentActiveWeekID as unknown to prevent false matches against empty bookmark weekID"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "requirements.txt",
+    "id": "AUDIT-041",
+    "issue": "Unpinned drift surface: requirements.txt uses >= floors (yt-dlp/boto3/playwright), brew install xcodegen unpinned, Xcode toolchain unpinned on macos-15, actions pinned to @v5 majors only.",
+    "line": 1,
+    "remediation_spec": "Pin xcodegen version + select explicit Xcode version in CI; consider freezing requirements.txt to tested versions. Keep single-user light: no lockfile service.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Unpinned deps: pip floors, xcodegen, Xcode toolchain",
+    "maker_execution": {
+      "files_modified": [
+        ".github/workflows/build-ipa.yml",
+        "requirements.txt"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Pinned explicit Xcode selection in build-ipa.yml to Xcode 16.2 on macos-15 runner",
+        "Pinned XcodeGen to explicit release 2.42.0 using official install script",
+        "Pinned actions to actions/checkout@v4 and actions/upload-artifact@v4",
+        "Pinned pip dependencies in requirements.txt to tested stable versions"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": ".github/workflows/build-ipa.yml",
+    "id": "AUDIT-042",
+    "issue": "Unsigned-only pipeline by design, but the re-sign/install path for the single user exists only as workflow echo lines; no in-repo runbook (bundle id, AltStore/Sideloadly/TrollStore steps).",
+    "line": 105,
+    "remediation_spec": "Add a short docs note with exact re-sign + install steps. No enterprise signing infra (no fastlane/match).",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "No documented re-sign/install runbook for unsigned IPA",
+    "maker_execution": {
+      "files_modified": [
+        "docs/RE_SIGN_AND_INSTALL.md",
+        ".github/workflows/build-ipa.yml"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Authored comprehensive runbook in docs/RE_SIGN_AND_INSTALL.md for single-user signing and installation",
+        "Documented step-by-step procedures for Sideloadly, AltStore, TrollStore, LiveContainer, and macOS CLI codesign",
+        "Documented Developer Mode requirements, Untrusted Developer trust workflow, and 7-day expiration policies",
+        "Referenced docs/RE_SIGN_AND_INSTALL.md in CI build logs in build-ipa.yml"
+      ]
+    }
+  },
+  {
+    "domain": "ci_cd",
+    "file": "Tests/InstagramDigestTests/DirectStreamTests.swift",
+    "id": "AUDIT-043",
+    "issue": "Swift test gaps: no end-to-end testDirectManifestDecoding (plan); routing test asserts a hardcoded constant (tautological); resolver tests never assert request method/headers/body; single-retry, 5xx/timeout, and non-HTTPS-stream cases unasserted. (Rollover tests polluting the real container tracked separately as AUDIT-002.)",
+    "line": 96,
+    "remediation_spec": "Add manifest decode test from a golden data_direct.json sample; assert resolver request shape + retry counts; add retry/5xx/timeout/non-HTTPS cases. See AUDIT-002 for rollover-test isolation.",
+    "severity": "P2",
+    "status": "IMPLEMENTED",
+    "title": "Swift direct-stream test gaps + tautological routing test",
+    "maker_execution": {
+      "files_modified": [
+        "Sources/InstagramDigest/Models/DigestManifest.swift",
+        "Tests/InstagramDigestTests/DirectStreamTests.swift"
+      ],
+      "ripple_effects_and_compiler_fixes": [
+        "Added schemaVersion and channel properties to DigestManifest model with resilient Codable implementation",
+        "Added testDirectManifestDecoding asserting golden data_direct.json decoding for schema_version, channel: direct, Meta CDN URLs, size_bytes, and permalinks",
+        "Hardened testDigestDataServiceDirectModeRouting to verify remote bookmark endpoints bypass network requests in direct mode",
+        "Added testResolverRequestOmitsAuthHeaderWhenNoApiKey verifying request headers omit Authorization when unconfigured",
+        "Added testResolverRetriesOnceOn5xxAndSucceeds and testResolver5xxExhaustsRetryAndFails verifying transient 5xx retry logic",
+        "Added testResolverRetriesOnceOnTimeoutAndSucceeds and testResolverTimeoutExhaustsRetryAndReturnsOffline verifying timeout handling",
+        "Added testResolverRejectsNonHttpsStreamUrl asserting insecure stream URLs are rejected"
+      ]
+    }
+  }
+]

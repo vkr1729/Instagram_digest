@@ -35,6 +35,7 @@ struct InstagramDigestApp: App {
             // Wire container to MediaCacheManager actor
             Task {
                 await MediaCacheManager.shared.setModelContainer(container)
+                await MediaCacheManager.shared.migrateLegacyDirectBookmarksIfNeeded()
                 await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
 
                 // Wire download suspension handler for Free Local Storage
@@ -349,6 +350,19 @@ struct FeedMainView: View {
                                 }
                             }
                         )
+
+                        if DigestDataService.directMode, let m = manifest, !allReels.isEmpty {
+                            OfflineCacheBanner(
+                                reels: allReels,
+                                weekID: m.weekId,
+                                onTap: {
+                                    wasPlayingBeforeSheet = pool.isPlaying
+                                    pool.pause()
+                                    showDownloadSheet = true
+                                }
+                            )
+                            .padding(.top, 4)
+                        }
                     }
                     .background(
                         LinearGradient(
@@ -430,7 +444,18 @@ struct FeedMainView: View {
             }
         }
         .sheet(isPresented: $showBookmarksSheet) {
-            BookmarksSheet()
+            BookmarksSheet(onTriggerDownload: {
+                showBookmarksSheet = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    showDownloadSheet = true
+                }
+            })
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("TriggerDownloadAllNotification"))) { _ in
+            showBookmarksSheet = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                showDownloadSheet = true
+            }
         }
         .sheet(isPresented: $showManifestoSheet) {
             ManifestoSheetView()
@@ -584,9 +609,6 @@ struct FeedMainView: View {
                         UserDefaults.standard.removeObject(forKey: "lastActiveIndex_global")
                         UserDefaults.standard.removeObject(forKey: "watchSeconds_\(oldWeek)")
                         UserDefaults.standard.removeObject(forKey: "watchContentFingerprint_\(oldWeek)")
-                        Task {
-                            await MediaCacheManager.shared.purgeOldWeekDirectory(oldWeekID: oldWeek)
-                        }
                     } else {
                         if state.currentWeekID.isEmpty {
                             state.currentWeekID = fetched.weekId

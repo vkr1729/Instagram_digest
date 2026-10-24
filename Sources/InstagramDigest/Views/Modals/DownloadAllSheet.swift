@@ -97,9 +97,23 @@ public struct DownloadAllSheet: View {
                     VStack(spacing: 12) {
                         switch coordinator.state {
                         case .idle:
-                            Text("\(effectiveReels.count) reels ready to download")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundColor(.white.opacity(0.8))
+                            if effectiveReels.isEmpty {
+                                Text("All reels already downloaded or watched")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                            } else {
+                                Text("\(effectiveReels.count) reels ready to download")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+
+                        case .preparing:
+                            HStack(spacing: 8) {
+                                ProgressView().tint(.cyan)
+                                Text("Preparing storage & rollover...")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundColor(.cyan)
+                            }
 
                         case .downloading(let completed, let total, let currentReel):
                             VStack(spacing: 8) {
@@ -139,6 +153,15 @@ public struct DownloadAllSheet: View {
                                     .foregroundColor(.white)
                             }
 
+                        case .completedWithFailures(let ready, let failed):
+                            HStack {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .foregroundColor(.orange)
+                                Text("Cached \(ready) of \(ready + failed) reels (\(failed) failed)")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
+
                         case .paused:
                             Text("Downloads paused")
                                 .font(.system(size: 15, weight: .medium))
@@ -171,11 +194,23 @@ public struct DownloadAllSheet: View {
                                     .font(.system(size: 16, weight: .bold))
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 16)
-                                    .background(Color.white)
-                                    .foregroundColor(.black)
+                                    .background(effectiveReels.isEmpty ? Color.white.opacity(0.3) : Color.white)
+                                    .foregroundColor(effectiveReels.isEmpty ? Color.black.opacity(0.5) : Color.black)
                                     .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
+                            .disabled(effectiveReels.isEmpty)
                             .accessibilityIdentifier("StartDownloadButton")
+
+                        case .preparing:
+                            Button {} label: {
+                                ProgressView()
+                                    .tint(.black)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 16)
+                                    .background(Color.white.opacity(0.8))
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
+                            .disabled(true)
 
                         case .downloading:
                             HStack(spacing: 12) {
@@ -222,6 +257,36 @@ public struct DownloadAllSheet: View {
                             }
                             .accessibilityIdentifier("DownloadDoneButton")
 
+                        case .completedWithFailures:
+                            VStack(spacing: 12) {
+                                Button {
+                                    coordinator.retryFailedItems(reels: effectiveReels, weekID: weekID)
+                                } label: {
+                                    Text("Retry Failed")
+                                        .font(.system(size: 16, weight: .bold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 16)
+                                        .background(effectiveReels.isEmpty ? Color.white.opacity(0.3) : Color.white)
+                                        .foregroundColor(effectiveReels.isEmpty ? Color.black.opacity(0.5) : Color.black)
+                                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                                }
+                                .disabled(effectiveReels.isEmpty)
+                                .accessibilityIdentifier("DownloadRetryButton")
+
+                                Button {
+                                    dismiss()
+                                } label: {
+                                    Text("Done")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 14)
+                                        .background(Color.white.opacity(0.15))
+                                        .foregroundColor(.white)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .accessibilityIdentifier("DownloadDoneButton")
+                            }
+
                         case .paused:
                             // B9: pause used to strand the sheet on Done with
                             // no way back. Paused gets its own Resume + Cancel.
@@ -263,10 +328,11 @@ public struct DownloadAllSheet: View {
                                         .font(.system(size: 16, weight: .bold))
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 16)
-                                        .background(Color.white)
-                                        .foregroundColor(.black)
+                                        .background(effectiveReels.isEmpty ? Color.white.opacity(0.3) : Color.white)
+                                        .foregroundColor(effectiveReels.isEmpty ? Color.black.opacity(0.5) : Color.black)
                                         .clipShape(RoundedRectangle(cornerRadius: 14))
                                 }
+                                .disabled(effectiveReels.isEmpty)
                                 .accessibilityIdentifier("DownloadRetryButton")
 
                                 Button {

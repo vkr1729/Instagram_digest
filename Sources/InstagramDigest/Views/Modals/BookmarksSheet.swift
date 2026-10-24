@@ -8,8 +8,13 @@ import Combine
 /// has an (x) close button, channel/caption/unsave HUD, and auto-hiding chrome.
 public struct BookmarksSheet: View {
     @Query(sort: \BookmarkItem.bookmarkedAt, order: .reverse) private var bookmarks: [BookmarkItem]
+    @Query private var appStates: [AppState]
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+
+    private var currentActiveWeekID: String {
+        appStates.first?.currentWeekID ?? ""
+    }
 
     @State private var totalBytes: Int64 = 0
     @State private var isPurgingStorage: Bool = false
@@ -29,7 +34,11 @@ public struct BookmarksSheet: View {
         GridItem(.flexible(), spacing: 2)
     ]
 
-    public init() {}
+    public var onTriggerDownload: (() -> Void)?
+
+    public init(onTriggerDownload: (() -> Void)? = nil) {
+        self.onTriggerDownload = onTriggerDownload
+    }
 
     public var body: some View {
         NavigationStack {
@@ -37,71 +46,84 @@ public struct BookmarksSheet: View {
                 Color.black.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // Storage Gauge Header
-                    VStack(spacing: 8) {
+                    if !DigestDataService.directMode {
+                        // Storage Gauge Header (Legacy R2 mode)
+                        VStack(spacing: 8) {
+                            HStack {
+                                Label("Bookmark Storage", systemImage: "internaldrive.fill")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.8))
+                                Spacer()
+                                Text("\(formatMB(totalBytes)) / 1.5 GB")
+                                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.cyan)
+                                    .accessibilityIdentifier("StorageGaugeLabel")
+                            }
+
+                            // Progress Gauge Bar
+                            let fraction = min(1.0, Double(totalBytes) / Double(MediaCacheManager.maxBookmarkStorageBytes))
+                            let pendingCount = MediaCacheManager.pendingRemoteBookmarks.count
+                            ProgressView(value: fraction)
+                                .tint(fraction > 0.9 ? .orange : .cyan)
+
+                            HStack(spacing: 12) {
+                                Text("\(bookmarks.count) saved reels")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .accessibilityIdentifier("BookmarksCountLabel")
+                                if pendingCount > 0 {
+                                    Text("\(pendingCount) not backed up")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.orange)
+                                        .accessibilityIdentifier("BookmarksPendingLabel")
+                                }
+                                Spacer()
+
+                                // Owner Key Link Button
+                                Button {
+                                    ownerKeyInput = storedOwnerKey
+                                    showOwnerKeyPrompt = true
+                                } label: {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: hasOwnerKey ? "key.fill" : "key")
+                                        Text(hasOwnerKey ? "Key Linked" : "Link Key")
+                                    }
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(hasOwnerKey ? .yellow : .cyan)
+                                }
+                                .accessibilityIdentifier("LinkOwnerKeyButton")
+
+                                // Free Local Storage Action Button
+                                Button {
+                                    performFreeStorage()
+                                } label: {
+                                    if isPurgingStorage {
+                                        ProgressView()
+                                            .tint(.white)
+                                    } else {
+                                        Text("Free Local Storage")
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundColor(.red.opacity(0.9))
+                                    }
+                                }
+                                .accessibilityIdentifier("FreeStorageButton")
+                                .disabled(isPurgingStorage || totalBytes == 0)
+                            }
+                        }
+                        .padding(16)
+                        .background(Color.white.opacity(0.06))
+                    } else {
+                        // Direct mode header: suppresses legacy R2 1.5GB bar & Free Local Storage button
                         HStack {
-                            Label("Bookmark Storage", systemImage: "internaldrive.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.8))
-                            Spacer()
-                            Text("\(formatMB(totalBytes)) / 1.5 GB")
-                                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                .foregroundColor(.cyan)
-                                .accessibilityIdentifier("StorageGaugeLabel")
-                        }
-
-                        // Progress Gauge Bar
-                        let fraction = min(1.0, Double(totalBytes) / Double(MediaCacheManager.maxBookmarkStorageBytes))
-                        let pendingCount = MediaCacheManager.pendingRemoteBookmarks.count
-                        ProgressView(value: fraction)
-                            .tint(fraction > 0.9 ? .orange : .cyan)
-
-                        HStack(spacing: 12) {
-                            Text("\(bookmarks.count) saved reels")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
+                            Label("\(bookmarks.count) Saved Reels", systemImage: "bookmark.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.9))
                                 .accessibilityIdentifier("BookmarksCountLabel")
-                            if pendingCount > 0 {
-                                Text("\(pendingCount) not backed up")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(.orange)
-                                    .accessibilityIdentifier("BookmarksPendingLabel")
-                            }
                             Spacer()
-
-                            // Owner Key Link Button
-                            Button {
-                                ownerKeyInput = storedOwnerKey
-                                showOwnerKeyPrompt = true
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: hasOwnerKey ? "key.fill" : "key")
-                                    Text(hasOwnerKey ? "Key Linked" : "Link Key")
-                                }
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(hasOwnerKey ? .yellow : .cyan)
-                            }
-                            .accessibilityIdentifier("LinkOwnerKeyButton")
-
-                            // Free Local Storage Action Button
-                            Button {
-                                performFreeStorage()
-                            } label: {
-                                if isPurgingStorage {
-                                    ProgressView()
-                                        .tint(.white)
-                                } else {
-                                    Text("Free Local Storage")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(.red.opacity(0.9))
-                                }
-                            }
-                            .accessibilityIdentifier("FreeStorageButton")
-                            .disabled(isPurgingStorage || totalBytes == 0)
                         }
+                        .padding(16)
+                        .background(Color.white.opacity(0.06))
                     }
-                    .padding(16)
-                    .background(Color.white.opacity(0.06))
 
                     // Error Alert Banner
                     if let err = errorMessage {
@@ -134,6 +156,7 @@ public struct BookmarksSheet: View {
                                 ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
                                     let isPending = pendingIDs.contains(bookmark.reelID)
                                     let isCached = bookmark.localStatus == .cached
+                                    let isLocallyPresent = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) != nil
                                     Button {
                                         activePlaybackIndex = index
                                     } label: {
@@ -152,7 +175,24 @@ public struct BookmarksSheet: View {
                                                 HStack {
                                                     Spacer()
 
-                                                    if isPending {
+                                                    if DigestDataService.directMode {
+                                                        if isLocallyPresent {
+                                                            Image(systemName: "checkmark.circle.fill")
+                                                                .font(.system(size: 12))
+                                                                .foregroundColor(.green)
+                                                                .accessibilityIdentifier("BookmarkBadge_\(index)_cached")
+                                                        } else if !currentActiveWeekID.isEmpty && bookmark.weekID == currentActiveWeekID {
+                                                            Image(systemName: "arrow.down.circle")
+                                                                .font(.system(size: 12))
+                                                                .foregroundColor(.orange)
+                                                                .accessibilityIdentifier("BookmarkBadge_\(index)_downloadRequired")
+                                                        } else {
+                                                            Image(systemName: "globe")
+                                                                .font(.system(size: 12))
+                                                                .foregroundColor(.blue.opacity(0.8))
+                                                                .accessibilityIdentifier("BookmarkBadge_\(index)_resolver")
+                                                        }
+                                                    } else if isPending {
                                                         Image(systemName: "icloud.slash")
                                                             .font(.system(size: 12))
                                                             .foregroundColor(.orange)
@@ -196,6 +236,7 @@ public struct BookmarksSheet: View {
                     BookmarkPlayerOverlay(
                         bookmarks: bookmarks,
                         initialIndex: min(idx, bookmarks.count - 1),
+                        currentActiveWeekID: currentActiveWeekID,
                         onClose: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 activePlaybackIndex = nil
@@ -203,6 +244,16 @@ public struct BookmarksSheet: View {
                         },
                         onDeleteBookmark: { item in
                             deleteBookmark(item)
+                        },
+                        onTriggerDownload: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                activePlaybackIndex = nil
+                            }
+                            if let onTriggerDownload = onTriggerDownload {
+                                onTriggerDownload()
+                            } else {
+                                NotificationCenter.default.post(name: Notification.Name("TriggerDownloadAllNotification"), object: nil)
+                            }
                         }
                     )
                     .ignoresSafeArea()
@@ -275,7 +326,7 @@ public struct BookmarksSheet: View {
 
     private func performFreeStorage() {
         isPurgingStorage = true
-        Task {
+        Task { @MainActor in
             await MediaCacheManager.shared.freeBookmarkStorage()
             await refreshLedger()
             isPurgingStorage = false
@@ -299,7 +350,7 @@ public struct BookmarksSheet: View {
         if remaining.isEmpty {
             activePlaybackIndex = nil
         }
-        Task {
+        Task { @MainActor in
             await refreshLedger()
         }
     }
@@ -315,8 +366,10 @@ public struct BookmarksSheet: View {
 public struct BookmarkPlayerOverlay: View {
     public let bookmarks: [BookmarkItem]
     public let initialIndex: Int
+    public let currentActiveWeekID: String
     public var onClose: () -> Void
     public var onDeleteBookmark: (BookmarkItem) -> Void
+    public var onTriggerDownload: (() -> Void)?
 
     @State private var currentIndex: Int
     @State private var scrolledReelID: String?
@@ -337,6 +390,11 @@ public struct BookmarkPlayerOverlay: View {
     @State private var bookmarkCurrentTime: Double = 0
     @State private var hideChromeWorkItem: DispatchWorkItem?
     @State private var endObserverToken: NSObjectProtocol?
+    @State private var isResolving: Bool = false
+    @State private var resolutionError: String? = nil
+    @State private var resolutionErrorIcon: String = "wifi.slash"
+    @State private var isCurrentWeekDownloadRequired: Bool = false
+    @State private var resolutionTask: Task<Void, Never>? = nil
 
     // Stored (not built in `body`): same lesson as FeedMainView.watchTimer —
     // an inline Timer.publish would be recreated and resubscribed on every
@@ -346,16 +404,20 @@ public struct BookmarkPlayerOverlay: View {
     public init(
         bookmarks: [BookmarkItem],
         initialIndex: Int,
+        currentActiveWeekID: String = "",
         onClose: @escaping () -> Void,
-        onDeleteBookmark: @escaping (BookmarkItem) -> Void
+        onDeleteBookmark: @escaping (BookmarkItem) -> Void,
+        onTriggerDownload: (() -> Void)? = nil
     ) {
         self.bookmarks = bookmarks
         self.initialIndex = initialIndex
+        self.currentActiveWeekID = currentActiveWeekID
         self._currentIndex = State(initialValue: initialIndex)
         let initialID = (initialIndex >= 0 && initialIndex < bookmarks.count) ? bookmarks[initialIndex].reelID : nil
         self._scrolledReelID = State(initialValue: initialID)
         self.onClose = onClose
         self.onDeleteBookmark = onDeleteBookmark
+        self.onTriggerDownload = onTriggerDownload
     }
 
     private var currentBookmark: BookmarkItem? {
@@ -421,6 +483,77 @@ public struct BookmarkPlayerOverlay: View {
             }
             }
 
+            // Stream Resolution Spinner & Error States
+            if isResolving {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.3)
+                    Text("Resolving video stream...")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .padding(20)
+                .background(Color.black.opacity(0.65))
+                .cornerRadius(12)
+                .accessibilityIdentifier("BookmarkPlayerResolvingIndicator")
+            } else if let error = resolutionError {
+                VStack(spacing: 14) {
+                    Image(systemName: resolutionErrorIcon)
+                        .font(.system(size: 36))
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+
+                    if isCurrentWeekDownloadRequired {
+                        Button {
+                            if let onTriggerDownload = onTriggerDownload {
+                                onTriggerDownload()
+                            } else {
+                                NotificationCenter.default.post(name: Notification.Name("TriggerDownloadAllNotification"), object: nil)
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                Text("Download Week")
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.cyan)
+                            .cornerRadius(8)
+                        }
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("BookmarkPlayerDownloadWeekButton")
+                    }
+
+                    if let bm = currentBookmark {
+                        Button {
+                            loadVideo(for: bm)
+                        } label: {
+                            Text("Retry")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.white)
+                                .cornerRadius(8)
+                        }
+                        .padding(.top, 4)
+                        .accessibilityIdentifier("BookmarkPlayerRetryButton")
+                    }
+                }
+                .padding(24)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(16)
+                .padding(.horizontal, 32)
+                .accessibilityIdentifier("BookmarkPlayerResolutionError")
+            }
+
             // Natural background scrim for chrome readability
             if isChromeVisible {
                 LinearGradient(
@@ -440,7 +573,7 @@ public struct BookmarkPlayerOverlay: View {
                         Spacer()
 
                         Button {
-                            player?.pause()
+                            teardownPlayer()
                             onClose()
                         } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -683,19 +816,86 @@ public struct BookmarkPlayerOverlay: View {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil
         }
+        resolutionTask?.cancel()
+        resolutionTask = nil
         player?.pause()
+        player = nil
+        isPlaying = false
+        resolutionError = nil
+        isCurrentWeekDownloadRequired = false
 
-        let mediaURL: URL
-        let localURL = LibraryPathResolver.shared.bookmarkFileURL(for: bookmark.reelID)
-        if FileManager.default.fileExists(atPath: localURL.path) {
-            mediaURL = localURL
-        } else if let remoteURL = bookmark.videoUrl {
-            mediaURL = remoteURL
-        } else {
+        if let localFile = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) {
+            isResolving = false
+            playMedia(url: localFile, isLocal: true)
             return
         }
 
-        let isLocal = (mediaURL == localURL)
+        if !DigestDataService.directMode {
+            if let remoteURL = bookmark.videoUrl {
+                isResolving = false
+                playMedia(url: remoteURL, isLocal: false)
+            } else {
+                isResolving = false
+                resolutionError = "No playable stream URL available"
+                resolutionErrorIcon = "exclamationmark.triangle"
+            }
+            return
+        }
+
+        // Direct stream mode: resolve via Cobalt API
+        guard let canonical = bookmark.canonicalUrl else {
+            isResolving = false
+            resolutionError = "No playable stream URL available"
+            resolutionErrorIcon = "exclamationmark.triangle"
+            return
+        }
+        isResolving = true
+        resolutionTask = Task { @MainActor in
+            let result = await BookmarkResolver.shared.resolve(url: canonical)
+            guard !Task.isCancelled else { return }
+            self.isResolving = false
+            switch result {
+            case .success(let streamURL):
+                self.resolutionError = nil
+                self.isCurrentWeekDownloadRequired = false
+                self.playMedia(url: streamURL, isLocal: false)
+            case .offline:
+                let isCurrentWeek = !self.currentActiveWeekID.isEmpty && bookmark.weekID == self.currentActiveWeekID
+                self.isCurrentWeekDownloadRequired = isCurrentWeek
+                if isCurrentWeek {
+                    self.resolutionError = "Download required — get this week for offline"
+                    self.resolutionErrorIcon = "arrow.down.circle"
+                } else {
+                    self.resolutionError = "Online connection required for older bookmarks"
+                    self.resolutionErrorIcon = "wifi.slash"
+                }
+            case .rateLimited:
+                self.isCurrentWeekDownloadRequired = false
+                self.resolutionError = "Resolver rate limited. Please try again shortly."
+                self.resolutionErrorIcon = "hourglass"
+            case .authOrChallengeRequired:
+                self.isCurrentWeekDownloadRequired = false
+                self.resolutionError = "Authentication or captcha required by resolver."
+                self.resolutionErrorIcon = "lock.shield"
+            case .unsupportedFormat:
+                self.isCurrentWeekDownloadRequired = false
+                self.resolutionError = "Media format not supported by resolver."
+                self.resolutionErrorIcon = "film.badge.exclamationmark"
+            case .failed(let msg):
+                self.isCurrentWeekDownloadRequired = false
+                self.resolutionError = msg
+                self.resolutionErrorIcon = "exclamationmark.triangle.fill"
+            }
+        }
+    }
+
+    private func playMedia(url mediaURL: URL, isLocal: Bool) {
+        if let token = endObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            endObserverToken = nil
+        }
+        player?.pause()
+
         let asset = AVURLAsset(url: mediaURL)
         let item = AVPlayerItem(asset: asset)
         if !isLocal {
@@ -760,33 +960,34 @@ public struct BookmarkPlayerOverlay: View {
         teardownPlayer()
         onClose()
         onDeleteBookmark(bookmark)
-        if remaining.isEmpty {
-            return
-        }
-
-        // Determine next bookmark to play and load it first so the scroll anchor is preserved
-        let targetIndex = min(currentIndex, remaining.count - 1)
-        let nextBookmark = remaining[targetIndex]
-
-        currentIndex = targetIndex
-        scrolledReelID = nextBookmark.reelID
-        isCaptionExpanded = false
-        loadVideo(for: nextBookmark)
+        return
     }
 
     private func triggerShare(bookmark: BookmarkItem) {
         let caption = bookmark.caption.trimmingCharacters(in: .whitespacesAndNewlines)
         let shareCaption = caption.isEmpty ? "Reel by @\(bookmark.creatorHandle)" : caption
 
+        let localWeekURL = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID)
         let localURL = LibraryPathResolver.shared.bookmarkFileURL(for: bookmark.reelID)
-        if FileManager.default.fileExists(atPath: localURL.path) {
-            ShareSheetPresenter.present(items: [localURL, shareCaption])
+        let localFile = localWeekURL ?? (FileManager.default.fileExists(atPath: localURL.path) ? localURL : nil)
+
+        if let localFile = localFile {
+            ShareSheetPresenter.present(items: [localFile, shareCaption])
             return
         }
 
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("\(bookmark.reelID).mp4")
         if FileManager.default.fileExists(atPath: tempFile.path) {
             ShareSheetPresenter.present(items: [tempFile, shareCaption])
+            return
+        }
+
+        if DigestDataService.directMode {
+            if let canonical = bookmark.canonicalUrl {
+                ShareSheetPresenter.present(items: [canonical, shareCaption])
+            } else {
+                ShareSheetPresenter.present(items: [shareCaption])
+            }
             return
         }
 
@@ -811,6 +1012,9 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func teardownPlayer() {
+        resolutionTask?.cancel()
+        resolutionTask = nil
+        isResolving = false
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil

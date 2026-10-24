@@ -10,6 +10,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
     public let rankDisplay: String
     public let videoUrl: URL
     public let thumbnailUrl: URL?
+    public let canonicalUrl: URL?
     public let category: String?
     public let viewCount: Int?
     public let likeCount: Int?
@@ -28,6 +29,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         rankDisplay: String? = nil,
         videoUrl: URL,
         thumbnailUrl: URL? = nil,
+        canonicalUrl: URL? = nil,
         category: String? = nil,
         viewCount: Int? = nil,
         likeCount: Int? = nil,
@@ -49,6 +51,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         } else {
             self.thumbnailUrl = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(id)_portrait.jpg")
         }
+        self.canonicalUrl = canonicalUrl ?? URL(string: "https://www.instagram.com/reel/\(id)/")
         self.category = category
         self.viewCount = viewCount
         self.likeCount = likeCount
@@ -77,6 +80,9 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         case altThumbnailUrl = "thumbnail_url"
         case camelThumbnailUrl = "thumbnailUrl"
         case poster
+        case url
+        case canonicalUrl = "canonical_url"
+        case altCanonicalUrl = "canonicalUrl"
         case category
         case viewCount = "view_count"
         case altViewCount = "viewCount"
@@ -153,6 +159,17 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         }
         self.thumbnailUrl = resolvedThumb
 
+        // Resolve canonical permalink
+        var resolvedCanonical: URL? = nil
+        for key in [CodingKeys.url, .canonicalUrl, .altCanonicalUrl] {
+            if let str = try? container.decode(String.self, forKey: key),
+               let url = httpURL(from: str) {
+                resolvedCanonical = url
+                break
+            }
+        }
+        self.canonicalUrl = resolvedCanonical ?? URL(string: "https://www.instagram.com/reel/\(self.id)/")
+
         self.category = try? container.decode(String.self, forKey: .category)
         self.viewCount = (try? container.decode(Int.self, forKey: .viewCount))
             ?? (try? container.decode(Int.self, forKey: .altViewCount))
@@ -186,6 +203,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         try container.encode(rankDisplay, forKey: .rankDisplay)
         try container.encode(videoUrl.absoluteString, forKey: .videoUrl)
         try container.encodeIfPresent(thumbnailUrl?.absoluteString, forKey: .thumbnailUrl)
+        try container.encodeIfPresent(canonicalUrl?.absoluteString, forKey: .url)
         try container.encodeIfPresent(category, forKey: .category)
         try container.encodeIfPresent(viewCount, forKey: .viewCount)
         try container.encodeIfPresent(likeCount, forKey: .likeCount)

@@ -1,43 +1,172 @@
-# Frontier Requirements Review — Fix Upload/Deployment Failure
+# Frontier Requirements Review — Zero-Cloud / Direct-Meta Stream Architecture
 
-Date: 2026-10-20 (UTC) · Scope: `.workflow/REQUIREMENTS.md` §§1–2 (upload/deploy remediation for week `2026-10-17`)
-Scale anchor: single-person personal use — no multi-tenant auth, no OAuth server, no microservices, no deploy pipeline service. One GitHub owner (`vkr1729`), one R2 bucket, one workstation. Prefer deterministic local fixes + file-local state over new infrastructure. Per taste: diagnose from recent history/logs before iterating; functional delivery over stringent gates.
+**Date:** 2026-10-24  
+**Scope:** `.workflow/REQUIREMENTS.md` §§1–4  
+**Scale anchor:** Single-person personal use: one user, one primary iPhone, one workstation, and a weekly batch of 250 reels. Optimize for a functional, recoverable personal app—not multi-tenant infrastructure, provider abstraction layers, or high-availability services.
 
-## 0. Scale Anchor (non-negotiable)
-- Single user (`vkr1729` / Kedarnath Reddy). `origin` (`vkr1729/Instagram_digest.git`) is canonical; `fork` (`vkreddy1729-ops/Instagram_digest.git`) is backup only.
-- Credential surface stays local: `gh auth` + git credential helpers + optional single PAT in `.env` (never committed). No token server, no GitHub App, no OIDC broker.
-- R2 surface stays single-week: 8 GB safety cap under 10 GB free tier; pre-upload purge mandate (`main.py:2175`, `storage_r2.purge_previous_weeks_videos(current_week_id=week_id)` with `keep_week_ids=None`) is a deliberate quota-over-uptime tradeoff — but THIS recovery run must not re-purge the banked week it is trying to ship.
-- "Guaranteed weekly delivery with zero downtime" (§1 Core Value Prop) overpromises for one user with a force-pushed orphan `gh-pages` branch and a destructive pre-upload purge. Read it as "no stranded states on the happy path; explicit abort + manual resume otherwise."
+Single-user scale removes operational complexity, but it does not remove iOS background execution limits, a 2.5–3.5 GB device-storage commitment, short-lived signed URLs, or third-party resolver failures. The requirements currently describe the happy path but leave several recovery transitions undefined.
 
-## Q1. Which GitHub identity actually authenticates the throwaway deploy repo?
-- **Ambiguity / failure mode:** `site_builder.deploy_to_gh_pages()` (`site_builder.py:565-664`) does `git init` inside `site_dir`, `remote add origin <GH_PAGES_REPO>`, then `push -f origin gh-pages`. That fresh repo inherits *global* git config, which currently has competing helpers: `credential.https://github.com.helper = !/usr/bin/gh auth git-credential` (active account unknown — error says `denied to vkreddy1729-ops`) plus per-host `git-credential-gh-account` entries for both `vkr1729@github.com` and `vkreddy1729-ops@github.com`, with `usehttppath true`. `GH_PAGES_REPO` default is `https://github.com/vkr1729/Instagram_digest.git` (no username embedded), so credential lookup is ambiguous — `gh auth git-credential` returns whichever `gh` account is *active*, not necessarily `vkr1729`. An expired `GITHUB_TOKEN` in `~/.bashrc` shadows everything (`gh` and git both prefer env tokens), so even a correct helper fails with 401/403. REQUIREMENTS says "fix routing + fallback" but names no winning identity, no precedence order, and no pre-push permission check — retrying force-push blind risks pushing to the wrong account or hammering a revoked token.
-- **Recommended:** Single deterministic winner for one user: (1) unset/remove expired `GITHUB_TOKEN`/`GH_TOKEN` export from `~/.bashrc` (verify with `printenv | grep -i github`; `gh auth status` before/after); (2) set `gh` active account to `vkr1729` (`gh auth switch --user vkr1729` or re-login) and confirm `git credential fill` for `https://github.com/vkr1729/Instagram_digest.git` returns `username=vkr1729`; (3) embed the owner in the deploy URL only inside the throwaway repo (`https://vkr1729@github.com/vkr1729/Instagram_digest.git`) so `usehttppath` + host+user-scoped helper routes deterministically; (4) pre-check with `git ls-remote origin gh-pages` (or `gh api repos/vkr1729/Instagram_digest --jq .permissions.push`) and abort with a clear message before the force-push if not pushable. Log which username was used (never the secret).
-- **Alternatives:** (a) PAT-in-URL injection (`https://x-access-token:$PAT@github.com/...`) — works headless and survives `gh` account flips, but adds a secret to manage and risks leaking into `site/.git` logs if the temp dir isn't cleaned; keep as fallback, not primary. (b) Dedicated SSH deploy key — cleanest long-term, but adds keygen + repo-key wiring for one push/week; overkill for this fix. (c) Manual token prompt — deterministic but breaks overnight automation; reject.
+**Terminology to clarify:** “Zero-cloud” can only mean **no user-managed cloud media storage and no Telegram forwarding** under this design. GitHub Pages, Meta CDNs, and a public resolver remain cloud/third-party dependencies. Long-term bookmark playback is therefore best-effort and online-only unless the media is still cached locally.
 
-## Q2. Where does the deploy PAT live, and how is it injected without leaking?
-- **Ambiguity / failure mode:** No PAT variable exists today: `.env.example` has `GH_PAGES_REPO` only, `config.py:75` reads only `GH_PAGES_REPO`, and `deploy_to_gh_pages()` takes no token argument — auth is purely ambient. REQUIREMENTS proposes "token auth via configured PAT" but names no env var, no loader, no redaction, and no scope. Failure modes: PAT committed to `.env` and pushed (`.gitignore` coverage unconfirmed for this path); PAT echoed in `subprocess` error output (`res.stderr` is logged on push failure, `site_builder.py:657`); PAT persisted inside the throwaway `site/.git/config` if the run crashes before the `finally` cleanup (`site_builder.py:662-664`); overly broad `repo` scope vs minimal `public_repo`/contents-write.
-- **Recommended:** Add optional `GH_PAGES_PAT` (fallback `GITHUB_PAT`) read in `config.py` via the existing `.env` loader (never logged, never printed); `.env.example` documents the name + `public_repo` (or `contents:write` fine-grained, single-repo) scope with `chmod 600 .env` note (existing `check_env_file_permissions` pattern). `deploy_to_gh_pages(repo_url, token=None)` builds an in-memory URL `https://x-access-token:<token>@github.com/vkr1729/Instagram_digest.git` used only for the `remote add` + `push` in the temp repo; on failure log exit code + redacted stderr (scrub `x-access-token:[^@]+@`); `finally` block already removes `site/.git` — extend it to also unset any in-process URL variable. Verify `git check-ignore .env` passes before any commit.
-- **Alternatives:** (a) `GH_TOKEN` env directly — `gh` picks it up automatically, zero code change, but collides with the expired `~/.bashrc` value that caused this outage; requires shell cleanup first anyway. (b) `gh auth git-credential` only, no PAT — simplest, no secret file, but single point of failure on `gh` active-account flips; acceptable primary only with the Q1 pre-check. (c) Fork-remote fallback (`push to fork main as backup` already in spec §2.3) — fine for *code* backup, never for `gh-pages` (Pages serves from `origin`); don't conflate the two.
+## Q1. When a 250-reel bulk download is interrupted, what resumes, and what counts as “cached”?
 
-## Q3. Does this recovery run purge the very week it is trying to ship?
-- **Ambiguity / failure mode:** Direct conflict in the spec: §2.2 says "prevent stranded states where R2 purges the live week while deployment is pending or failed," but the codebase mandate (`main.py:2153-2175`, `storage_r2.py:295-316`, AGENTS.md §5) purges ALL previous weeks pre-upload with `keep_week_ids=None` — deliberately *not* retaining the live week for quota headroom. §2.1/§3.3 says reuse the banked `2026-10-17` batch "already in R2" (no re-scrape). If the recovery path calls `_run_full_sync` or any purge helper, it deletes `videos/2026-10-17/` — the 250 objects the recompile is about to reference — then either quota-passes with dead URLs or aborts mid-upload leaving total playback loss (the exact P2-11/Opus P1-5 scenario: saved-then-unserved week becomes next run's purge victim). The spec never states "recovery = read-only R2" vs "normal weekly = purge-then-upload," nor what `keep_week_ids` (if any) applies to a `--deploy`/`--reconcile`-only run.
-- **Recommended:** Recovery-run invariant (single-user, quota-safe because no new bytes): `--deploy` / `--reconcile` / `--build-only` paths must perform ZERO R2 deletes — skip `purge_previous_weeks_videos`, `purge_expired_r2_objects`, `purge_unreferenced_r2_videos`, and current-week stray purge entirely. Compile from `data/top100_digest.json` + `uploaded_url_map`/persisted `r2_url`s, push `gh-pages`, poll, then record `deployed_week.json`. Future full weekly syncs keep the existing purge-then-upload mandate unchanged. Encode as an explicit step in the runbook ("Step 0: confirm no purge on this run — `grep -n purge` shows no call on the deploy path") and a regression test asserting `_run_deploy_only` never calls any `storage_r2.purge_*`.
-- **Alternatives:** (a) Purge with `keep_week_ids={live_week, deployed_week, current_week}` — safer generally (Opus P1-5 proposal) but directly violates the user's explicit DO-NOT-REVERT mandate for weekly runs; reject for weekly path, acceptable only if the user revisits the quota-vs-uptime tradeoff. (b) Post-deploy purge — restores zero-downtime overlap but lets old+new weeks coexist (~5–7 GB + bookmarks) and reintroduces the quota abort the mandate was written to avoid; reject without explicit user instruction.
+### Ambiguity / failure modes
 
-## Q4. What proves the 250 banked R2 URLs are actually playable before force-pushing?
-- **Ambiguity / failure mode:** Spec says "compile the site with all 250 R2 video URLs" and "verify R2 integrity," but defines no check: full HEAD of 250 keys vs sampled GET? Size match vs existence? `_pages_bundle_is_remote()` (`site_builder.py:541-562`) only proves ≥1 `http(s)` URL exists — a digest with 1 live + 249 dead keys passes. `upload_reel_to_r2` skips upload when the key exists (no size/ETag compare), and filenames embed rank (`{rank:02d}_{handle}_{id}.mp4`), so any re-rank changes keys and orphans the banked names. `_verify_digest_r2_keys` (post-publish path, `main.py:2322`) drops missing IDs and can shrink the list below `MIN_DEPLOY_ITEMS` — but the recovery spec demands shipping exactly the banked 250, with no rule for "N of 250 missing: ship short, outbox+reconcile, or abort." Deploying a `data.json` with dead keys ships 404 cards to Pages and the iOS app.
-- **Recommended:** Read-only pre-deploy integrity gate on the banked batch: list `videos/2026-10-17/` once (`get_existing_r2_keys`), map each digest item's persisted `r2_url` → key suffix `_{id}.mp4` (suffix match, not rank-prefix match, per orphan-purge rationale), HEAD-missing keys counted. Threshold: 250/250 (or ≥`MIN_DEPLOY_ITEMS`=150 with zero tolerance for silent ship-short?) — recommend abort-with-outbox if <150 playable (existing floor), ship + warn if 150–249 (record missing IDs to `data/upload_outbox_2026-10-17.json` for `--reconcile`), ship cleanly only at 250. Reuse `_verify_digest_r2_keys` in verify-only mode (no drops persisted until deploy succeeds). Single-user cost: one listing + up to 250 HEADs, seconds on R2.
-- **Alternatives:** (a) Byte-range GET sampling (e.g. 20 keys) — faster, catches bucket-wide outages but misses single-key rot; use as smoke only, not the gate. (b) Re-upload missing from local `videos/2026-10-17/` — valid if locals exist, but contradicts "already in R2, just deploy"; allow only via explicit `--reconcile`, never implicitly. (c) Trust `data.json` URLs as-is — zero API calls, but ships whatever the last write claimed; reject (this is how dead-key deploys happen).
+§2 requires background bulk caching and progress reporting, but does not define per-item completion, retry, or recovery semantics. A batch of this size can be interrupted by iOS suspending or terminating the app, a reboot, MRT connectivity loss, low storage, an HTTP 403/429, or a CDN disconnect. Signed URLs may expire while the queue is paused.
 
-## Q5. When is the deploy "done," and what may push/shut down on partial success?
-- **Ambiguity / failure mode:** Three pushes are conflated: (i) `gh-pages` force-push to `origin`, (ii) code commit push to `origin main`, (iii) code backup push to `fork main`. Spec §2.3–2.4 orders code-push before verification and mandates auto-shutdown "upon 100% completion," but `deploy_to_gh_pages` already blocks up to 10 min polling `PAGES_BASE_URL/data.json?cb=<ts>` for `run_date == 2026-10-17` (`site_builder.py:611-643`) — push success ≠ Pages serving (build lag, CDN cache, failed build). Failure modes: code pushed to `main` but `gh-pages` refused → next JIT purge treats unserved week as live (P1-5); `gh-pages` pushed but poll times out → `deployed_week.json` unwritten, live-week tracking drifts; fork backup pushed while origin failed → "backup" masks canonical failure; auto-shutdown fires on partial success → user returns to a dark box with no logs triaged. Force-push itself has no pre-check (`git ls-remote`) and no rollback (orphan branch, old tree unreferenced after push).
-- **Recommended:** Strict order + gate: (1) integrity gate (Q4) → (2) `gh-pages` force-push to `origin` only, with pre-check (`git ls-remote`) → (3) poll Pages ≤10 min; write `deployed_week.json` ONLY on `run_date` match (existing P1-5 behavior, keep) → (4) commit + push code to `origin main`; `fork main` only after origin succeeds (backup, never fallback deploy target) → (5) health/site/R2 verification suite → (6) shutdown ONLY if all five stages exit 0; any stage failing → no shutdown, `_alert_sync_abort` + stdout resume command (`main.py --deploy` / `--reconcile`), nonzero exit to `run_weekly.sh` so the wrapper skips power-off. Snapshot the pre-push `gh-pages` SHA (`git ls-remote origin gh-pages`) to enable manual rollback (`git push -f origin <sha>:gh-pages`).
-- **Alternatives:** (a) Shutdown-always — honors the literal "auto-shutdown as requested" but destroys the debugging session on failure; reject. (b) Deploy `gh-pages` to fork as fallback when origin 403s — Pages URL, iOS `PAGES_BASE_URL`, and share/OG links all point at `vkr1729.github.io`; a fork deploy serves nowhere the app reads; reject. (c) Skip the 10-min poll for speed — faster shutdown but `deployed_week.json` then records pushed-not-served, poisoning the next purge keep-set; reject.
+Without an explicit contract:
 
-## Scope gaps to patch in REQUIREMENTS.md
-1. §2.1: name the winning identity (`vkr1729` via `gh` active account + `user@host` URL), the `~/.bashrc` token removal, and the pre-push `ls-remote`/permissions check — not just "fix routing + fallback."
-2. §2.1/§4: add `GH_PAGES_PAT` (or chosen name) to `.env.example` + `config.py` with scope, `chmod 600`, redaction, and temp-`.git` cleanup rules; confirm `.gitignore` covers `.env`.
-3. §2.2: state the recovery-run invariant explicitly — zero R2 purges on deploy/reconcile-only runs; weekly full-sync purge mandate unchanged. Add the regression test.
-4. §2.2/§2.4: define the R2 integrity gate (full key-suffix match, 250/250 vs 150-floor vs outbox thresholds) and what "verify R2 integrity" must actually call.
-5. §2.3–2.4: fix the ordering (Pages push → Pages poll → `deployed_week.json` → code push origin → fork backup → verify → conditional shutdown), record pre-push `gh-pages` SHA for rollback, and gate shutdown on all-green only.
-6. §1 value prop: soften "zero downtime" to "no stranded states on the happy path; explicit abort + resume command otherwise" — honest for a force-push + destructive-purge single-user design.
+- A zero-byte or truncated file may be treated as cached, producing a black or stalled player offline.
+- Relaunching may restart all 250 downloads, wasting bandwidth and consuming the remaining fresh-URL window.
+- One persistent failure may block the other 249 items indefinitely.
+- Deleting temporary files on every launch may unnecessarily destroy resumable progress.
+- “250/250” may be displayed even though some files cannot be decoded.
+
+### Recommended approach
+
+Define bulk caching as a **resumable, per-item operation with partial success**, not an all-or-nothing transaction:
+
+1. Key cache entries by `(week_id, reel_id)`, not by the expiring CDN URL. Persist each item as `pending`, `downloading`, `ready`, or `failed`, along with its local filename and expected byte count when known.
+2. Use an iOS background `URLSession` download queue with bounded concurrency. Reconcile persisted state and files after relaunch; items already marked `ready` must not be downloaded again.
+3. Download to a temporary file. Mark an item `ready` only after a successful response, non-zero/expected-size validation where possible, and an atomic move to its final cache location. Never expose temporary files to `AVPlayerPool`.
+4. Preflight available storage before starting. Because the local pipeline already downloads and validates the media, include `expected_bytes` in the manifest when available so the app can make a useful estimate and reject an impossible batch before filling the disk.
+5. Retry transient network and 5xx failures with bounded exponential backoff. Treat 403/410 as URL expiry and follow Q2 rather than repeatedly retrying the same URL. Preserve failed items for an explicit “Retry failed” action.
+6. Make completed items playable immediately, show an honest `ready / 250` count plus failure count, and never let one bad item invalidate the rest. If a supposedly ready file later fails to decode, quarantine/delete only that file and return it to `failed` for redownload.
+
+A useful acceptance case is: terminate the app halfway through the batch, relaunch, and verify that completed items remain playable, incomplete items resume or restart safely, and no partial file enters the player.
+
+### Alternatives
+
+- **Foreground-only download with a keep-screen-awake prompt:** Simpler and easier to validate, but unreliable for 2.5–3.5 GB and conflicts with the requested background experience. Reasonable only as an explicit v1 limitation.
+- **All-or-nothing week commit:** Gives a clean week state, but one failed reel can discard or block an otherwise useful cache. If chosen, retain completed files for retry rather than deleting them.
+- **Small sequential batches:** Reduces memory, storage churn, and CDN pressure, but may take longer than the signed-URL lifetime. Bounded parallel downloads are preferable if measured on the target iPhone.
+
+## Q2. Who refreshes media URLs when the user misses the 48-hour window or it expires mid-download?
+
+### Ambiguity / failure modes
+
+The manifest contains URLs resolved at workstation sync time, while the user chooses when to start the phone download. The 48-hour requirement does not say when that window begins, whether 48 hours is guaranteed, or what happens if the app first opens after it ends. GitHub Pages cannot independently refresh those URLs.
+
+A 403 may affect one URL or the whole batch. Refetching `data.json` may simply return the same expired URLs. Using the bookmark resolver to repair an entire week would turn an unspecified public API into a 250-call bulk dependency and could trigger rate limits.
+
+### Recommended approach
+
+Make URL freshness and refresh ownership explicit:
+
+1. Add `week_id`, `generated_at`, and per-item `resolved_at` to the manifest. Include `expires_at` only when the source actually supplies a trustworthy expiry; do not invent a guaranteed 48-hour lifetime.
+2. Display link freshness before starting a large batch. On 403/410, pause new requests and refetch the manifest once in case the workstation has published a newer version. Do not issue the remaining 249 requests against URLs already known to be stale.
+3. For the single-user v1, make the **weekly workstation pipeline the authoritative bulk URL refresher**. If no fresher manifest exists, stop with a recoverable message such as “Download links expired; refresh this week’s sync, then retry.” Preserve all completed items and failed queue state.
+4. Keep the public resolver scoped to individual, on-demand playback as currently specified. Do not silently launch a bulk resolver storm as a hidden recovery path.
+
+This favors a small amount of explicit manual recovery over an unreliable claim that the phone can always repair an expired weekly batch by itself.
+
+### Alternatives
+
+- **User-initiated resolver backfill for missing current-week items:** More autonomous and useful when only a few items failed, but requires the rate-limit policy in Q4 and a defined provider. It is a reasonable later enhancement, not a safe default for all 250 items.
+- **Always resolve the full week on the phone:** Removes the workstation refresh dependency, but makes resolver availability and provider limits critical to the core weekly workflow. Not recommended without measured provider behavior.
+- **Require immediate download after every publish:** Simple, but not enforceable without a reliable notification/background-fetch mechanism and still does not handle interrupted downloads.
+
+## Q3. Which event authorizes manifest replacement, old-cache deletion, and bookmark fallback?
+
+### Ambiguity / failure modes
+
+§2 says the previous cache is wiped “when the subsequent week’s manifest arrives.” That timing can destroy the only offline copy before the replacement is usable—for example, if the app fetches a new manifest just before entering an MRT tunnel and the new download then fails.
+
+There are also unspecified cache-invalidation cases:
+
+- `URLSession`, GitHub Pages/CDN caching, or an app-saved manifest may return different weeks.
+- A malformed or older response could roll the app back or trigger deletion.
+- Re-resolving the same reel changes its URL but not its identity; URL-keyed caching could duplicate or lose files.
+- Two 2.5–3.5 GB weeks may need 5–7 GB during overlap, which may not fit on the phone.
+- A crash during deletion or activation can leave the UI pointing at a partially removed cache.
+
+### Recommended approach
+
+Separate **manifest acceptance** from **media-cache activation**:
+
+1. Give the manifest a `schema_version`, `week_id`, and `generated_at`. Retain the last known-good manifest on fetch/parse failure, ignore unsupported or older versions, and never delete media because a fetch failed.
+2. Use HTTP revalidation (`ETag`/`Last-Modified` where available) and an explicit refresh path that bypasses local URL caching. Validate the returned week/version before accepting it so a stale cached response cannot roll back state.
+3. A valid new manifest may update metadata and show the download prompt, but **must not by itself authorize old-cache deletion**.
+4. Keep old and new media in week-specific cache namespaces. Atomically mark the new cache active only when all items are ready or the user explicitly accepts a partial week. Only then delete the old week. A startup reconciliation step should recover from an interrupted commit using the active-week marker and on-disk week directories.
+5. Resolve bookmarks by stable reel ID: use a `ready` item in the active local cache first; otherwise require online resolution. A changed signed URL must not create a second copy of an already-ready `(week_id, reel_id)` item.
+6. Preflight the overlap. If there is insufficient space, retain the old cache and ask the user to free space or explicitly choose an early replacement with an offline gap; never silently wipe it.
+
+### Alternatives
+
+- **Delete the old week as soon as the new manifest validates:** Minimizes peak storage and is simple, but creates a predictable offline outage. Acceptable only if the user explicitly prefers storage over continuity.
+- **Replace items one by one:** Bounds overlap and avoids two full weeks, but creates mixed-week state and more complicated crash recovery. It needs a clear rule for reels absent from the new manifest.
+- **Retain the previous week after activation:** Provides a fallback during failed downloads and expired links, but doubles normal storage use and contradicts the current reclamation requirement.
+
+## Q4. What is the resolver API contract and the required behavior on 429, 5xx, downtime, or “no media found”?
+
+### Ambiguity / failure modes
+
+“Cobalt / SnapInsta backend” identifies examples, not an implementable dependency. Public instances can differ in endpoint, authentication, request/response schema, media variants, URL lifetime, rate limits, and availability. A resolver may return an HTML error, no compatible MP4, or a fresh URL that expires before playback finishes.
+
+The requirements do not define timeout/retry limits, `Retry-After` handling, concurrent taps on the same bookmark, resolver caching, provider selection, or what the user sees underground. They also do not state that the resolver receives the canonical Instagram reel URL and can observe that request.
+
+### Recommended approach
+
+Specify one concrete provider and failure contract for v1:
+
+1. Name the provider/instance and document the HTTPS endpoint, request and response schema, authentication if any, media-selection rule, and expiry metadata if supplied. Treat provider changes as configuration/code changes, not as an implicit guarantee.
+2. Send only the canonical reel URL; never send workstation Chrome cookies or other credentials to a public resolver. Accept only HTTPS media URLs and reject HTML/error responses rather than passing arbitrary content to the player.
+3. Resolve on demand and deduplicate concurrent requests for the same reel ID. Cache a successful resolution only for its known safe lifetime; reel references and bookmarks remain durable even when resolution fails.
+4. Use short network timeouts and bounded retries. Honor `Retry-After` for 429, use exponential backoff for transient network/5xx failures, and persist a cooldown/circuit-breaker deadline so app relaunches cannot reset it and hammer the provider.
+5. Distinguish “offline,” “resolver busy/rate-limited,” and “media unavailable.” Preserve the bookmark and watched state in every case. If a freshly resolved CDN URL returns 403/410, permit one re-resolution, then stop rather than loop.
+6. With no connectivity, fail immediately with an “online required for this older bookmark” state. Do not imply that resolution can work offline.
+
+The value proposition should describe long-term bookmark playback as **best-effort, dependent on a third-party resolver and Meta**, not guaranteed retrieval.
+
+### Alternatives
+
+- **Ordered fallback across multiple providers:** May improve availability, but multiplies schemas, failure behavior, privacy exposure, and testing. This is disproportionate until one-provider failures are observed in real use.
+- **Self-hosted or workstation-hosted resolver:** Offers more control, but a cloud instance violates the zero-user-managed-cloud goal and a home workstation may be unreachable during the commute. It also adds credential and exposure concerns.
+- **Permanently cache bookmarked media:** Removes resolver dependency for those items and works offline, but makes storage unbounded unless a pin limit/eviction policy is added. This is a product tradeoff, not a transparent implementation detail.
+- **In-app webview extraction:** Avoids a separate resolver API but introduces brittle page automation and changes the confirmed backend decision.
+
+## Q5. Exactly which playback paths are guaranteed offline, and how should connectivity loss behave during streaming?
+
+### Ambiguity / failure modes
+
+“Seamless offline playback” and “zero buffering” currently read more broadly than the design supports. Only validated local files can be network-independent. Older bookmarked reels require both the resolver and Meta CDN, while uncached current-week reels also require connectivity. A cached thumbnail/manifest does not make its video available offline.
+
+Online playback can also fail differently during an MRT ride: a timeout means connectivity loss, a 403 often means URL expiry, and a resolver 5xx is a provider failure. Retrying all of them through the same resolver loop wastes battery and may worsen rate limiting.
+
+### Recommended approach
+
+Add an explicit playback matrix to the requirements:
+
+| Item state | No network | With network |
+|---|---|---|
+| Current-week item marked `ready` locally, bookmarked or not | Must play from the local file without manifest, resolver, or CDN access | Prefer the same local file |
+| Current-week item pending/failed/not downloaded | Show unavailable; retain metadata and retry state | Stream if its URL is fresh, or offer download/retry |
+| Older bookmark whose local week was purged | Show “online required”; never claim offline playback | Resolve on demand, then stream |
+| Cached metadata without cached media | Show cached caption/thumbnail when available and an offline media state | Normal online behavior |
+
+For local files, a decode failure should mark only that item failed and stop repeated playback attempts. For remote streams, preserve buffered playback where possible, show a reconnect/resume state after transport loss, and do not mark the reel watched merely because playback failed. Re-resolve on an expiry response, not on every tunnel-related timeout.
+
+Reword the core promise to **“network-independent playback for validated, locally cached items; best-effort online playback otherwise.”** “60fps” and “zero buffering” should not be universal guarantees because source frame rate, decode performance, and remote networking vary.
+
+Validate the matrix in airplane mode and with connectivity removed during both a bulk download and an online playback session on the target iPhone.
+
+### Alternatives
+
+- **Guarantee offline playback for every bookmark:** Requires retaining or prefetching all bookmarked media, with a storage budget and eviction policy; it is incompatible with unconditional week wipes.
+- **Offer a bounded “keep offline” bookmark pin:** Improves the most valuable offline cases without retaining everything, but adds a user setting and cache-lifecycle rules. Consider only after the base week cache is reliable.
+- **Label all non-cached content online-only without automatic streaming recovery:** Simple and honest, but less seamless during intermittent above-ground connectivity.
+
+## Additional scope inconsistency to resolve
+
+§1 requires side-by-side comparison with `main`, while §2 has this branch publish to the same GitHub Pages `data.json` used by production. A code-level R2 bypass alone does not provide side-by-side operation: deploying this branch can overwrite the legacy manifest with short-lived Meta URLs that older clients may not understand.
+
+For benchmarking, prefer a separate static channel/path and manifest `schema_version`, plus a separate app cache namespace. Alternatively, state explicitly that this branch replaces the production manifest and that side-by-side comparison is local-only. Do not leave both interpretations implicit.
+
+## Decisions to add to `REQUIREMENTS.md` before implementation
+
+1. Define per-item download state, atomic file completion, validation, retry limits, relaunch reconciliation, and partial-batch UI semantics.
+2. Define manifest freshness fields and name the workstation pipeline as the v1 bulk URL refresher; explicitly prohibit unbounded bulk resolver retries.
+3. Replace “wipe when the manifest arrives” with a cache-activation/deletion contract, including low-storage overlap and crash recovery.
+4. Select and document the v1 resolver provider, privacy boundary, rate-limit handling, cooldowns, and user-visible failure states.
+5. Add the offline/online playback matrix and narrow the “zero buffering / 60fps / seamless” claims to what local caching can actually guarantee.
+6. Clarify that “zero-cloud” still uses GitHub Pages, Meta, and a resolver, and decide whether side-by-side benchmarking uses a separate manifest channel or is local-only.

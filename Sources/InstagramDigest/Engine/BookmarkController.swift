@@ -15,19 +15,28 @@ public enum BookmarkController {
     /// Full remove lifecycle: tombstone, file delete, ledger reconcile,
     /// fire-and-forget remote delete, SwiftData row delete.
     public static func remove(reelID: String, context: ModelContext) {
-        // B13: tombstone before the fire-and-forget remote delete — a failed
-        // delete must not resurrect the row on the next syncRemoteBookmarks.
+        if DigestDataService.directMode {
+            let descriptor = FetchDescriptor<BookmarkItem>(
+                predicate: #Predicate { $0.reelID == reelID }
+            )
+            if let found = try? context.fetch(descriptor), let item = found.first {
+                context.delete(item)
+                do {
+                    try context.save()
+                } catch {
+                    context.rollback()
+                }
+            }
+            return
+        }
+
+        // Legacy Cloudflare Worker remove lifecycle
         MediaCacheManager.addUnbookmarkedTombstone(reelID)
         MediaCacheManager.removePendingRemoteBookmark(reelID)
         tasks[reelID]?.cancel()
         tasks[reelID] = Task {
             await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
             guard !Task.isCancelled else { return }
-            // Same -ui-testing seam as add: the CI simulator has no owner
-            // key and no Worker route — the DELETE can never succeed and
-            // only stalls teardown (UAT empty-state wait). The ledger
-            // reconcile is also delete-path-only work; the row delete below
-            // is what the UI waits on, so don't gate it behind I/O.
             if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
             await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
             _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
@@ -45,26 +54,87 @@ public enum BookmarkController {
         }
     }
 
-    /// Full add lifecycle: lift tombstone, insert `.evicted` row, isolated
-    /// copy via `MediaCacheManager` (flips to `.cached` on success), remote sync.
+    /// Full add lifecycle: saves bookmark metadata row. In direct mode, uses feed cache without isolated copies or remote worker.
     public static func add(reel: ReelItem, weekID: String, context: ModelContext) {
-        // B13: re-bookmarking lifts any earlier tombstone.
-        MediaCacheManager.clearUnbookmarkedTombstone(reel.id)
-        let item = BookmarkItem(
-            reelID: reel.id,
-            weekID: weekID,
-            creatorHandle: reel.creatorHandle,
-            caption: reel.caption,
-            rank: reel.rank,
-            videoUrl: reel.videoUrl,
-            thumbnailUrl: reel.thumbnailUrl,
-            // B3: keepBookmarkOffline flips the row to .cached after the
-            // isolated copy actually lands. Claiming .cached here from a
-            // transient check lies when the copy never happens.
-            localStatus: .evicted,
-            sizeBytes: reel.sizeBytes ?? 0
+        let targetID = reel.id
+        let descriptor = FetchDescriptor<BookmarkItem>(
+            predicate: #Predicate { $0.reelID == targetID }
         )
-        context.insert(item)
+        let existingItem = (try? context.fetch(descriptor))?.first
+
+        if DigestDataService.directMode {
+            let isLocallyAvailable = LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: reel.id)
+            if let existing = existingItem {
+                existing.weekID = weekID
+                existing.creatorHandle = reel.creatorHandle
+                existing.caption = reel.caption ?? ""
+                existing.rank = reel.rank
+                existing.videoUrlString = reel.videoUrl.absoluteString
+                existing.thumbnailUrlString = reel.thumbnailUrl?.absoluteString
+                existing.canonicalUrlString = reel.canonicalUrl?.absoluteString
+                existing.localStatus = isLocallyAvailable ? .cached : .evicted
+                if let sb = reel.sizeBytes, sb > 0 {
+                    existing.sizeBytes = sb
+                }
+                existing.bookmarkedAt = Date()
+                existing.lastAccessedAt = Date()
+            } else {
+                let item = BookmarkItem(
+                    reelID: reel.id,
+                    weekID: weekID,
+                    creatorHandle: reel.creatorHandle,
+                    caption: reel.caption ?? "",
+                    rank: reel.rank,
+                    videoUrl: reel.videoUrl,
+                    thumbnailUrl: reel.thumbnailUrl,
+                    canonicalUrl: reel.canonicalUrl,
+                    bookmarkedAt: Date(),
+                    localStatus: isLocallyAvailable ? .cached : .evicted,
+                    sizeBytes: reel.sizeBytes ?? 0,
+                    lastAccessedAt: Date()
+                )
+                context.insert(item)
+            }
+            do {
+                try context.save()
+            } catch {
+                context.rollback()
+            }
+            return
+        }
+
+        // Legacy Cloudflare Worker add lifecycle
+        MediaCacheManager.clearUnbookmarkedTombstone(reel.id)
+        if let existing = existingItem {
+            existing.weekID = weekID
+            existing.creatorHandle = reel.creatorHandle
+            existing.caption = reel.caption ?? ""
+            existing.rank = reel.rank
+            existing.videoUrlString = reel.videoUrl.absoluteString
+            existing.thumbnailUrlString = reel.thumbnailUrl?.absoluteString
+            existing.canonicalUrlString = reel.canonicalUrl?.absoluteString
+            if let sb = reel.sizeBytes, sb > 0 {
+                existing.sizeBytes = sb
+            }
+            existing.bookmarkedAt = Date()
+            existing.lastAccessedAt = Date()
+        } else {
+            let item = BookmarkItem(
+                reelID: reel.id,
+                weekID: weekID,
+                creatorHandle: reel.creatorHandle,
+                caption: reel.caption ?? "",
+                rank: reel.rank,
+                videoUrl: reel.videoUrl,
+                thumbnailUrl: reel.thumbnailUrl,
+                canonicalUrl: reel.canonicalUrl,
+                bookmarkedAt: Date(),
+                localStatus: .evicted,
+                sizeBytes: reel.sizeBytes ?? 0,
+                lastAccessedAt: Date()
+            )
+            context.insert(item)
+        }
         do {
             try context.save()
         } catch {
@@ -76,24 +146,15 @@ public enum BookmarkController {
         let sBytes = reel.sizeBytes ?? 0
         tasks[rID]?.cancel()
         tasks[rID] = Task {
-            // B3: always attempt the isolated copy — it has a remote
-            // download branch for reels with no local file. A failed
-            // copy (1.5 GB cap, disk full) honestly leaves .evicted.
             do {
                 try await MediaCacheManager.shared.keepBookmarkOffline(
                     weekID: wID,
                     reelID: rID,
                     fallbackSizeBytes: sBytes
                 )
-            } catch {
-                // Copy failed: row honestly stays .evicted.
-            }
+            } catch {}
             guard !Task.isCancelled else { return }
-            // Rec 3: track the durable R2 backup; retry while it is pending.
             MediaCacheManager.addPendingRemoteBookmark(rID)
-            // Rec 3 XCUITest seam: the CI simulator has no owner key and no
-            // Worker route — the POST can never succeed, and firing it only
-            // burns the test's time budget. The badge test asserts pending.
             if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
             if (try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)) == true {
                 MediaCacheManager.removePendingRemoteBookmark(rID)

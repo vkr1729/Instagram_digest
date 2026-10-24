@@ -116,6 +116,22 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 COOKIE_FREE_MODE = _env_bool("COOKIE_FREE_MODE", True)
+DIRECT_STREAM_MODE = _env_bool("DIRECT_STREAM_MODE", True)
+
+# Zero-Cloud / Direct-Meta Stream Configuration
+DIRECT_PAGES_MANIFEST_URL = f"{PAGES_BASE_URL}/data_direct.json"
+COBALT_RESOLVER_API_URL = os.getenv("COBALT_RESOLVER_API_URL", "https://api.cobalt.tools/").rstrip("/")
+
+
+def direct_manifest_file() -> Path:
+    """Dynamic path to data_direct.json derived at call time from SITE_DIR."""
+    return SITE_DIR / "data_direct.json"
+
+
+def direct_deployed_week_file() -> Path:
+    """Dynamic path to deployed_direct_week.json derived at call time from DATA_DIR."""
+    return DATA_DIR / "deployed_direct_week.json"
+
 
 SMTP_PORT = _env_int("SMTP_PORT", 587, 1, 65535)
 SMTP_USER = os.getenv("SMTP_USER", os.getenv("SMTP_USERNAME", "")).strip()
@@ -186,3 +202,4 @@ WEEKLY_ARCHIVE_FILE = DATA_DIR / "archive_history.json"
 WATCHED_FILE = DATA_DIR / "watched.json"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 LAST_RUN_FILE = DATA_DIR / "last_run.json"
+DIRECT_DEPLOYED_WEEK_FILE = DATA_DIR / "deployed_direct_week.json"

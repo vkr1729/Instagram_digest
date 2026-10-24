@@ -26,20 +26,28 @@ public struct DigestManifest: Sendable, Codable {
     public let items: [ReelItem]
     public let count: Int
     public let generatedAt: Date?
+    public let schemaVersion: Int?
+    public let channel: String?
 
     public init(
         weekId: String,
         items: [ReelItem],
         count: Int? = nil,
-        generatedAt: Date? = nil
+        generatedAt: Date? = nil,
+        schemaVersion: Int? = nil,
+        channel: String? = nil
     ) {
         self.weekId = weekId
         self.items = items
         self.count = count ?? items.count
         self.generatedAt = generatedAt
+        self.schemaVersion = schemaVersion
+        self.channel = channel
     }
 
     enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case channel
         case runDate = "run_date"
         case weekId = "week_id"
         case camelWeekId = "weekId"
@@ -69,6 +77,9 @@ public struct DigestManifest: Sendable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        self.schemaVersion = try? container.decode(Int.self, forKey: .schemaVersion)
+        self.channel = try? container.decode(String.self, forKey: .channel)
 
         let dateStr = (try? container.decode(String.self, forKey: .runDate))
             ?? (try? container.decode(String.self, forKey: .weekId))
@@ -116,6 +127,8 @@ public struct DigestManifest: Sendable, Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(schemaVersion, forKey: .schemaVersion)
+        try container.encodeIfPresent(channel, forKey: .channel)
         try container.encode(weekId, forKey: .runDate)
         try container.encode(items, forKey: .items)
         try container.encode(count, forKey: .count)

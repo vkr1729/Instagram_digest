@@ -14,10 +14,12 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         public let weekID: String
     }
 
-    public enum CoordinatorState: Equatable {
+    public enum CoordinatorState: Equatable, Sendable {
         case idle
+        case preparing
         case downloading(completed: Int, total: Int, currentReelID: String?)
         case completed
+        case completedWithFailures(ready: Int, failed: Int)
         case paused
         case failed(String)
     }
@@ -34,7 +36,8 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     private var totalInBatch: Int = 0
     private var completedInBatch: Int = 0
-    private var failedInBatch: Int = 0
+    public private(set) var failedInBatch: Int = 0
+    private var hasRefreshedManifestForExpiredURLs: Bool = false
     private var currentWeekID: String = ""
 
     private var urlSession: URLSession!
@@ -93,49 +96,103 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         return (sufficient, required, available)
     }
 
+    /// Calculates total bytes currently occupied by older weeks' directories and legacy Bookmarks (AUDIT-033)
+    public func calculateReclaimableRolloverBytes(incomingWeekID: String, pathResolver: LibraryPathResolver = .shared) -> Int64 {
+        let fm = FileManager.default
+        let safeIncoming = LibraryPathResolver.sanitizeComponent(incomingWeekID)
+        let cacheBase = pathResolver.mediaCacheBaseURL
+        var reclaimable: Int64 = 0
+
+        if let subdirs = try? fm.contentsOfDirectory(at: cacheBase, includingPropertiesForKeys: [.isDirectoryKey]) {
+            for dir in subdirs {
+                let name = dir.lastPathComponent
+                if name == safeIncoming || name == LibraryPathResolver.resumeDataFolderName {
+                    continue
+                }
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue {
+                    if let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) {
+                        for fileURL in files {
+                            if let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) {
+                                reclaimable += Int64(size)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return reclaimable
+    }
+
     // MARK: - Queue Management
 
     public func startDownloadAll(reels: [ReelItem], weekID: String, excludeWatchedIDs: Set<String> = []) {
+        guard self.state != .preparing else { return }
         let batch = excludeWatchedIDs.isEmpty ? reels : reels.filter { !excludeWatchedIDs.contains($0.id) }
-        let (sufficient, required, available) = preflightStorage(reels: batch, weekID: weekID)
-        guard sufficient else {
-            let reqMB = required / 1_000_000
-            let availMB = available / 1_000_000
-            self.state = .failed("Insufficient free space (\(availMB) MB available, \(reqMB) MB required).")
-            return
-        }
+        guard !batch.isEmpty else { return }
+        self.state = .preparing
 
-        self.currentWeekID = weekID
-        self.watchdogResumeTask?.cancel()
-        self.watchdogResumeTask = nil
-        self.isSuspended = false
-        self.suspensionSource = .none   // a prior user pause must not stick to the new batch
-        let pending = batch.filter {
-            !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id)
-        }
-
-        guard !pending.isEmpty else {
-            self.state = .completed
-            self.overallProgress = 1.0
-            return
-        }
-
-        self.queue = pending.map { DownloadItem(id: $0.id, reel: $0, weekID: weekID) }
-        self.totalInBatch = self.queue.count
-        self.completedInBatch = 0
-        self.failedInBatch = 0
-        self.retryCounts.removeAll()
-        self.state = .downloading(completed: 0, total: totalInBatch, currentReelID: nil)
-        self.overallProgress = 0.0
-
-        UIApplication.shared.isIdleTimerDisabled = true
-        // Rec #4: thumbnails ride along best-effort (~20–50 KB each) so the
-        // grid/bookmarks browse offline too. Never fails the video batch.
-        let thumbReels = batch
         Task { @MainActor [weak self] in
-            await self?.prefetchThumbnails(reels: thumbReels, weekID: weekID)
+            guard let self = self else { return }
+            self.cancelAll()
+            self.state = .preparing
+            AVPlayerPool.shared.pause()
+
+            // Pre-purge storage check (AUDIT-033): Ensure available space + reclaimable bytes can fit the batch.
+            let preCheck = self.preflightStorage(reels: batch, weekID: weekID)
+            let reclaimable = self.calculateReclaimableRolloverBytes(incomingWeekID: weekID)
+            if (preCheck.availableBytes + reclaimable) < preCheck.requiredBytes {
+                let reqMB = preCheck.requiredBytes / 1_000_000
+                let availMB = (preCheck.availableBytes + reclaimable) / 1_000_000
+                self.state = .failed("Insufficient free space (\(availMB) MB available, \(reqMB) MB required).")
+                return
+            }
+
+            // 1. Single-transaction rollover: wipe older week cache before starting new week
+            let incomingIDs = Set(batch.map { $0.id })
+            await MediaCacheManager.shared.executeRolloverPurge(forNewWeek: weekID, protectedReelIDs: incomingIDs)
+
+            // 2. Preflight storage after purge
+            let (sufficient, required, available) = self.preflightStorage(reels: batch, weekID: weekID)
+            guard sufficient else {
+                let reqMB = required / 1_000_000
+                let availMB = available / 1_000_000
+                self.state = .failed("Insufficient free space (\(availMB) MB available, \(reqMB) MB required).")
+                return
+            }
+
+            self.currentWeekID = weekID
+            self.watchdogResumeTask?.cancel()
+            self.watchdogResumeTask = nil
+            self.isSuspended = false
+            self.suspensionSource = .none   // a prior user pause must not stick to the new batch
+            let pending = batch.filter {
+                !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id)
+            }
+
+            guard !pending.isEmpty else {
+                self.state = .completed
+                self.overallProgress = 1.0
+                return
+            }
+
+            self.queue = pending.map { DownloadItem(id: $0.id, reel: $0, weekID: weekID) }
+            self.totalInBatch = self.queue.count
+            self.completedInBatch = 0
+            self.failedInBatch = 0
+            self.retryCounts.removeAll()
+            self.state = .downloading(completed: 0, total: self.totalInBatch, currentReelID: nil)
+            self.overallProgress = 0.0
+
+            UIApplication.shared.isIdleTimerDisabled = true
+            // Rec #4: thumbnails ride along best-effort (~20–50 KB each) so the
+            // grid/bookmarks browse offline too. Never fails the video batch.
+            let thumbReels = batch
+            Task { @MainActor [weak self] in
+                await self?.prefetchThumbnails(reels: thumbReels, weekID: weekID)
+            }
+            self.drainQueue()
         }
-        drainQueue()
     }
 
     /// Best-effort thumbnail prefetch into the week's MediaCache dir.
@@ -178,6 +235,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         totalInBatch = 0
         completedInBatch = 0
         failedInBatch = 0
+        hasRefreshedManifestForExpiredURLs = false
         retryCounts.removeAll()
         currentWeekID = ""
         overallProgress = 0.0
@@ -187,7 +245,23 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     /// A finished batch must not strand the (singleton) sheet on "Done" forever.
     public func resetIfFinished() {
-        if case .completed = state, !hasActiveDownloads { state = .idle; overallProgress = 0 }
+        switch state {
+        case .completed, .completedWithFailures:
+            if !hasActiveDownloads {
+                state = .idle
+                overallProgress = 0
+            }
+        default:
+            break
+        }
+    }
+
+    /// Targeted retry for failed batch items without re-downloading already cached files.
+    public func retryFailedItems(reels: [ReelItem], weekID: String) {
+        let failedReels = reels.filter { reel in
+            !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: reel.id)
+        }
+        startDownloadAll(reels: failedReels, weekID: weekID)
     }
 
     private enum SuspensionSource { case none, user, watchdog, background }
@@ -316,10 +390,12 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                 overallProgress = 0.0
                 return
             }
-            if failedInBatch > 0 {
-                state = failedInBatch >= totalInBatch
-                    ? .failed("All downloads failed in this batch.")
-                    : .failed("\(failedInBatch) of \(totalInBatch) downloads failed — tap Retry.")
+            if failedInBatch == totalInBatch {
+                state = .failed("All \(totalInBatch) downloads failed in this batch.")
+            } else if completedInBatch > 0 && failedInBatch > 0 {
+                state = .completedWithFailures(ready: completedInBatch, failed: failedInBatch)
+            } else if failedInBatch > 0 {
+                state = .failed("\(failedInBatch) of \(totalInBatch) downloads failed — tap Retry.")
             } else {
                 state = .completed
                 overallProgress = 1.0
@@ -389,6 +465,12 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                 guard let entry = self.inFlightTasks.removeValue(forKey: downloadTask.taskIdentifier) else { return }
                 let item = entry.item
                 self.removePersistedResumeData(for: item.id)
+
+                if status == 403 || status == 410 {
+                    await self.handleExpiredURLResponse(failingItem: item)
+                    return
+                }
+
                 let retries = (self.retryCounts[item.id] ?? 0) + 1
                 self.retryCounts[item.id] = retries
                 if status >= 500 && retries <= self.maxRetriesPerItem { self.queue.append(item) } else { self.failedInBatch += 1 }
@@ -471,6 +553,12 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             guard let entry = self.inFlightTasks.removeValue(forKey: task.taskIdentifier) else { return }
             let item = entry.item
 
+            if let http = task.response as? HTTPURLResponse, (http.statusCode == 403 || http.statusCode == 410) {
+                self.removePersistedResumeData(for: item.id)
+                await self.handleExpiredURLResponse(failingItem: item)
+                return
+            }
+
             let isCancelled = (error as NSError).code == NSURLErrorCancelled
             if let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
                 self.persistResumeData(resumeData, for: item.id)
@@ -492,6 +580,59 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
             self.drainQueue()
         }
+    }
+
+    private func handleExpiredURLResponse(failingItem: DownloadItem) async {
+        if hasRefreshedManifestForExpiredURLs {
+            self.failedInBatch += 1
+            cancelAllRemainingAndFail(message: "Download links expired — please refresh or sync")
+            return
+        }
+
+        hasRefreshedManifestForExpiredURLs = true
+        suspendQueue(source: .background)
+
+        do {
+            let freshManifest = try await DigestDataService.shared.fetchManifest(bypassCache: true)
+            var updatedCount = 0
+            let freshMap = Dictionary(uniqueKeysWithValues: freshManifest.items.map { ($0.id, $0) })
+
+            // Update pending items in queue
+            self.queue = self.queue.map { qItem in
+                if let fresh = freshMap[qItem.id], fresh.videoUrl != qItem.reel.videoUrl {
+                    updatedCount += 1
+                    return DownloadItem(id: qItem.id, reel: fresh, weekID: qItem.weekID)
+                }
+                return qItem
+            }
+
+            // Also check and re-enqueue failing item if updated
+            if let fresh = freshMap[failingItem.id], fresh.videoUrl != failingItem.reel.videoUrl {
+                updatedCount += 1
+                self.queue.append(DownloadItem(id: failingItem.id, reel: fresh, weekID: failingItem.weekID))
+            } else {
+                self.failedInBatch += 1
+            }
+
+            if updatedCount > 0 {
+                resumeQueue()
+            } else {
+                cancelAllRemainingAndFail(message: "Download links expired — please refresh or sync")
+            }
+        } catch {
+            self.failedInBatch += 1
+            cancelAllRemainingAndFail(message: "Download links expired — please refresh or sync")
+        }
+    }
+
+    private func cancelAllRemainingAndFail(message: String) {
+        for (_, entry) in inFlightTasks {
+            entry.task.cancel()
+        }
+        inFlightTasks.removeAll()
+        queue.removeAll()
+        state = .failed(message)
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 
     // MARK: - Observers

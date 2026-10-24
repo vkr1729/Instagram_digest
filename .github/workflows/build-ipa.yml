@@ -5,6 +5,7 @@ on:
     branches:
       - feat/ios-app
       - main
+      - arch/direct-meta-stream
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * 1"
@@ -15,15 +16,23 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.app || xcode-select -p
 
       - name: Install XcodeGen
         run: |
-          brew install xcodegen
+          XCODEGEN_VERSION="2.42.0"
+          curl -sLo /tmp/xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q /tmp/xcodegen.zip -d /tmp
+          sudo /tmp/xcodegen/install.sh
+          xcodegen --version
 
       - name: Generate Xcode Project
         run: |
@@ -75,7 +84,7 @@ jobs:
 
       - name: Upload Unit Results on Failure
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: unit-results
           path: UnitResults.xcresult
@@ -83,7 +92,7 @@ jobs:
 
       - name: Upload UAT Results on Failure
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: uat-results
           path: UATResults.xcresult
@@ -108,32 +117,15 @@ jobs:
           zip -qr InstagramDigest.ipa Payload
           echo "IPA Size: $(ls -lh InstagramDigest.ipa | awk '{print $5}')"
           echo "NOTE: this IPA is UNSIGNED and will not install directly."
-          echo "Re-sign before installing, e.g.:"
-          echo "  AltStore / Sideloadly / TrollStore, or:"
-          echo "  codesign -f -s 'Apple Development' Payload/InstagramDigest.app"
+          echo "See docs/RE_SIGN_AND_INSTALL.md for re-signing and installation instructions."
 
       - name: Inspect Package Structure
         run: |
           unzip -l InstagramDigest.ipa | head -n 35
 
       - name: Upload Unsigned IPA
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: InstagramDigest-Unsigned-IPA
           path: InstagramDigest.ipa
           if-no-files-found: error
-
-      - name: Save IPA to dist/ipa
-        run: |
-          mkdir -p dist/ipa
-          cp InstagramDigest.ipa "dist/ipa/InstagramDigest-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}.ipa"
-          cp InstagramDigest.ipa dist/ipa/InstagramDigest-latest.ipa
-          ls -lh dist/ipa/
-
-      - name: Commit IPA to dist/ipa
-        run: |
-          git config user.name "InstagramDigest Bot"
-          git config user.email "digest@bot.local"
-          git add -f dist/ipa/*.ipa
-          git diff --cached --quiet || git commit -m "ci: save IPA build ${GITHUB_SHA::8} to dist/ipa"
-          git push origin "HEAD:${GITHUB_REF_NAME}" || echo "IPA commit push skipped (no permission or nothing to push)."
