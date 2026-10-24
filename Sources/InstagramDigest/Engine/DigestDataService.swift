@@ -57,6 +57,8 @@ public actor DigestDataService {
                     throw DigestDataServiceError.emptyManifest
                 }
                 return manifest
+            } catch let err as DigestDataServiceError {
+                throw err
             } catch {
                 // Corrupt/unreadable file URL — fall through to cache/bundle fallback below
             }
@@ -88,6 +90,8 @@ public actor DigestDataService {
                     try? data.write(to: cacheFileURL, options: .atomic)
                     return manifest
                 }
+            } catch let err as DigestDataServiceError {
+                throw err
             } catch {
                 // Try next URL or fall through to cache
             }
