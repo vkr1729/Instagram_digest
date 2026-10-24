@@ -326,7 +326,8 @@ struct FeedMainView: View {
                         StoryCategoryBarView(
                             totalCount: allReels.count,
                             selectedCategoryId: selectedCategoryId,
-                            offlineCaption: "",
+                            offlineCaption: ProcessInfo.processInfo.arguments.contains("-ui-testing-offline")
+                                ? "Offline · \(pool.currentItems.count) downloaded" : "",
                             onSelectCategory: { newCat in
                                 guard let m = manifest else { return }
                                 // B14: only adopt the selection when it matched
