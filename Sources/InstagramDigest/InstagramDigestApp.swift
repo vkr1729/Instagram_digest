@@ -715,7 +715,7 @@ struct FeedMainView: View {
 
     private func sortedReels(from items: [ReelItem], order: String) -> [ReelItem] {
         if order == "chrono" {
-            return items.sorted { ($0.takenAt ?? 0) > ($1.takenAt ?? 0) }
+            return items.sorted { ($0.takenAt ?? .distantPast) > ($1.takenAt ?? .distantPast) }
         }
         return items
     }
