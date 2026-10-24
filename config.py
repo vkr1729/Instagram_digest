@@ -42,26 +42,28 @@ def check_env_file_permissions(path: Path | None = None) -> bool:
     return not (mode & 0o077)
 
 
-if ENV_FILE.exists():
-    if not check_env_file_permissions():
-        import warnings
-        warnings.warn(
-            f"Insecure permissions on {ENV_FILE}; run `chmod 600 {ENV_FILE}` "
-            "so R2/SMTP secrets are not readable by other local users.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        k = k.strip()
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
-            v = v[1:-1]
-        if k and k not in os.environ:
-            os.environ[k] = v
+USER_ENV_FILE = Path.home() / ".env"
+for env_path in (USER_ENV_FILE, ENV_FILE):
+    if env_path.exists():
+        if env_path == ENV_FILE and not check_env_file_permissions():
+            import warnings
+            warnings.warn(
+                f"Insecure permissions on {ENV_FILE}; run `chmod 600 {ENV_FILE}` "
+                "so R2/SMTP secrets are not readable by other local users.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                v = v[1:-1]
+            if k and k not in os.environ:
+                os.environ[k] = v
 
 # Cloudflare R2 Credentials
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "").strip()
@@ -73,7 +75,13 @@ R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCO
 
 # GitHub Deployment
 GH_PAGES_REPO = os.getenv("GH_PAGES_REPO", "https://github.com/vkr1729/Instagram_digest.git").strip()
-GH_PAGES_PAT = (os.getenv("GH_PAGES_PAT") or os.getenv("GITHUB_PAT") or "").strip()
+GH_PAGES_PAT = (
+    os.getenv("GH_PAGES_PAT")
+    or os.getenv("GITHUB_PAT")
+    or os.getenv("GH_TOKEN")
+    or os.getenv("GITHUB_TOKEN")
+    or ""
+).strip()
 PAGES_BASE_URL = os.getenv("PAGES_BASE_URL", "https://vkr1729.github.io/Instagram_digest").strip().rstrip("/")
 BOOKMARK_API_BASE = os.getenv("BOOKMARK_API_BASE", "").strip().rstrip("/")
 

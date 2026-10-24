@@ -823,6 +823,17 @@ def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = 
                 if rid:
                     keep_thumb_names.add(f"{rid}.jpg")
                     keep_thumb_names.add(f"{rid}_portrait.jpg")
+            if prod_data_file and prod_data_file.exists():
+                try:
+                    p_data = json.loads(prod_data_file.read_text(encoding="utf-8"))
+                    p_items = p_data.get("items", []) if isinstance(p_data, dict) else []
+                    for item in p_items:
+                        rid = str(item.get("id") or "")
+                        if rid:
+                            keep_thumb_names.add(f"{rid}.jpg")
+                            keep_thumb_names.add(f"{rid}_portrait.jpg")
+                except Exception:
+                    pass
             pruned_count = 0
             for f in dst_thumbs.iterdir():
                 if f.is_file():

@@ -111,13 +111,16 @@ public actor DigestDataService {
             }
         }
 
-        // 4. Fallback to bundle if present (AUDIT-023: In direct mode, only accept if channel == "direct" or in ui-testing)
-        if let bundleURL = Bundle.main.url(forResource: "data", withExtension: "json"),
-           let bundleData = try? Data(contentsOf: bundleURL),
-           let manifest = try? JSONDecoder().decode(DigestManifest.self, from: bundleData) {
-            if !Self.directMode || manifest.channel == "direct" || isUITesting {
-                if !manifest.items.isEmpty {
-                    return manifest
+        // 4. Fallback to bundle if present (AUDIT-023: In direct mode, check data_direct then data)
+        let bundleResourceNames = Self.directMode ? ["data_direct", "data"] : ["data"]
+        for resName in bundleResourceNames {
+            if let bundleURL = Bundle.main.url(forResource: resName, withExtension: "json"),
+               let bundleData = try? Data(contentsOf: bundleURL),
+               let manifest = try? JSONDecoder().decode(DigestManifest.self, from: bundleData) {
+                if !Self.directMode || manifest.channel == "direct" || isUITesting {
+                    if !manifest.items.isEmpty {
+                        return manifest
+                    }
                 }
             }
         }
