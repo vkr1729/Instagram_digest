@@ -31,7 +31,7 @@ public struct GitHubSyncModal: View {
         NavigationStack {
             Form {
                 Section(header: Text("GitHub Bookmark Repository").foregroundColor(.white.opacity(0.6))) {
-                    TextField("owner/repo (e.g. vkreddy1729-ops/ig-bookmarks-2026)", text: $repo)
+                    TextField("owner/repo (e.g. vkreddy1729-ops/ig-bookmarks)", text: $repo)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                 }

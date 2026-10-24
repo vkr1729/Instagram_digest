@@ -338,9 +338,15 @@ public struct AsyncThumbnailView: View {
         self.weekID = weekID
     }
 
-    /// Prefers the offline cache from Download All; falls back to remote.
+    /// Prefers the offline cache from Bookmarks or Download All; falls back to remote.
     /// `AsyncImage` loads file URLs too, so one path covers both.
     private var displayURL: URL? {
+        if let reelID, !reelID.isEmpty {
+            let bmLocal = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: reelID)
+            if FileManager.default.fileExists(atPath: bmLocal.path) {
+                return bmLocal
+            }
+        }
         if let reelID, let weekID, !reelID.isEmpty, !weekID.isEmpty {
             let local = LibraryPathResolver.shared.thumbnailFileURL(for: weekID, reelID: reelID)
             if FileManager.default.fileExists(atPath: local.path) {

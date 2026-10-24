@@ -11,6 +11,8 @@ public struct SettingsSheetView: View {
     @Binding public var isGrayscale: Bool
     @Binding public var hideRanks: Bool
     @Binding public var feedSortOrder: String
+    @AppStorage("gh_bookmark_repo") private var ghRepo: String = "vkreddy1729-ops/ig-bookmarks"
+    @AppStorage("gh_bookmark_pat") private var ghPAT: String = ""
 
     public var onTapOffline: () -> Void
     public var onTapManifesto: () -> Void
@@ -84,6 +86,18 @@ public struct SettingsSheetView: View {
                         Text("Chronological (Newest)").tag("chrono")
                     }
                     .pickerStyle(.segmented)
+                }
+                .listRowBackground(Color.white.opacity(0.08))
+
+                Section(header: Text("GitHub Bookmark Backup").foregroundColor(.white.opacity(0.6)),
+                        footer: Text("Syncs bookmarks to bookmarks.json in your GitHub repository.").foregroundColor(.white.opacity(0.4))) {
+                    TextField("Repository (e.g. owner/repo)", text: $ghRepo)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+
+                    SecureField("Personal Access Token (PAT)", text: $ghPAT)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
                 }
                 .listRowBackground(Color.white.opacity(0.08))
 

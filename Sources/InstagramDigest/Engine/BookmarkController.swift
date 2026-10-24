@@ -16,6 +16,12 @@ public enum BookmarkController {
     /// fire-and-forget remote delete, SwiftData row delete.
     public static func remove(reelID: String, context: ModelContext) {
         if DigestDataService.directMode {
+            let resolver = LibraryPathResolver.shared
+            let bmThumb = resolver.bookmarkThumbnailFileURL(for: reelID)
+            let bmVideo = resolver.bookmarkFileURL(for: reelID)
+            try? FileManager.default.removeItem(at: bmThumb)
+            try? FileManager.default.removeItem(at: bmVideo)
+
             let descriptor = FetchDescriptor<BookmarkItem>(
                 predicate: #Predicate { $0.reelID == reelID }
             )
@@ -63,7 +69,32 @@ public enum BookmarkController {
         let existingItem = (try? context.fetch(descriptor))?.first
 
         if DigestDataService.directMode {
-            let isLocallyAvailable = LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: reel.id)
+            let resolver = LibraryPathResolver.shared
+            try? resolver.ensureDirectoryExists(at: resolver.bookmarksDirectoryURL)
+
+            // 1. Preserve thumbnail locally for offline browsing
+            let bmThumb = resolver.bookmarkThumbnailFileURL(for: reel.id)
+            let weekThumb = resolver.thumbnailFileURL(for: weekID, reelID: reel.id)
+            if FileManager.default.fileExists(atPath: weekThumb.path) {
+                if !FileManager.default.fileExists(atPath: bmThumb.path) {
+                    try? FileManager.default.copyItem(at: weekThumb, to: bmThumb)
+                }
+            } else if let thumbURL = reel.thumbnailUrl {
+                Task.detached {
+                    if let (data, _) = try? await URLSession.shared.data(from: thumbURL) {
+                        try? data.write(to: bmThumb, options: .atomic)
+                    }
+                }
+            }
+
+            // 2. Preserve downloaded video in bookmarks directory so it survives rollover
+            let weekVideo = resolver.localFileURL(for: weekID, reelID: reel.id)
+            let bmVideo = resolver.bookmarkFileURL(for: reel.id)
+            if FileManager.default.fileExists(atPath: weekVideo.path) && !FileManager.default.fileExists(atPath: bmVideo.path) {
+                try? FileManager.default.copyItem(at: weekVideo, to: bmVideo)
+            }
+
+            let isLocallyAvailable = resolver.isLocalFileAvailable(for: weekID, reelID: reel.id)
             if let existing = existingItem {
                 existing.weekID = weekID
                 existing.creatorHandle = reel.creatorHandle

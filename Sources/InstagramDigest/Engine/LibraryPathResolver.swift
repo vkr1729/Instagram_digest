@@ -75,6 +75,16 @@ public struct LibraryPathResolver: Sendable {
         return bookmarksDirectoryURL.appendingPathComponent("\(safeReel).mp4", isDirectory: false)
     }
 
+    /// Dedicated persistent thumbnail for bookmarked reels: MediaCache/Bookmarks/{reel_id}.thumb.jpg
+    public func bookmarkThumbnailFileURL(for reelID: String) -> URL {
+        let safeReel = Self.sanitizeComponent(reelID, fallback: "reel")
+        return bookmarksDirectoryURL.appendingPathComponent("\(safeReel).thumb.jpg", isDirectory: false)
+    }
+
+    public func isBookmarkThumbnailAvailable(for reelID: String) -> Bool {
+        fileExistsAndNonEmpty(at: bookmarkThumbnailFileURL(for: reelID))
+    }
+
     /// Local cached thumbnail for offline browsing: MediaCache/{week}/{reel}.thumb.jpg
     /// (~20–50 KB each; lives alongside the week's videos so weekly rollover
     /// and the LivePinSet treat it like the reel itself).

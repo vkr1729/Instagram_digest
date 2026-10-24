@@ -21,7 +21,7 @@ public struct BookmarksSheet: View {
     @State private var errorMessage: String?
     @State private var activePlaybackIndex: Int? = nil
     @AppStorage("ig_digest_grayscale_mode") private var isGrayscale: Bool = false
-    @AppStorage("gh_bookmark_repo") private var ghRepo: String = "vkreddy1729-ops/ig-bookmarks-2026"
+    @AppStorage("gh_bookmark_repo") private var ghRepo: String = "vkreddy1729-ops/ig-bookmarks"
     @AppStorage("gh_bookmark_pat") private var ghPAT: String = ""
     @State private var showGitHubSyncSheet: Bool = false
     @State private var showFileImporter: Bool = false
@@ -306,6 +306,14 @@ public struct BookmarksSheet: View {
             .task {
                 await refreshLedger()
                 await retryPendingRemoteBookmarks()
+                if DigestDataService.directMode && !ghRepo.isEmpty && !ghPAT.isEmpty {
+                    _ = try? await GitHubBookmarkSyncService.shared.syncWithGitHub(
+                        repo: ghRepo,
+                        pat: ghPAT,
+                        localBookmarks: bookmarks,
+                        context: modelContext
+                    )
+                }
             }
             .sheet(isPresented: $showGitHubSyncSheet) {
                 GitHubSyncModal(

@@ -24,7 +24,7 @@ import storage_r2
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("bookmark_migrator")
 
-REPO = "vkreddy1729-ops/ig-bookmarks-2026"
+REPO = "vkreddy1729-ops/ig-bookmarks"
 RELEASE_TAG = "v2026"
 
 
