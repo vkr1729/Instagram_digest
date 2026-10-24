@@ -24,7 +24,9 @@ jobs:
 
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s /Applications/Xcode_16.1.app || sudo xcode-select -s /Applications/Xcode_16.app || xcode-select -p
+          xcode-select -p
+          xcodebuild -version
+          sudo xcodebuild -runFirstLaunch || true
 
       - name: Install XcodeGen
         run: |
@@ -113,19 +115,21 @@ jobs:
       - name: Package Unsigned IPA
         run: |
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/InstagramDigest.app Payload/
-          zip -qr InstagramDigest.ipa Payload
-          echo "IPA Size: $(ls -lh InstagramDigest.ipa | awk '{print $5}')"
+          APP_PATH=$(find build/Build/Products/Release-iphoneos/ -maxdepth 1 -name "*.app" | head -n 1)
+          echo "Packaging app bundle: $APP_PATH"
+          cp -R "$APP_PATH" Payload/
+          zip -qr InstagramDigestDirect.ipa Payload
+          echo "IPA Size: $(ls -lh InstagramDigestDirect.ipa | awk '{print $5}')"
           echo "NOTE: this IPA is UNSIGNED and will not install directly."
           echo "See docs/RE_SIGN_AND_INSTALL.md for re-signing and installation instructions."
 
       - name: Inspect Package Structure
         run: |
-          unzip -l InstagramDigest.ipa | head -n 35
+          unzip -l InstagramDigestDirect.ipa | head -n 35
 
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: InstagramDigest-Unsigned-IPA
-          path: InstagramDigest.ipa
+          name: InstagramDigestDirect-Unsigned-IPA
+          path: InstagramDigestDirect.ipa
           if-no-files-found: error

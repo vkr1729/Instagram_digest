@@ -27,8 +27,8 @@ targets:
       MARKETING_VERSION: "1.0.0"
       INFOPLIST_KEY_CFBundleShortVersionString: "1.0.0"
       INFOPLIST_KEY_CFBundleVersion: "1"
-      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.offline
-      PRODUCT_NAME: InstagramDigest
+      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.direct
+      PRODUCT_NAME: InstagramDigestDirect
       TARGETED_DEVICE_FAMILY: "1"
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       CODE_SIGNING_ALLOWED: NO
@@ -44,7 +44,7 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       CURRENT_PROJECT_VERSION: "1"
       MARKETING_VERSION: "1.0.0"
-      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.offline.tests
+      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.direct.tests
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: ""
     dependencies:
@@ -59,7 +59,7 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       CURRENT_PROJECT_VERSION: "1"
       MARKETING_VERSION: "1.0.0"
-      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.offline.uitests
+      PRODUCT_BUNDLE_IDENTIFIER: com.instagramdigest.direct.uitests
       TEST_TARGET_NAME: InstagramDigest
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGN_IDENTITY: ""
