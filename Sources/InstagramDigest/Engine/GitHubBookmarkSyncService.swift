@@ -8,6 +8,7 @@ public struct BookmarkSyncDTO: Codable, Sendable {
     public let caption: String?
     public let category: String?
     public let thumbnail_url: String?
+    public let thumbnail_base64: String?
     public let canonical_url: String?
     public let video_asset_name: String?
     public let size_bytes: Int64?
@@ -19,6 +20,7 @@ public struct BookmarkSyncDTO: Codable, Sendable {
         caption: String? = nil,
         category: String? = nil,
         thumbnail_url: String? = nil,
+        thumbnail_base64: String? = nil,
         canonical_url: String? = nil,
         video_asset_name: String? = nil,
         size_bytes: Int64? = nil,
@@ -29,6 +31,7 @@ public struct BookmarkSyncDTO: Codable, Sendable {
         self.caption = caption
         self.category = category
         self.thumbnail_url = thumbnail_url
+        self.thumbnail_base64 = thumbnail_base64
         self.canonical_url = canonical_url
         self.video_asset_name = video_asset_name
         self.size_bytes = size_bytes
@@ -70,13 +73,21 @@ public final class GitHubBookmarkSyncService {
 
     /// Export bookmarks to a temporary JSON file for sharing via UIActivityViewController
     public func exportBookmarksJSON(bookmarks: [BookmarkItem]) -> URL? {
+        let resolver = LibraryPathResolver.shared
         let dtos: [BookmarkSyncDTO] = bookmarks.map { bm in
-            BookmarkSyncDTO(
+            let bmThumb = resolver.bookmarkThumbnailFileURL(for: bm.reelID)
+            let weekThumb = resolver.thumbnailFileURL(for: bm.weekID, reelID: bm.reelID)
+            var base64Thumb: String? = nil
+            if let data = (try? Data(contentsOf: bmThumb)) ?? (try? Data(contentsOf: weekThumb)) {
+                base64Thumb = data.base64EncodedString()
+            }
+            return BookmarkSyncDTO(
                 id: bm.reelID,
                 creator_handle: bm.creatorHandle,
                 caption: bm.caption,
                 category: nil,
                 thumbnail_url: bm.thumbnailUrl?.absoluteString,
+                thumbnail_base64: base64Thumb,
                 canonical_url: bm.canonicalUrl?.absoluteString,
                 video_asset_name: "\(bm.reelID).mp4",
                 size_bytes: bm.sizeBytes,
@@ -139,6 +150,13 @@ public final class GitHubBookmarkSyncService {
                 )
                 context.insert(item)
                 newCount += 1
+            }
+
+            // Restore embedded thumbnail if present
+            if let b64 = dto.thumbnail_base64, let thumbData = Data(base64Encoded: b64) {
+                let dest = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: dto.id)
+                try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                try? thumbData.write(to: dest, options: .atomic)
             }
         }
 
@@ -226,18 +244,65 @@ public final class GitHubBookmarkSyncService {
                 context.insert(item)
                 importedCount += 1
             }
+
+            // Cache thumbnail locally so new device displays covers offline
+            let thumbDest = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: dto.id)
+            if !FileManager.default.fileExists(atPath: thumbDest.path) {
+                Task.detached {
+                    try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                    let thumbApiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(dto.id)_portrait.jpg")!
+                    var thumbReq = URLRequest(url: thumbApiURL)
+                    thumbReq.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
+                    thumbReq.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+                    thumbReq.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
+                    if let (thumbJsonData, thumbRes) = try? await URLSession.shared.data(for: thumbReq),
+                       let thumbHttp = thumbRes as? HTTPURLResponse, thumbHttp.statusCode == 200,
+                       let thumbJson = try? JSONSerialization.jsonObject(with: thumbJsonData) as? [String: Any],
+                       let contentB64 = thumbJson["content"] as? String {
+                        let cleanB64 = contentB64.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
+                        if let imgData = Data(base64Encoded: cleanB64) {
+                            try? imgData.write(to: thumbDest, options: .atomic)
+                        }
+                    } else if let urlStr = dto.thumbnail_url, urlStr.hasPrefix("http"), let remoteURL = URL(string: urlStr) {
+                        if let (imgData, _) = try? await URLSession.shared.data(from: remoteURL) {
+                            try? imgData.write(to: thumbDest, options: .atomic)
+                        }
+                    }
+                }
+            }
         }
 
         // 3. Merge local bookmarks that are missing remotely
         var newlyAddedLocal = 0
         for local in localBookmarks {
             if allMergedDTOs[local.reelID] == nil {
+                // If local thumbnail exists, upload to repository thumbnails/ directory
+                let thumbLocal = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: local.reelID)
+                if let thumbData = try? Data(contentsOf: thumbLocal) {
+                    Task.detached {
+                        let thumbPutURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(local.reelID)_portrait.jpg")!
+                        var thumbPut = URLRequest(url: thumbPutURL)
+                        thumbPut.httpMethod = "PUT"
+                        thumbPut.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
+                        thumbPut.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+                        thumbPut.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        thumbPut.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
+                        let body: [String: Any] = [
+                            "message": "Add thumbnail for \(local.reelID)",
+                            "content": thumbData.base64EncodedString()
+                        ]
+                        thumbPut.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                        _ = try? await URLSession.shared.data(for: thumbPut)
+                    }
+                }
+
                 let dto = BookmarkSyncDTO(
                     id: local.reelID,
                     creator_handle: local.creatorHandle,
                     caption: local.caption,
                     category: nil,
-                    thumbnail_url: local.thumbnailUrl?.absoluteString,
+                    thumbnail_url: "thumbnails/\(local.reelID)_portrait.jpg",
+                    thumbnail_base64: nil,
                     canonical_url: local.canonicalUrl?.absoluteString,
                     video_asset_name: "\(local.reelID).mp4",
                     size_bytes: local.sizeBytes,

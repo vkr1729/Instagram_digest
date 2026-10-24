@@ -131,6 +131,8 @@ public enum BookmarkController {
             } catch {
                 context.rollback()
             }
+            let cap = UserDefaults.standard.integer(forKey: "max_cached_bookmark_videos")
+            enforceCachedVideosCap(limit: cap > 0 ? cap : 50, context: context)
             return
         }
 
@@ -191,5 +193,35 @@ public enum BookmarkController {
                 MediaCacheManager.removePendingRemoteBookmark(rID)
             }
         }
+    }
+
+    /// Enforces the maximum number of offline cached bookmark videos.
+    /// When total cached videos exceed `limit`, older video files are deleted from disk
+    /// while keeping their SwiftData record, metadata, and thumbnail completely intact.
+    public static func enforceCachedVideosCap(limit: Int, context: ModelContext) {
+        guard limit > 0 else { return } // 0 means keep all / unlimited
+        let descriptor = FetchDescriptor<BookmarkItem>(
+            sortBy: [SortDescriptor(\.bookmarkedAt, order: .reverse)]
+        )
+        guard let allBookmarks = try? context.fetch(descriptor) else { return }
+
+        let resolver = LibraryPathResolver.shared
+        var cachedCount = 0
+
+        for bm in allBookmarks {
+            let videoURL = resolver.bookmarkFileURL(for: bm.reelID)
+            let hasVideo = FileManager.default.fileExists(atPath: videoURL.path)
+            if hasVideo {
+                cachedCount += 1
+                if cachedCount > limit {
+                    // Evict older video file beyond cap
+                    try? FileManager.default.removeItem(at: videoURL)
+                    bm.localStatus = .evicted
+                } else {
+                    bm.localStatus = .cached
+                }
+            }
+        }
+        try? context.save()
     }
 }

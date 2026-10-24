@@ -3,6 +3,7 @@ import SwiftUI
 /// Settings sheet for configuring anti-doomscroll controls and mind guardrails.
 public struct SettingsSheetView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
 
     @Binding public var timeQuotaMinutes: Int
     @Binding public var enforcementMode: String
@@ -13,6 +14,7 @@ public struct SettingsSheetView: View {
     @Binding public var feedSortOrder: String
     @AppStorage("gh_bookmark_repo") private var ghRepo: String = "vkreddy1729-ops/ig-bookmarks"
     @AppStorage("gh_bookmark_pat") private var ghPAT: String = ""
+    @AppStorage("max_cached_bookmark_videos") private var maxCachedVideos: Int = 50
 
     public var onTapOffline: () -> Void
     public var onTapManifesto: () -> Void
@@ -101,6 +103,18 @@ public struct SettingsSheetView: View {
                 }
                 .listRowBackground(Color.white.opacity(0.08))
 
+                Section(header: Text("Offline Bookmark Video Storage").foregroundColor(.white.opacity(0.6)),
+                        footer: Text("Only the latest N bookmarked videos are cached on disk to prevent storage bloat. Older bookmarks retain their details and thumbnails, but free up video storage.").foregroundColor(.white.opacity(0.4))) {
+                    Picker("Keep Offline Videos", selection: $maxCachedVideos) {
+                        Text("Latest 25 videos (~250 MB)").tag(25)
+                        Text("Latest 50 videos (~500 MB)").tag(50)
+                        Text("Latest 100 videos (~1 GB)").tag(100)
+                        Text("Keep All Videos").tag(0)
+                    }
+                    .pickerStyle(.menu)
+                }
+                .listRowBackground(Color.white.opacity(0.08))
+
                 Section(header: Text("Features & Philosophy").foregroundColor(.white.opacity(0.6))) {
                     Button {
                         dismiss()
@@ -159,5 +173,6 @@ public struct SettingsSheetView: View {
         UserDefaults.standard.set(isGrayscale, forKey: "ig_digest_grayscale_mode")
         UserDefaults.standard.set(hideRanks, forKey: "ig_digest_hide_ranks_mode")
         UserDefaults.standard.set(feedSortOrder, forKey: "ig_digest_sort_order")
+        BookmarkController.enforceCachedVideosCap(limit: maxCachedVideos, context: modelContext)
     }
 }
