@@ -64,8 +64,8 @@ public final class BookmarkItem {
         self.rank = rank
         self.videoUrlString = videoUrl.absoluteString
         self.thumbnailUrlString = thumbnailUrl?.absoluteString
-        let safeReel = LibraryPathResolver.sanitizeComponent(reelID, fallback: "")
-        self.canonicalUrlString = canonicalUrl?.absoluteString ?? (safeReel.isEmpty ? nil : "https://www.instagram.com/reel/\(safeReel)/")
+        let safeReel = LibraryPathResolver.sanitizeComponent(reelID, fallback: "unknown")
+        self.canonicalUrlString = canonicalUrl?.absoluteString ?? "https://www.instagram.com/reel/\(safeReel)/"
         self.bookmarkedAt = bookmarkedAt
         self.localStatusRaw = localStatus.rawValue
         self.sizeBytes = sizeBytes
@@ -89,8 +89,7 @@ public final class BookmarkItem {
         if let s = canonicalUrlString, let u = URL(string: s) {
             return u
         }
-        let safe = LibraryPathResolver.sanitizeComponent(reelID, fallback: "")
-        guard !safe.isEmpty else { return nil }
+        let safe = LibraryPathResolver.sanitizeComponent(reelID, fallback: "unknown")
         return URL(string: "https://www.instagram.com/reel/\(safe)/")
     }
 

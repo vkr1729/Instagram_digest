@@ -282,8 +282,26 @@ final class DirectStreamTests: XCTestCase {
         XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer secret_token_123")
 
-        if let bodyData = capturedRequest?.httpBody,
-           let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: String] {
+        let bodyData: Data? = {
+            if let b = capturedRequest?.httpBody { return b }
+            guard let stream = capturedRequest?.httpBodyStream else { return nil }
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            var result = Data()
+            while stream.hasBytesAvailable {
+                let bytesRead = stream.read(&buffer, maxLength: buffer.count)
+                if bytesRead > 0 {
+                    result.append(buffer, count: bytesRead)
+                } else {
+                    break
+                }
+            }
+            return result.isEmpty ? nil : result
+        }()
+
+        if let body = bodyData,
+           let json = try? JSONSerialization.jsonObject(with: body) as? [String: String] {
             XCTAssertEqual(json["url"], reelURL.absoluteString)
         } else {
             XCTFail("Failed to parse request JSON body")
