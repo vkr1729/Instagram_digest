@@ -671,11 +671,8 @@ struct FeedMainView: View {
                 }
                 if !fetched.items.isEmpty {
                     self.pool.setReels(fetched.items, weekID: fetched.weekId, startIndex: resumeIndex)
-                    if !ProcessInfo.processInfo.arguments.contains("-ui-testing") {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            self.isChromeVisible = !self.pool.isPlaying
-                        }
-                    }
+                    // Keep chrome visible on initial load so the user sees the header, creator, and offline banner
+                    self.isChromeVisible = true
                 }
                 // Rec 4: the manifest arrived after the .task ordering — if
                 // the offline flag is set, narrow now that items exist.

@@ -101,6 +101,7 @@ public final class AVPlayerPool: ObservableObject {
     /// Watchdog and strike tracking
     private var reelStrikes: [String: Int] = [:]
     private var localStallCount: [String: Int] = [:]
+    private var consecutiveStreamFailures: Int = 0
     private var watchedLatchedReelIDs: Set<String> = []
     /// B2: user playback intent. Async slot-load completions must honor it:
     /// a pause/background/interruption that lands mid-load must not be
@@ -298,6 +299,7 @@ public final class AVPlayerPool: ObservableObject {
         // Failure ladder counts per visit: a fresh navigation gets a clean slate.
         reelStrikes[currentItems[newIndex].id] = nil
         localStallCount[currentItems[newIndex].id] = nil
+        consecutiveStreamFailures = 0
 
         poolGeneration &+= 1
         let thisGeneration = poolGeneration
@@ -687,6 +689,9 @@ public final class AVPlayerPool: ObservableObject {
             let cur = time.seconds
             if cur.isFinite {
                 self.currentTime = cur
+                if cur > 0.1 {
+                    self.consecutiveStreamFailures = 0
+                }
             }
             guard let duration = s.player.currentItem?.duration.seconds, duration.isFinite, duration > 0 else { return }
 
@@ -820,12 +825,19 @@ public final class AVPlayerPool: ObservableObject {
                     guard let self = self, self.poolGeneration == gen else { return }
                     self.configureCurrentSlot(with: item, generation: gen, forceRebuild: true)
                 }
-            } else if currentIndex + 1 < currentItems.count {
-                // Second strike: skip dead reel and advance
-                if let skip = onSkipDeadReel {
-                    skip(currentIndex + 1)
-                } else {
-                    setCurrentIndex(currentIndex + 1)
+            } else {
+                consecutiveStreamFailures += 1
+                if consecutiveStreamFailures >= 3 {
+                    // Circuit breaker: links may be expired or offline. Stop cascading through all reels.
+                    self.pause()
+                    self.isPlaying = false
+                } else if currentIndex + 1 < currentItems.count {
+                    // Second strike: skip dead reel and advance
+                    if let skip = onSkipDeadReel {
+                        skip(currentIndex + 1)
+                    } else {
+                        setCurrentIndex(currentIndex + 1)
+                    }
                 }
             }
         }
