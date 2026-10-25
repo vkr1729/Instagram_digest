@@ -101,13 +101,15 @@ struct InstagramDigestApp: App {
 /// Grid selection and last-reel resume replace the retired Jump-to-N pill.
 struct FeedMainView: View {
     @Environment(\.modelContext) private var modelContext
-    @ObservedObject private var pool = AVPlayerPool.shared
+    @StateObject private var pool = AVPlayerPool.shared
 
     @State private var manifest: DigestManifest?
     @State private var allReels: [ReelItem] = []
     @State private var rawManifestItems: [ReelItem] = []
     @State private var isLoading: Bool = true
     @State private var errorMessage: String?
+    @State private var manifestTask: Task<Void, Never>? = nil
+    @State private var shareDownloadTask: Task<Void, Never>? = nil
 
     @State private var activeIndex: Int = 0
     @State private var watchSeconds: Double = 0
@@ -125,7 +127,8 @@ struct FeedMainView: View {
     @State private var showManifestoSheet: Bool = false
     @State private var showSettingsSheet: Bool = false
     @State private var showMindfulModal: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful")
-    @State private var isGrayscale: Bool = UserDefaults.standard.bool(forKey: "ig_digest_grayscale_mode")
+    @State private var showNewWeekPrompt: Bool = false
+    @AppStorage("ig_digest_grayscale_mode") private var isGrayscale: Bool = false
     @State private var hideRanks: Bool = UserDefaults.standard.bool(forKey: "ig_digest_hide_ranks_mode")
     @State private var timeQuotaMinutes: Int = UserDefaults.standard.integer(forKey: "ig_digest_quota_minutes") == 0 ? 20 : UserDefaults.standard.integer(forKey: "ig_digest_quota_minutes")
     @State private var enforcementMode: String = UserDefaults.standard.string(forKey: "ig_digest_enforcement_mode") ?? "gentle"
@@ -138,8 +141,12 @@ struct FeedMainView: View {
     // Captured when a sheet pauses playback so dismiss without selection can
     // resume instead of stranding the feed paused.
     @State private var wasPlayingBeforeSheet: Bool = false
-    @State private var showOwnerKeyAlert: Bool = false
-    @State private var ownerKeyInput: String = ""
+
+    private enum PendingSheet {
+        case download
+        case manifesto
+    }
+    @State private var pendingSheet: PendingSheet? = nil
 
     // Watched reels and dynamic bookmarks query for instant HUD reflection
     @State private var watchedReelIDs: Set<String> = []
@@ -249,7 +256,6 @@ struct FeedMainView: View {
                     lastScrollEndTime: lastScrollEndTime,
                     currentProgress: pool.currentProgress
                 )
-                .grayscaleIf(isGrayscale)
                 .ignoresSafeArea()
 
                 // 2. Full-Bleed Mock 2 Overlay (Natural Scrim, Progress, Creator, Buttons, Caption)
@@ -292,8 +298,6 @@ struct FeedMainView: View {
                 VStack(spacing: 0) {
                     VStack(spacing: 0) {
                         HeaderBarView(
-                            currentIndex: activeIndex,
-                            totalCount: pool.currentItems.count,
                             bookmarkCount: savedBookmarks.count,
                             watchHoursText: String(format: "%.1f hrs", watchSeconds / 3600.0),
                             onTapGrid: {
@@ -301,20 +305,10 @@ struct FeedMainView: View {
                                 pool.pause()
                                 showGridSheet = true
                             },
-                            onTapOffline: {
-                                wasPlayingBeforeSheet = pool.isPlaying
-                                pool.pause()
-                                showDownloadSheet = true
-                            },
                             onTapBookmarks: {
                                 wasPlayingBeforeSheet = pool.isPlaying
                                 pool.pause()
                                 showBookmarksSheet = true
-                            },
-                            onTapManifesto: {
-                                wasPlayingBeforeSheet = pool.isPlaying
-                                pool.pause()
-                                showManifestoSheet = true
                             },
                             onTapSettings: {
                                 wasPlayingBeforeSheet = pool.isPlaying
@@ -326,7 +320,7 @@ struct FeedMainView: View {
                         StoryCategoryBarView(
                             totalCount: allReels.count,
                             selectedCategoryId: selectedCategoryId,
-                            offlineCaption: ProcessInfo.processInfo.arguments.contains("-ui-testing-offline")
+                            offlineCaption: offlineActive
                                 ? "Offline · \(pool.currentItems.count) downloaded" : "",
                             onSelectCategory: { newCat in
                                 guard let m = manifest else { return }
@@ -351,6 +345,18 @@ struct FeedMainView: View {
                                 }
                             }
                         )
+
+                        if DigestDataService.directMode, let m = manifest {
+                            if DownloadAllCoordinator.shared.state != .completed &&
+                               (DownloadAllCoordinator.shared.state != .idle || DownloadAllCoordinator.shared.hasUndownloadedItems(reels: m.items, weekID: m.weekId)) {
+                                OfflineCacheBanner(reels: m.items, weekID: m.weekId) {
+                                    wasPlayingBeforeSheet = pool.isPlaying
+                                    pool.pause()
+                                    showDownloadSheet = true
+                                }
+                                .padding(.top, 4)
+                            }
+                        }
                     }
                     .background(
                         LinearGradient(
@@ -410,7 +416,17 @@ struct FeedMainView: View {
                 .zIndex(30)
             }
         }
+        .grayscaleIf(isGrayscale)
         .sheet(isPresented: $showGridSheet) {
+            let gridTitle: String = {
+                if offlineActive {
+                    return "Offline Downloaded"
+                } else if selectedCategoryId != "all" {
+                    return selectedCategoryId.capitalized
+                } else {
+                    return "All Reels"
+                }
+            }()
             GridView(
                 reels: pool.currentItems,
                 currentIndex: activeIndex,
@@ -421,6 +437,7 @@ struct FeedMainView: View {
                     generatedAt: manifest?.generatedAt),
                 hideRanks: hideRanks,
                 sortOrder: feedSortOrder,
+                title: gridTitle,
                 onSelectReel: { targetIndex in
                     jumpToReel(at: targetIndex)
                 }
@@ -433,18 +450,13 @@ struct FeedMainView: View {
         }
         .sheet(isPresented: $showBookmarksSheet) {
             BookmarksSheet(onTriggerDownload: {
+                pendingSheet = .download
                 showBookmarksSheet = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    showDownloadSheet = true
-                }
             })
-            .grayscaleIf(isGrayscale)
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("TriggerDownloadAllNotification"))) { _ in
+            pendingSheet = .download
             showBookmarksSheet = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                showDownloadSheet = true
-            }
         }
         .sheet(isPresented: $showManifestoSheet) {
             ManifestoSheetView()
@@ -459,14 +471,12 @@ struct FeedMainView: View {
                 hideRanks: $hideRanks,
                 feedSortOrder: $feedSortOrder,
                 onTapOffline: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        showDownloadSheet = true
-                    }
+                    pendingSheet = .download
+                    showSettingsSheet = false
                 },
                 onTapManifesto: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        showManifestoSheet = true
-                    }
+                    pendingSheet = .manifesto
+                    showSettingsSheet = false
                 }
             )
         }
@@ -485,17 +495,30 @@ struct FeedMainView: View {
         }
         .onChange(of: showBookmarksSheet) { _, isPresented in
             resumeFeedAfterSheet(isPresented: isPresented)
+            if !isPresented, let pending = pendingSheet {
+                pendingSheet = nil
+                switch pending {
+                case .download: showDownloadSheet = true
+                case .manifesto: showManifestoSheet = true
+                }
+            }
         }
         .onChange(of: showManifestoSheet) { _, isPresented in
             resumeFeedAfterSheet(isPresented: isPresented)
         }
         .onChange(of: showSettingsSheet) { _, isPresented in
             resumeFeedAfterSheet(isPresented: isPresented)
+            if !isPresented, let pending = pendingSheet {
+                pendingSheet = nil
+                switch pending {
+                case .download: showDownloadSheet = true
+                case .manifesto: showManifestoSheet = true
+                }
+            }
             pool.advanceMode = (advanceMode == "manual") ? .manual : .auto
             pool.breatherEnabled = breatherEnabled
             pool.isGrayscale = isGrayscale
             pool.hideRanks = hideRanks
-            applyFeedSortOrder(feedSortOrder)
         }
         .onChange(of: feedSortOrder) { _, newOrder in
             applyFeedSortOrder(newOrder)
@@ -538,6 +561,9 @@ struct FeedMainView: View {
                 UserDefaults.standard.set(watchSeconds, forKey: "watchSeconds_\(weekID)")
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Reachability.connectivityChangedNotification)) { _ in
+            applyOfflinePlaylistIfNeeded()
+        }
         .task {
             loadManifest()
             applyOfflinePlaylistIfNeeded()
@@ -545,39 +571,34 @@ struct FeedMainView: View {
         .onAppear {
             setupPoolCallbacks()
         }
-        .alert("Link Cloudflare Owner Key", isPresented: Binding(
-            get: { !DigestDataService.directMode && showOwnerKeyAlert },
-            set: { showOwnerKeyAlert = $0 }
-        )) {
-            TextField("Enter Owner Key", text: $ownerKeyInput)
-            Button("Save & Sync") {
-                let trimmed = ownerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    UserDefaults.standard.set(trimmed, forKey: "digest_owner_key")
-                    if !pool.currentItems.isEmpty, activeIndex >= 0, activeIndex < pool.currentItems.count {
-                        let reel = pool.currentItems[activeIndex]
-                        if bookmarkedReelIDs.contains(reel.id) {
-                            Task {
-                                _ = try? await DigestDataService.shared.saveRemoteBookmark(reel: reel)
-                            }
-                        }
-                    }
-                }
+        .onDisappear {
+            manifestTask?.cancel()
+            shareDownloadTask?.cancel()
+        }
+        .alert("New Week Available", isPresented: $showNewWeekPrompt) {
+            Button("Download Week (~3 GB)") {
+                wasPlayingBeforeSheet = pool.isPlaying
+                pool.pause()
+                showDownloadSheet = true
             }
             Button("Later", role: .cancel) {}
         } message: {
-            Text("Enter your Cloudflare Worker OWNER_KEY to forward bookmarked reels directly to your private Telegram chat.")
+            Text("A new weekly digest is available. Download now for uninterrupted offline playback.")
         }
     }
 
     // MARK: - Data Loading & Playback Setup
 
     private func loadManifest() {
-        isLoading = true
+        manifestTask?.cancel()
+        if manifest == nil {
+            isLoading = true
+        }
         errorMessage = nil
-        Task {
+        manifestTask = Task {
             do {
                 let fetched = try await DigestDataService.shared.fetchManifest()
+                guard !Task.isCancelled else { return }
                 self.manifest = fetched
                 self.rawManifestItems = fetched.items
                 let ordered = sortedReels(from: fetched.items, order: feedSortOrder)
@@ -638,6 +659,7 @@ struct FeedMainView: View {
                     }
                     self.watchedReelIDs.removeAll()
                     resumeIndex = 0
+                    self.showNewWeekPrompt = true
                 } else {
                     let savedID = appState?.lastActiveReelID
                         ?? UserDefaults.standard.string(forKey: "lastActiveReelID_\(fetched.weekId)")
@@ -680,13 +702,6 @@ struct FeedMainView: View {
                 applyOfflinePlaylistIfNeeded()
                 // Load historical watched state immediately after manifest arrives
                 refreshWatchedReels()
-
-                // Sync remote Cloudflare R2 bookmarks manifest (18 items)
-                Task {
-                    if let remoteBMs = try? await DigestDataService.shared.fetchRemoteBookmarks() {
-                        await MediaCacheManager.shared.syncRemoteBookmarks(dtos: remoteBMs)
-                    }
-                }
 
                 // Seed Mindful 50-reels modal in UI testing if requested
                 if ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-mindful") {
@@ -1006,45 +1021,24 @@ struct FeedMainView: View {
             triggerBookmarkPopAnimation()
         } else {
             BookmarkController.add(reel: reel, weekID: weekID, context: modelContext)
-
-            if !DigestDataService.directMode {
-                let currentKey = UserDefaults.standard.string(forKey: "digest_owner_key") ?? ""
-                if currentKey.isEmpty && !UserDefaults.standard.bool(forKey: "owner_key_prompted") {
-                    UserDefaults.standard.set(true, forKey: "owner_key_prompted")
-                    ownerKeyInput = ""
-                    showOwnerKeyAlert = true
-                    // Owner-key alert is modal and covers the pop: delay the pop
-                    // so it shows after the UAT's Later-tap, not behind the alert.
-                    triggerBookmarkPopAnimation(delayed: true)
-                    return
-                }
-            }
             triggerBookmarkPopAnimation()
         }
     }
 
     @State private var bookmarkPopGeneration: UInt64 = 0
 
-    private func triggerBookmarkPopAnimation(delayed: Bool = false) {
+    private func triggerBookmarkPopAnimation() {
         bookmarkPopGeneration &+= 1
         let generation = bookmarkPopGeneration
-        // Delay briefly so the pop appears only after the owner-key alert
-        // dismisses (a modal alert hides everything beneath it) and stays
-        // visible for the UAT probe instead of expiring behind the alert.
-        // Tap-to-Later-tap spans ~1-3s in CI; [2.5, 6.0]s covers the probe.
-        let popDelay: Double = delayed ? 2.5 : 0.0
         let popVisibleDuration: Double = 3.5
-        DispatchQueue.main.asyncAfter(deadline: .now() + popDelay) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            showBookmarkPop = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + popVisibleDuration) {
+            // A rapid second toggle must not be hidden early by the first timer.
             guard generation == bookmarkPopGeneration else { return }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                showBookmarkPop = true
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + popVisibleDuration) {
-                // A rapid second toggle must not be hidden early by the first timer.
-                guard generation == bookmarkPopGeneration else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    showBookmarkPop = false
-                }
+            withAnimation(.easeOut(duration: 0.2)) {
+                showBookmarkPop = false
             }
         }
     }
@@ -1072,7 +1066,8 @@ struct FeedMainView: View {
         }
 
         // Asynchronously download video to temp file, then present share sheet with video attached
-        Task {
+        shareDownloadTask?.cancel()
+        shareDownloadTask = Task {
             do {
                 let (downloadedURL, resp) = try await URLSession.shared.download(from: reel.videoUrl)
                 guard resp.isHTTPSuccess else { throw URLError(.badServerResponse) }
@@ -1134,10 +1129,11 @@ struct FeedMainView: View {
 /// Network reachability helper backed by NWPathMonitor
 public final class Reachability: @unchecked Sendable {
     public static let shared = Reachability()
+    public static let connectivityChangedNotification = Notification.Name("ReachabilityConnectivityChangedNotification")
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "ReachabilityQueue")
     private let lock = NSLock()
-    private var _isConnected: Bool = true
+    private var _isConnected: Bool
     public var isConnected: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -1145,13 +1141,21 @@ public final class Reachability: @unchecked Sendable {
     }
 
     private init() {
+        self._isConnected = (monitor.currentPath.status == .satisfied)
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self = self else { return }
             self.lock.lock()
+            let changed = (self._isConnected != (path.status == .satisfied))
             self._isConnected = (path.status == .satisfied)
             self.lock.unlock()
+            if changed {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Reachability.connectivityChangedNotification, object: nil)
+                }
+            }
         }
         monitor.start(queue: queue)
+        self._isConnected = (monitor.currentPath.status == .satisfied)
     }
 
     public static func isConnectedToNetwork() -> Bool {
@@ -1186,6 +1190,13 @@ public enum ShareSheetPresenter {
             popover.sourceView = topVC.view
             popover.sourceRect = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0)
             popover.permittedArrowDirections = []
+        }
+        activityVC.completionWithItemsHandler = { _, _, _, _ in
+            for item in items {
+                if let url = item as? URL, url.path.contains("/tmp/") || url.path.contains(NSTemporaryDirectory()) {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
         }
         topVC.present(activityVC, animated: true)
     }

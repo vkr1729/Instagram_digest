@@ -40,7 +40,11 @@ def direct_mode_env(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(config, "VIDEOS_DIR", tmp_path / "videos")
     monkeypatch.setattr(config, "DIGESTS_DIR", tmp_path / "data" / "digests")
-    monkeypatch.setattr(config, "DIRECT_DEPLOYED_WEEK_FILE", tmp_path / "data" / "deployed_direct_week.json")
+    monkeypatch.setattr(config, "DIGEST_BATCH_FILE", tmp_path / "data" / "top100_digest.json")
+    monkeypatch.setattr(config, "LAST_RUN_FILE", tmp_path / "data" / "last_run.json")
+    monkeypatch.setattr(main, "SEEN_IDS_FILE", tmp_path / "data" / "seen_reel_ids.json")
+    monkeypatch.setattr(config, "TOP_DIGEST_COUNT", 1)
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 1)
     config.SITE_DIR.mkdir(parents=True, exist_ok=True)
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
@@ -306,11 +310,12 @@ def test_deploy_direct_prunes_stale_thumbnails_audit_024(monkeypatch, tmp_path):
     assert pruned_verified[0] is True, "Stale thumbnails must be pruned before commit"
 
 
-def test_deploy_direct_bootstrap_on_missing_remote_branch_audit_029(monkeypatch, tmp_path):
-    """Verify deploy_direct_to_gh_pages bootstraps fresh gh-pages branch on remote branch not found."""
+def test_deploy_direct_refuses_bootstrap_on_missing_remote_branch_audit_016(monkeypatch, tmp_path):
+    """AUDIT-001 / AUDIT-016: Verify deploy_direct_to_gh_pages aborts when gh-pages branch is absent on remote."""
     site_dir = tmp_path / "site"
     site_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(config, "SITE_DIR", site_dir)
+    monkeypatch.setattr(config, "TOP_DIGEST_COUNT", 1)
     monkeypatch.setattr(config, "DIRECT_PAGES_MANIFEST_URL", "")
 
     direct_manifest = site_dir / "data_direct.json"
@@ -325,20 +330,46 @@ def test_deploy_direct_bootstrap_on_missing_remote_branch_audit_029(monkeypatch,
     def fake_subprocess_run(cmd, *args, **kwargs):
         recorded_cmds.append(cmd)
         if "clone" in cmd:
-            # Clone fails with branch not found
             return MagicMock(returncode=128, stdout="", stderr="fatal: Remote branch gh-pages not found in upstream origin")
-        if "diff" in cmd:
-            return MagicMock(returncode=1, stdout="", stderr="")
         return MagicMock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("subprocess.run", fake_subprocess_run)
     monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/git")
 
     success = site_builder.deploy_direct_to_gh_pages(site_dir=site_dir, repo_url="mock_repo")
-    assert success is True
-    # Verify git init -b gh-pages and git push -u origin gh-pages were called
-    assert any("init" in cmd and "-b" in cmd and "gh-pages" in cmd for cmd in recorded_cmds)
-    assert any("push" in cmd and "-u" in cmd and "origin" in cmd and "gh-pages" in cmd for cmd in recorded_cmds)
+    assert success is False, "Must fail closed and refuse to recreate/bootstrap gh-pages branch"
+    assert not any("init" in cmd for cmd in recorded_cmds), "Must never run git init to bootstrap"
+
+
+def test_deploy_direct_refuses_on_network_failure(monkeypatch, tmp_path):
+    """AUDIT-016: Genuine clone network failure returns False."""
+    site_dir = tmp_path / "site"
+    site_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "SITE_DIR", site_dir)
+    monkeypatch.setattr(config, "TOP_DIGEST_COUNT", 1)
+    monkeypatch.setattr(config, "DIRECT_PAGES_MANIFEST_URL", "")
+
+    direct_manifest = site_dir / "data_direct.json"
+    direct_manifest.write_text(json.dumps({
+        "channel": "direct",
+        "run_date": "2026-10-24",
+        "items": [{"id": "1", "video_url": "https://scontent.cdninstagram.com/1.mp4"}]
+    }))
+
+    recorded_cmds = []
+
+    def fake_subprocess_run(cmd, *args, **kwargs):
+        recorded_cmds.append(cmd)
+        if "clone" in cmd:
+            return MagicMock(returncode=128, stdout="", stderr="fatal: Could not resolve host: github.com")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_subprocess_run)
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/git")
+
+    success = site_builder.deploy_direct_to_gh_pages(site_dir=site_dir, repo_url="mock_repo")
+    assert success is False
+    assert not any("init" in cmd for cmd in recorded_cmds)
 
 
 def test_reconcile_stranded_outbox_audit_028(monkeypatch):
@@ -357,23 +388,23 @@ def test_reconcile_stranded_outbox_audit_028(monkeypatch):
 
 
 def test_direct_mode_persist_loop_and_r2_url_sanitization_audit_007():
-    """Verify that in direct mode, r2_url is popped and not saved to digest batch."""
+    """AUDIT-015: Verify production _filter_direct_playable filters unplayable and preserves valid."""
     ranked_reels = [
         {
             "id": "r1",
             "video_cdn_url": "https://scontent.cdninstagram.com/v/t50/r1.mp4",
             "r2_url": "https://pub-r2.example.com/r1.mp4",
+        },
+        {
+            "id": "r2",
+            "video_url": "https://pub-r2.example.com/r2.mp4",
         }
     ]
-    uploaded_url_map = {"r1": "https://scontent.cdninstagram.com/v/t50/r1.mp4"}
-
-    # Simulate persist block
-    for r in ranked_reels:
-        r["video_url"] = uploaded_url_map.get(r.get("id")) or ""
-        r.pop("r2_url", None)
-
-    assert ranked_reels[0]["video_url"] == "https://scontent.cdninstagram.com/v/t50/r1.mp4"
-    assert "r2_url" not in ranked_reels[0]
+    playable, dead = main._filter_direct_playable(ranked_reels)
+    assert len(playable) == 1
+    assert playable[0]["id"] == "r1"
+    assert len(dead) == 1
+    assert dead[0]["id"] == "r2"
 
 
 def test_legacy_parity(monkeypatch, tmp_path):
@@ -572,49 +603,30 @@ def test_direct_deploy_aborts_if_production_data_json_missing(monkeypatch, tmp_p
 
 
 def test_direct_mode_filtering_and_gates_audit_001():
-    """Verify direct mode filters unplayable reels and triggers zero-playable / MIN_DEPLOY gates."""
-    from site_builder import is_direct_stream_url
-
+    """AUDIT-015: Verify production _filter_direct_playable filters unplayable reels and returns proper partitions."""
     ranked_reels = [
         {"id": "dead1", "video_url": "https://pub-r2.example.com/1.mp4"},
         {"id": "dead2", "video_url": ""},
         {"id": "live1", "video_cdn_url": "https://scontent.cdninstagram.com/live1.mp4"},
     ]
-    uploaded_url_map = {}
-    playable = []
-    dead = []
-    for reel in ranked_reels:
-        cand = reel.get("video_cdn_url") or reel.get("video_url") or ""
-        if cand and is_direct_stream_url(cand):
-            uploaded_url_map[reel["id"]] = cand
-            playable.append(reel)
-        else:
-            dead.append(reel.get("id"))
-    ranked_reels = playable
-    dropped = dead
+    playable, dead = main._filter_direct_playable(ranked_reels)
 
-    assert len(ranked_reels) == 1
-    assert ranked_reels[0]["id"] == "live1"
-    assert set(dropped) == {"dead1", "dead2"}
-    assert uploaded_url_map == {"live1": "https://scontent.cdninstagram.com/live1.mp4"}
+    assert len(playable) == 1
+    assert playable[0]["id"] == "live1"
+    assert {r.get("id") for r in dead} == {"dead1", "dead2"}
 
     # If all reels were dead:
     dead_ranked_reels = [
         {"id": "dead1", "video_url": "https://pub-r2.example.com/1.mp4"},
         {"id": "dead2", "video_url": ""},
     ]
-    playable_empty = []
-    for reel in dead_ranked_reels:
-        cand = reel.get("video_cdn_url") or reel.get("video_url") or ""
-        if cand and is_direct_stream_url(cand):
-            playable_empty.append(reel)
-    assert len(playable_empty) == 0, "Zero-playable guard triggers when no valid Meta CDN URLs exist"
+    playable_empty, dead_all = main._filter_direct_playable(dead_ranked_reels)
+    assert len(playable_empty) == 0
+    assert len(dead_all) == 2
 
 
 def test_direct_expand_filtering_and_gates_audit_011():
-    """Verify _run_expand seeds map only with valid Meta URLs and drops unplayable from combined items."""
-    from site_builder import is_direct_stream_url
-
+    """AUDIT-015: Verify production site_builder._pick_playable validates carryover and combined items."""
     existing_items = [
         {"id": "stale_r2", "r2_url": "https://pub-r2.example.com/stale.mp4"},
         {"id": "valid_meta", "video_cdn_url": "https://scontent.cdninstagram.com/valid.mp4"},
@@ -625,8 +637,8 @@ def test_direct_expand_filtering_and_gates_audit_011():
         rid = item.get("id")
         if not rid:
             continue
-        cand = item.get("video_cdn_url") or item.get("video_url") or ""
-        if cand and is_direct_stream_url(cand):
+        cand = site_builder._pick_playable(item)
+        if cand:
             uploaded_url_map[rid] = cand
             carried_over_count += 1
 
@@ -634,7 +646,7 @@ def test_direct_expand_filtering_and_gates_audit_011():
     assert uploaded_url_map == {"valid_meta": "https://scontent.cdninstagram.com/valid.mp4"}
     assert "stale_r2" not in uploaded_url_map
 
-    # Combined items filtering
+    # Combined items using production _pick_playable
     new_ranked = [
         {"id": "new_good", "video_cdn_url": "https://scontent.cdninstagram.com/new.mp4"},
         {"id": "new_bad", "video_url": "https://other.com/bad.mp4"},
@@ -644,8 +656,8 @@ def test_direct_expand_filtering_and_gates_audit_011():
     playable = []
     dead = []
     for reel in combined_items:
-        cand = uploaded_url_map.get(reel.get("id") or "") or reel.get("video_cdn_url") or reel.get("video_url") or ""
-        if cand and is_direct_stream_url(cand):
+        cand = site_builder._pick_playable(reel, extra=uploaded_url_map.get(reel.get("id") or ""))
+        if cand:
             reel["video_url"] = cand
             reel.pop("r2_url", None)
             playable.append(reel)
@@ -680,13 +692,16 @@ def test_direct_build_only(monkeypatch, tmp_path):
 
 
 def test_direct_deploy_only(monkeypatch):
-    """AUDIT-012: Verify _deploy_only in direct mode routes to deploy_direct_to_gh_pages and checks min count."""
-    # Fewer than MIN_DEPLOY_ITEMS should abort with code 2
-    monkeypatch.setattr(main, "_digest_item_count", lambda: 5)
+    """AUDIT-002: Verify _deploy_only in direct mode checks config.direct_manifest_file() and routes to deploy_direct_to_gh_pages."""
+    # When direct_manifest_file is absent or has fewer than MIN_DEPLOY_ITEMS, aborts with code 2
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 10)
     assert main._deploy_only() == 2
 
-    # With enough items, delegates to _publish_digest which calls deploy_direct_to_gh_pages
-    monkeypatch.setattr(main, "_digest_item_count", lambda: main.MIN_DEPLOY_ITEMS)
+    # With enough items in data_direct.json, delegates to _publish_digest which calls deploy_direct_to_gh_pages
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 1)
+    m_path = config.direct_manifest_file()
+    m_path.parent.mkdir(parents=True, exist_ok=True)
+    m_path.write_text(json.dumps({"channel": "direct", "items": [{"id": "1", "video_url": "https://fbcdn.net/1.mp4"}]}))
     mock_deploy = MagicMock(return_value=True)
     monkeypatch.setattr(site_builder, "deploy_direct_to_gh_pages", mock_deploy)
 
@@ -758,6 +773,7 @@ def test_is_direct_stream_url_edge_cases():
     assert is_direct_stream_url("https://cdninstagram.com/video.mp4") is True
     assert is_direct_stream_url("https://subdomain.nested.fbcdn.net/stream.mp4") is True
     assert is_direct_stream_url("https://subdomain.nested.cdninstagram.com/stream.mp4") is True
+    assert is_direct_stream_url("  https://fbcdn.net/a.mp4\n") is True
 
     # Insecure HTTP must be rejected
     assert is_direct_stream_url("http://scontent.cdninstagram.com/test.mp4") is False
@@ -849,3 +865,168 @@ def test_deploy_direct_byte_for_byte_preservation_and_mutation_abort(monkeypatch
     monkeypatch.setattr("subprocess.run", fake_subprocess_run_mutating)
     failed_success = site_builder.deploy_direct_to_gh_pages(site_dir=site_dir, repo_url="mock_repo")
     assert failed_success is False, "Must abort if data.json bytes change during deploy"
+
+
+def test_write_direct_manifest_non_string_candidates_audit_007(tmp_path):
+    """AUDIT-007 / AUDIT-046 / AUDIT-059: Non-string candidates and invalid formats drop gracefully without crashing."""
+    out = tmp_path / "data_direct.json"
+    items = [
+        {"id": "x", "video_cdn_url": 12345},
+        {"id": "y", "video_url": ["https://fbcdn.net/a.mp4"]},
+        {"id": "valid1", "video_url": "https://fbcdn.net/valid1.mp4", "size_bytes": "500000", "local_url": "/tmp/a.mp4", "video_cdn_url": "https://fbcdn.net/valid1.mp4"},
+        {"id": "", "video_url": "https://fbcdn.net/noid.mp4"},  # AUDIT-046: id-less
+        {"id": "neg_size", "video_url": "https://fbcdn.net/neg.mp4", "size_bytes": -10},
+    ]
+    p = site_builder.write_direct_manifest(items, week_id="2026-10-24", output_path=out)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    saved_items = data.get("items", [])
+    assert len(saved_items) == 2
+    assert saved_items[0]["id"] == "valid1"
+    assert saved_items[0]["size_bytes"] == 500000
+    assert saved_items[0]["url"] == "https://www.instagram.com/reel/valid1/"
+    assert "local_url" not in saved_items[0]
+    assert "video_cdn_url" not in saved_items[0]
+    assert saved_items[1]["id"] == "neg_size"
+    assert "size_bytes" not in saved_items[1]
+
+
+def test_quorum_boundary_cases_audit_045(tmp_path):
+    """AUDIT-045: Verify 60% quorum math ceil floor for n=2, 3, 4."""
+    site_dir = tmp_path / "site"
+    site_dir.mkdir(parents=True, exist_ok=True)
+    m_file = site_dir / "data_direct.json"
+
+    # n=2: 60% is 1.2 -> ceil is 2. 1 good reel fails, 2 good reels pass.
+    m_file.write_text(json.dumps({
+        "items": [
+            {"video_url": "https://fbcdn.net/1.mp4"},
+            {"video_url": "https://other.com/bad.mp4"},
+        ]
+    }))
+    assert site_builder._pages_bundle_is_remote(site_dir, direct_mode=True) is False
+
+    m_file.write_text(json.dumps({
+        "items": [
+            {"video_url": "https://fbcdn.net/1.mp4"},
+            {"video_url": "https://fbcdn.net/2.mp4"},
+        ]
+    }))
+    assert site_builder._pages_bundle_is_remote(site_dir, direct_mode=True) is True
+
+    # n=3: 60% is 1.8 -> ceil is 2. 1 good fails, 2 good passes.
+    m_file.write_text(json.dumps({
+        "items": [
+            {"video_url": "https://fbcdn.net/1.mp4"},
+            {"video_url": "https://other.com/bad1.mp4"},
+            {"video_url": "https://other.com/bad2.mp4"},
+        ]
+    }))
+    assert site_builder._pages_bundle_is_remote(site_dir, direct_mode=True) is False
+
+    # n=4: 60% is 2.4 -> ceil is 3. 2 good fails, 3 good passes.
+    m_file.write_text(json.dumps({
+        "items": [
+            {"video_url": "https://fbcdn.net/1.mp4"},
+            {"video_url": "https://fbcdn.net/2.mp4"},
+            {"video_url": "https://other.com/bad1.mp4"},
+            {"video_url": "https://other.com/bad2.mp4"},
+        ]
+    }))
+    assert site_builder._pages_bundle_is_remote(site_dir, direct_mode=True) is False
+
+    m_file.write_text(json.dumps({
+        "items": [
+            {"video_url": "https://fbcdn.net/1.mp4"},
+            {"video_url": "https://fbcdn.net/2.mp4"},
+            {"video_url": "https://fbcdn.net/3.mp4"},
+            {"video_url": "https://other.com/bad.mp4"},
+        ]
+    }))
+    assert site_builder._pages_bundle_is_remote(site_dir, direct_mode=True) is True
+
+
+def test_direct_html_render_no_r2_worker_leaks_audit_047(monkeypatch, tmp_path):
+    """AUDIT-047: Direct-mode rendered HTML contains neither BOOKMARK_API_BASE nor R2_PUBLIC_DOMAIN."""
+    monkeypatch.setattr(config, "DIRECT_STREAM_MODE", True)
+    monkeypatch.setattr(config, "BOOKMARK_API_BASE", "https://secret-worker.example.workers.dev")
+    monkeypatch.setattr(config, "R2_PUBLIC_DOMAIN", "https://pub-secret-r2.example.com")
+    site_dir = tmp_path / "site"
+    site_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config, "SITE_DIR", site_dir)
+
+    digest_data = {
+        "run_date": "2026-10-24",
+        "items": [{"id": "r1", "creator_handle": "alice", "video_cdn_url": "https://fbcdn.net/1.mp4"}],
+    }
+    r2_path, local_path = site_builder.build_site(digest_data=digest_data)
+    r2_html = r2_path.read_text(encoding="utf-8")
+    local_html = local_path.read_text(encoding="utf-8")
+
+    assert "secret-worker.example.workers.dev" not in r2_html
+    assert "pub-secret-r2.example.com" not in r2_html
+    assert "secret-worker.example.workers.dev" not in local_html
+
+
+def test_zero_cloud_import_without_boto3_audit_055(monkeypatch):
+    """AUDIT-055: site_builder and main can be imported when boto3 is not installed."""
+    import sys
+    monkeypatch.setitem(sys.modules, "boto3", None)
+    monkeypatch.setitem(sys.modules, "storage_r2", None)
+    assert site_builder.is_direct_stream_url("https://fbcdn.net/a.mp4") is True
+    assert callable(main._filter_direct_playable)
+
+
+def test_direct_full_sync_hermetic_audit_015(monkeypatch, tmp_path):
+    """AUDIT-015: Hermetic _run_full_sync in direct mode touches no R2 and saves only playable reels."""
+    from datetime import datetime, timezone
+    import time
+    import extractor
+    class PoisonedR2:
+        def __getattr__(self, name):
+            raise AssertionError(f"R2 accessed during direct stream mode sync: {name}")
+
+    monkeypatch.setattr(main, "storage_r2", PoisonedR2())
+    monkeypatch.setattr(site_builder, "storage_r2", PoisonedR2())
+    monkeypatch.setattr(config, "DIRECT_STREAM_MODE", True)
+    monkeypatch.setattr(config, "TOP_DIGEST_COUNT", 2)
+    monkeypatch.setattr(main, "MIN_DEPLOY_ITEMS", 1)
+
+    fake_reels = [
+        {"id": "r1", "creator_handle": "creator1", "video_cdn_url": "https://scontent.cdninstagram.com/1.mp4", "url": "https://www.instagram.com/reel/r1/"},
+        {"id": "r2", "creator_handle": "creator2", "video_url": "https://expired-r2.example.com/2.mp4", "url": "https://www.instagram.com/reel/r2/"},
+    ]
+
+    week_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    sync_file = config.DATA_DIR / f"sync_progress_{week_id}.json"
+    sync_file.write_text(json.dumps({
+        "version": 1,
+        "week_id": week_id,
+        "stage": "ranked",
+        "saved_at": time.time(),
+        "limit_per_creator": 15,
+        "days_back": 7,
+        "recommended_creators": [],
+        "ranked": fake_reels,
+    }))
+
+    def fake_download(url, path, **kwargs):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"dummy")
+        if "r2" in url:
+            return (True, "")
+        return (True, "https://scontent.cdninstagram.com/1.mp4")
+
+    monkeypatch.setattr(extractor, "download_reel_video", fake_download)
+    import recommendations
+    monkeypatch.setattr(recommendations, "refresh_recommendations", lambda **kwargs: [])
+    monkeypatch.setattr("shutil.which", lambda cmd: None if cmd == "ffmpeg" else "/bin/" + cmd)
+
+    rc = main._run_full_sync(days_back=7, dry_run=False, deploy=False, resume=True, skip_email=True)
+    assert rc == 0
+
+    saved_batch = json.loads(config.DIGEST_BATCH_FILE.read_text(encoding="utf-8"))
+    items = saved_batch.get("items", [])
+    assert len(items) == 1
+    assert items[0]["id"] == "r1"
+    assert "r2_url" not in items[0]
+    assert items[0]["video_url"] == "https://scontent.cdninstagram.com/1.mp4"

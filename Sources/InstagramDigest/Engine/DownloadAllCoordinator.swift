@@ -36,8 +36,9 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     private var totalInBatch: Int = 0
     private var completedInBatch: Int = 0
-    public private(set) var failedInBatch: Int = 0
+    @Published public private(set) var failedInBatch: Int = 0
     private var hasRefreshedManifestForExpiredURLs: Bool = false
+    private var isRefreshingForExpiry: Bool = false
     private var currentWeekID: String = ""
 
     private var urlSession: URLSession!
@@ -96,7 +97,13 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         return (sufficient, required, available)
     }
 
-    /// Calculates total bytes currently occupied by older weeks' directories and legacy Bookmarks (AUDIT-033)
+    /// Returns whether any reel in the batch is not yet cached locally
+    public func hasUndownloadedItems(reels: [ReelItem], weekID: String) -> Bool {
+        guard !reels.isEmpty else { return false }
+        return reels.contains { !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id) }
+    }
+
+    /// Calculates total bytes currently occupied by older weeks' directories (excluding Bookmarks and active incoming week) (AUDIT-021)
     public func calculateReclaimableRolloverBytes(incomingWeekID: String, pathResolver: LibraryPathResolver = .shared) -> Int64 {
         let fm = FileManager.default
         let safeIncoming = LibraryPathResolver.sanitizeComponent(incomingWeekID)
@@ -106,7 +113,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
         if let subdirs = try? fm.contentsOfDirectory(at: cacheBase, includingPropertiesForKeys: [.isDirectoryKey]) {
             for dir in subdirs {
                 let name = dir.lastPathComponent
-                if name == safeIncoming || name == LibraryPathResolver.resumeDataFolderName {
+                if name == safeIncoming || name == LibraryPathResolver.bookmarksFolderName || name == LibraryPathResolver.resumeDataFolderName {
                     continue
                 }
                 var isDir: ObjCBool = false
@@ -126,8 +133,33 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     // MARK: - Queue Management
 
-    public func startDownloadAll(reels: [ReelItem], weekID: String, excludeWatchedIDs: Set<String> = []) {
-        guard self.state != .preparing else { return }
+    /// Pure helper to measure manifest age against the 48-hour Meta signed URL expiry window (AUDIT-070)
+    public static func manifestAgeHours(_ m: DigestManifest) -> Double? {
+        guard let g = m.generatedAt else { return nil }
+        return Date().timeIntervalSince(g) / 3600
+    }
+
+    /// Pure helper to measure manifest age against the 48-hour Meta signed URL expiry window (AUDIT-070)
+    public static func manifestAgeHours(generatedAt: Date?) -> Double? {
+        guard let g = generatedAt else { return nil }
+        return Date().timeIntervalSince(g) / 3600
+    }
+
+    public func startDownloadAll(reels: [ReelItem], weekID: String, excludeWatchedIDs: Set<String> = [], generatedAt: Date? = nil) {
+        // AUDIT-020: Guard against duplicate taps during .preparing, .downloading, and .paused
+        switch self.state {
+        case .preparing, .downloading, .paused:
+            return
+        default:
+            break
+        }
+
+        // AUDIT-070: Proactive freshness gate: reject starting ~3 GB bulk download if manifest is >48h old
+        if let age = Self.manifestAgeHours(generatedAt: generatedAt), age > 48 {
+            self.state = .failed("Week links likely expired (\(Int(age))h old) — please refresh or re-sync from workstation.")
+            return
+        }
+
         let batch = excludeWatchedIDs.isEmpty ? reels : reels.filter { !excludeWatchedIDs.contains($0.id) }
         guard !batch.isEmpty else { return }
         self.state = .preparing
@@ -166,8 +198,10 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             self.watchdogResumeTask = nil
             self.isSuspended = false
             self.suspensionSource = .none   // a prior user pause must not stick to the new batch
+            // AUDIT-067: Batch completeness checks verify week cache file existence specifically
             let pending = batch.filter {
-                !LibraryPathResolver.shared.isLocalFileAvailable(for: weekID, reelID: $0.id)
+                let weekURL = LibraryPathResolver.shared.localFileURL(for: weekID, reelID: $0.id)
+                return !FileManager.default.fileExists(atPath: weekURL.path)
             }
 
             guard !pending.isEmpty else {
@@ -369,8 +403,9 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                     entry.task.cancel { [weak self] resumeData in
                         guard let data = resumeData else { return }
                         let reelID = entry.item.id
+                        let weekID = entry.item.weekID
                         Task { @MainActor [weak self] in
-                            self?.persistResumeData(data, for: reelID)
+                            self?.persistResumeData(data, for: reelID, weekID: weekID)
                         }
                     }
                     queue.insert(entry.item, at: 0)
@@ -412,7 +447,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     private func startItemDownload(_ item: DownloadItem) {
         let task: URLSessionDownloadTask
-        if let resumeData = loadPersistedResumeData(for: item.id) {
+        if let resumeData = loadPersistedResumeData(for: item.id, weekID: item.weekID) {
             task = urlSession.downloadTask(withResumeData: resumeData)
             // Keep the .dat until promotion succeeds (IOS-P1-8): a crash
             // mid-download must be resumable from the persisted bytes.
@@ -434,20 +469,20 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
 
     // MARK: - ResumeData Persistence to Disk
 
-    private func persistResumeData(_ data: Data, for reelID: String) {
-        let fileURL = LibraryPathResolver.shared.resumeDataFileURL(for: reelID)
+    private func persistResumeData(_ data: Data, for reelID: String, weekID: String) {
+        let fileURL = LibraryPathResolver.shared.resumeDataFileURL(forWeekID: weekID, reelID: reelID)
         try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.resumeDataDirectoryURL)
         try? data.write(to: fileURL, options: .atomic)
     }
 
-    private func loadPersistedResumeData(for reelID: String) -> Data? {
-        let fileURL = LibraryPathResolver.shared.resumeDataFileURL(for: reelID)
+    private func loadPersistedResumeData(for reelID: String, weekID: String) -> Data? {
+        let fileURL = LibraryPathResolver.shared.resumeDataFileURL(forWeekID: weekID, reelID: reelID)
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         return try? Data(contentsOf: fileURL)
     }
 
-    private func removePersistedResumeData(for reelID: String) {
-        let fileURL = LibraryPathResolver.shared.resumeDataFileURL(for: reelID)
+    private func removePersistedResumeData(for reelID: String, weekID: String) {
+        let fileURL = LibraryPathResolver.shared.resumeDataFileURL(forWeekID: weekID, reelID: reelID)
         try? FileManager.default.removeItem(at: fileURL)
     }
 
@@ -464,7 +499,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             Task { @MainActor in
                 guard let entry = self.inFlightTasks.removeValue(forKey: downloadTask.taskIdentifier) else { return }
                 let item = entry.item
-                self.removePersistedResumeData(for: item.id)
+                self.removePersistedResumeData(for: item.id, weekID: item.weekID)
 
                 if status == 403 || status == 410 {
                     await self.handleExpiredURLResponse(failingItem: item)
@@ -526,7 +561,7 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
                 // IOS-P1-8: delete resume data only after the atomic
                 // promotion succeeds. A crash between the .part move and
                 // promotion must keep resume bytes for a cheap retry.
-                self.removePersistedResumeData(for: item.id)
+                self.removePersistedResumeData(for: item.id, weekID: item.weekID)
 
                 self.completedInBatch += 1
             } catch {
@@ -554,18 +589,18 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             let item = entry.item
 
             if let http = task.response as? HTTPURLResponse, (http.statusCode == 403 || http.statusCode == 410) {
-                self.removePersistedResumeData(for: item.id)
+                self.removePersistedResumeData(for: item.id, weekID: item.weekID)
                 await self.handleExpiredURLResponse(failingItem: item)
                 return
             }
 
             let isCancelled = (error as NSError).code == NSURLErrorCancelled
             if let resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-                self.persistResumeData(resumeData, for: item.id)
+                self.persistResumeData(resumeData, for: item.id, weekID: item.weekID)
             } else if !isCancelled {
                 // No fresh resume data => any persisted blob is unusable (tmp purged,
                 // object changed). Drop it so the retry starts clean.
-                self.removePersistedResumeData(for: item.id)
+                self.removePersistedResumeData(for: item.id, weekID: item.weekID)
             }
 
             if !isCancelled {
@@ -583,17 +618,30 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
     }
 
     private func handleExpiredURLResponse(failingItem: DownloadItem) async {
+        // AUDIT-022: Prevent concurrent refresh race across multiple 403/410 tasks
+        guard !isRefreshingForExpiry else {
+            self.failedInBatch += 1
+            return
+        }
+
         if hasRefreshedManifestForExpiredURLs {
             self.failedInBatch += 1
             cancelAllRemainingAndFail(message: "Download links expired — please refresh or sync")
             return
         }
 
+        isRefreshingForExpiry = true
+        defer { isRefreshingForExpiry = false }
+
         hasRefreshedManifestForExpiredURLs = true
+        let priorSuspensionSource = self.suspensionSource
         suspendQueue(source: .background)
 
         do {
             let freshManifest = try await DigestDataService.shared.fetchManifest(bypassCache: true)
+            // Re-check state before mutating queue
+            if case .failed = self.state { return }
+
             var updatedCount = 0
             let freshMap = Dictionary(uniqueKeysWithValues: freshManifest.items.map { ($0.id, $0) })
 
@@ -615,7 +663,12 @@ public final class DownloadAllCoordinator: NSObject, ObservableObject, URLSessio
             }
 
             if updatedCount > 0 {
-                resumeQueue()
+                // AUDIT-022: Preserve sticky user pause if user explicitly paused earlier
+                if priorSuspensionSource == .user {
+                    self.suspensionSource = .user
+                } else {
+                    resumeQueue()
+                }
             } else {
                 cancelAllRemainingAndFail(message: "Download links expired — please refresh or sync")
             }

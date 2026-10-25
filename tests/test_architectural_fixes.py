@@ -213,7 +213,7 @@ def test_c4_download_never_reopens_playwright_without_session(tmp_path, monkeypa
     ok = extractor.download_reel_video(
         "https://www.instagram.com/reel/XYZ/", out, video_cdn_url=None, session=None
     )
-    assert ok is False
+    assert (ok[0] if isinstance(ok, tuple) else ok) is False
     assert meta_calls == []
     assert not out.exists()
 

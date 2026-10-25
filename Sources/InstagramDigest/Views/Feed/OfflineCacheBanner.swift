@@ -3,12 +3,13 @@ import SwiftUI
 /// Compact offline cache status banner for direct stream mode.
 /// Displays download progress, preparing status, or a 1-tap call-to-action to download the week for offline underground MRT viewing.
 public struct OfflineCacheBanner: View {
-    @ObservedObject private var coordinator = DownloadAllCoordinator.shared
+    @StateObject private var coordinator = DownloadAllCoordinator.shared
     public let reels: [ReelItem]
     public let weekID: String
     public let onTap: () -> Void
 
     @State private var downloadedCount: Int = 0
+    @State private var scanGeneration: UUID = UUID()
 
     public init(reels: [ReelItem], weekID: String, onTap: @escaping () -> Void) {
         self.reels = reels
@@ -32,9 +33,15 @@ public struct OfflineCacheBanner: View {
                     ProgressView(value: coordinator.overallProgress)
                         .progressViewStyle(LinearProgressViewStyle(tint: .cyan))
                         .frame(width: 40)
-                    Text("Downloading: \(completed)/\(total)")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundColor(.cyan)
+                    if coordinator.failedInBatch > 0 {
+                        Text("Downloading: \(completed)/\(total) (\(coordinator.failedInBatch) failed)")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.cyan)
+                    } else {
+                        Text("Downloading: \(completed)/\(total)")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.cyan)
+                    }
 
                 case .failed(let msg):
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -49,15 +56,9 @@ public struct OfflineCacheBanner: View {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 11))
                         .foregroundColor(.green)
-                    if reels.count > 0 {
-                        Text("All \(reels.count) Reels Cached Offline")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.85))
-                    } else {
-                        Text("All Reels Cached Offline")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.85))
-                    }
+                    Text("Ready Offline (\(downloadedCount > 0 ? downloadedCount : reels.count)/\(reels.count))")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.85))
 
                 case .completedWithFailures(let ready, let failed):
                     Image(systemName: "exclamationmark.circle.fill")
@@ -80,7 +81,7 @@ public struct OfflineCacheBanner: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 11))
                             .foregroundColor(.green)
-                        Text("All \(reels.count) Reels Cached Offline")
+                        Text("Ready Offline (\(reels.count)/\(reels.count))")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.white.opacity(0.85))
                     } else {
@@ -103,13 +104,7 @@ public struct OfflineCacheBanner: View {
         }
         .contentShape(Rectangle())
         .accessibilityIdentifier("DirectStreamOfflineBanner")
-        .task(id: coordinator.state) {
-            await updateDownloadedCount()
-        }
-        .task(id: weekID) {
-            await updateDownloadedCount()
-        }
-        .task(id: reels.count) {
+        .task(id: "\(weekID)-\(reels.count)-\(coordinator.state)") {
             await updateDownloadedCount()
         }
     }
@@ -117,19 +112,17 @@ public struct OfflineCacheBanner: View {
     private func updateDownloadedCount() async {
         let currentWeekID = weekID
         let currentReels = reels
+        let generation = UUID()
+        self.scanGeneration = generation
+
         let count = await Task.detached(priority: .userInitiated) { () -> Int in
-            let weekDir = LibraryPathResolver.shared.weekDirectoryURL(for: currentWeekID)
-            guard let fileURLs = try? FileManager.default.contentsOfDirectory(at: weekDir, includingPropertiesForKeys: [.fileSizeKey]) else {
-                return 0
-            }
-            let existingFiles = Set(fileURLs.compactMap { url -> String? in
-                guard url.pathExtension == "mp4" else { return nil }
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                return size > 0 ? url.deletingPathExtension().lastPathComponent : nil
-            })
-            return currentReels.filter { existingFiles.contains(LibraryPathResolver.sanitizeComponent($0.id)) }.count
+            currentReels.filter { reel in
+                LibraryPathResolver.shared.isLocalFileAvailable(for: currentWeekID, reelID: reel.id)
+            }.count
         }.value
+
         await MainActor.run {
+            guard self.scanGeneration == generation else { return }
             self.downloadedCount = count
         }
     }

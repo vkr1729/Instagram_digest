@@ -18,9 +18,12 @@ public enum BookmarkController {
         if DigestDataService.directMode {
             let resolver = LibraryPathResolver.shared
             let bmThumb = resolver.bookmarkThumbnailFileURL(for: reelID)
-            let bmVideo = resolver.bookmarkFileURL(for: reelID)
             try? FileManager.default.removeItem(at: bmThumb)
-            try? FileManager.default.removeItem(at: bmVideo)
+            // AUDIT-023: Route direct-mode video delete through MediaCacheManager to defer if currently bound/playing
+            let rID = reelID
+            Task {
+                await MediaCacheManager.shared.deleteBookmarkFile(reelID: rID)
+            }
 
             let descriptor = FetchDescriptor<BookmarkItem>(
                 predicate: #Predicate { $0.reelID == reelID }
@@ -39,13 +42,15 @@ public enum BookmarkController {
         // Legacy Cloudflare Worker remove lifecycle
         MediaCacheManager.addUnbookmarkedTombstone(reelID)
         MediaCacheManager.removePendingRemoteBookmark(reelID)
+        let rID = reelID
         tasks[reelID]?.cancel()
         tasks[reelID] = Task {
-            await MediaCacheManager.shared.deleteBookmarkFile(reelID: reelID)
+            defer { tasks[rID] = nil }
+            await MediaCacheManager.shared.deleteBookmarkFile(reelID: rID)
             guard !Task.isCancelled else { return }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing") { return }
             await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
-            _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: reelID)
+            _ = try? await DigestDataService.shared.deleteRemoteBookmark(reelID: rID)
         }
         let descriptor = FetchDescriptor<BookmarkItem>(
             predicate: #Predicate { $0.reelID == reelID }
@@ -80,7 +85,10 @@ public enum BookmarkController {
                     try? FileManager.default.copyItem(at: weekThumb, to: bmThumb)
                 }
             } else if let thumbURL = reel.thumbnailUrl {
-                Task.detached {
+                let thumbTaskKey = "thumb_\(reel.id)"
+                tasks[thumbTaskKey]?.cancel()
+                tasks[thumbTaskKey] = Task {
+                    defer { tasks[thumbTaskKey] = nil }
                     if let (data, _) = try? await URLSession.shared.data(from: thumbURL) {
                         try? data.write(to: bmThumb, options: .atomic)
                     }
@@ -94,11 +102,14 @@ public enum BookmarkController {
                 try? FileManager.default.copyItem(at: weekVideo, to: bmVideo)
             }
 
-            let isLocallyAvailable = resolver.isLocalFileAvailable(for: weekID, reelID: reel.id)
+            // AUDIT-024: Verify bmVideo exists before claiming bookmark-cached
+            let bookmarkHasVideo = FileManager.default.fileExists(atPath: bmVideo.path)
+            let isLocallyAvailable = bookmarkHasVideo
+
             if let existing = existingItem {
                 existing.weekID = weekID
                 existing.creatorHandle = reel.creatorHandle
-                existing.caption = reel.caption ?? ""
+                existing.caption = reel.caption
                 existing.rank = reel.rank
                 existing.videoUrlString = reel.videoUrl.absoluteString
                 existing.thumbnailUrlString = reel.thumbnailUrl?.absoluteString
@@ -114,7 +125,7 @@ public enum BookmarkController {
                     reelID: reel.id,
                     weekID: weekID,
                     creatorHandle: reel.creatorHandle,
-                    caption: reel.caption ?? "",
+                    caption: reel.caption,
                     rank: reel.rank,
                     videoUrl: reel.videoUrl,
                     thumbnailUrl: reel.thumbnailUrl,
@@ -131,8 +142,9 @@ public enum BookmarkController {
             } catch {
                 context.rollback()
             }
-            let cap = UserDefaults.standard.integer(forKey: "max_cached_bookmark_videos")
-            enforceCachedVideosCap(limit: cap > 0 ? cap : 50, context: context)
+            // AUDIT-025: Distinguish unset (defaults to 50) from explicit 0 (keep all/unlimited)
+            let cap = UserDefaults.standard.object(forKey: "max_cached_bookmark_videos") as? Int ?? 50
+            enforceCachedVideosCap(limit: cap, context: context)
             return
         }
 
@@ -141,7 +153,7 @@ public enum BookmarkController {
         if let existing = existingItem {
             existing.weekID = weekID
             existing.creatorHandle = reel.creatorHandle
-            existing.caption = reel.caption ?? ""
+            existing.caption = reel.caption
             existing.rank = reel.rank
             existing.videoUrlString = reel.videoUrl.absoluteString
             existing.thumbnailUrlString = reel.thumbnailUrl?.absoluteString
@@ -156,7 +168,7 @@ public enum BookmarkController {
                 reelID: reel.id,
                 weekID: weekID,
                 creatorHandle: reel.creatorHandle,
-                caption: reel.caption ?? "",
+                caption: reel.caption,
                 rank: reel.rank,
                 videoUrl: reel.videoUrl,
                 thumbnailUrl: reel.thumbnailUrl,
@@ -179,6 +191,7 @@ public enum BookmarkController {
         let sBytes = reel.sizeBytes ?? 0
         tasks[rID]?.cancel()
         tasks[rID] = Task {
+            defer { tasks[rID] = nil }
             do {
                 try await MediaCacheManager.shared.keepBookmarkOffline(
                     weekID: wID,
@@ -195,28 +208,48 @@ public enum BookmarkController {
         }
     }
 
+    /// Cancels all active in-flight bookmark controller tasks (AUDIT-068)
+    public static func cancelAll() {
+        for task in tasks.values {
+            task.cancel()
+        }
+        tasks.removeAll()
+    }
+
     /// Enforces the maximum number of offline cached bookmark videos.
     /// When total cached videos exceed `limit`, older video files are deleted from disk
     /// while keeping their SwiftData record, metadata, and thumbnail completely intact.
     public static func enforceCachedVideosCap(limit: Int, context: ModelContext) {
         guard limit > 0 else { return } // 0 means keep all / unlimited
+        // AUDIT-025: Evict by lastAccessedAt (LRU) instead of bookmarkedAt
         let descriptor = FetchDescriptor<BookmarkItem>(
-            sortBy: [SortDescriptor(\.bookmarkedAt, order: .reverse)]
+            sortBy: [SortDescriptor(\.lastAccessedAt, order: .reverse)]
         )
         guard let allBookmarks = try? context.fetch(descriptor) else { return }
 
         let resolver = LibraryPathResolver.shared
+        let fm = FileManager.default
+        let boundIDs = AVPlayerPool.shared.boundReelIDs
         var cachedCount = 0
 
         for bm in allBookmarks {
             let videoURL = resolver.bookmarkFileURL(for: bm.reelID)
-            let hasVideo = FileManager.default.fileExists(atPath: videoURL.path)
+            let hasVideo = fm.fileExists(atPath: videoURL.path)
             if hasVideo {
                 cachedCount += 1
                 if cachedCount > limit {
-                    // Evict older video file beyond cap
-                    try? FileManager.default.removeItem(at: videoURL)
-                    bm.localStatus = .evicted
+                    // AUDIT-025: Never evict videos currently bound or playing in AVPlayerPool
+                    if boundIDs.contains(bm.reelID) {
+                        continue
+                    }
+                    // Attempt eviction
+                    guard (try? fm.removeItem(at: videoURL)) != nil else {
+                        // Unlink failed; keep counted as cached
+                        continue
+                    }
+                    if !fm.fileExists(atPath: videoURL.path) {
+                        bm.localStatus = .evicted
+                    }
                 } else {
                     bm.localStatus = .cached
                 }

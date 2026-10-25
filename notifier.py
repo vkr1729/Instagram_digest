@@ -604,12 +604,16 @@ def collect_health_report(week_id: str = "", exit_code: int = 0,
         report["notes"].append(f"Pages unreachable: {exc}")
     try:
         import config as _cfg5
-        cdata = _json.loads((_cfg5.DATA_DIR / "cookies.json").read_text(encoding="utf-8"))
-        has_session = bool((cdata.get("cookies_dict") or {}).get("sessionid"))
-        report["session_ok"] = has_session
-        report["session_status"] = "sessionid present" if has_session else "no sessionid"
-        if not has_session:
-            report["notes"].append("cookies.json has no sessionid; refresh login in Chrome.")
+        if getattr(_cfg5, "COOKIE_FREE_MODE", False):
+            report["session_ok"] = True
+            report["session_status"] = "cookie-free (no session required)"
+        else:
+            cdata = _json.loads((_cfg5.DATA_DIR / "cookies.json").read_text(encoding="utf-8"))
+            has_session = bool((cdata.get("cookies_dict") or {}).get("sessionid"))
+            report["session_ok"] = has_session
+            report["session_status"] = "sessionid present" if has_session else "no sessionid"
+            if not has_session:
+                report["notes"].append("cookies.json has no sessionid; refresh login in Chrome.")
     except Exception as exc:
         report["session_ok"] = False
         report["session_status"] = "unreadable"

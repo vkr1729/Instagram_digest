@@ -1,150 +1,215 @@
 # Audit & Remediation Report — Direct-Meta Stream (Stage 4d Verification Pass)
 
-Date: 2026-10-24 (UTC) · Branch: `arch/direct-meta-stream` · Scope: `.workflow/AUDIT_LEDGER.json` (43 findings: 6 P0, 18 P1, 19 P2) + `git diff HEAD` (23 files, +2,094/−579)
+Date: 2026-10-25 (UTC) · Branch: `arch/direct-meta-stream` · Scope: `.workflow/AUDIT_LEDGER.json` (88 findings: 6 P0, 36 P1, 46 P2) + `git diff HEAD` (37 files, +3,229/−1,527)
 Scale anchor: single-person personal use (Kedarnath Reddy) on iPhone, iOS 17+, Swift 6 strict concurrency.
 
-Supersedes: the 2026-10-11 Anti-Doomscroll report previously in this file (preserved in git history).
-Ledger status going in: all 43 findings marked IMPLEMENTED by the maker across Python Pipeline, Swift Engine, Swift UI, CI/CD.
+Supersedes: the 2026-10-24 43-finding report previously in this file (preserved in git history).
+Ledger status going in: all 88 findings marked IMPLEMENTED by the maker across Python Pipeline (32), Swift Engine (27), Swift UI (24), CI/CD (5).
 
-## 0. Executive verdict — CONDITIONAL GO (one release blocker)
+## 0. Executive verdict — RELEASE BLOCKED (conditional path to GO)
 
-**Result: 35 PASS / 8 PARTIAL / 0 FAIL across the 43 remediations.**
+**Result: 81 PASS / 6 FAIL / 1 PARTIAL across the 88 remediations. All 88 accounted for, zero unverified.**
 
-- All 6 P0 remediations are implemented and behaviorally effective. Two carry accepted partial legs (004: no fallback-instance doc/live smoke; 006: Swift count-assertion leg missing).
-- 7 of the 8 PARTIALs are non-blocking gaps (test-strength or second-order edge cases). They are accepted as known limitations at personal scale.
-- **1 PARTIAL is a release blocker: AUDIT-043's new test `testCoordinatorPreflightReclaimableRolloverBytes` (Tests/InstagramDigestTests/DirectStreamTests.swift:793-809) breaks the Swift test target under `SWIFT_STRICT_CONCURRENCY=complete`.** A sync nonisolated test touches `@MainActor`-isolated `DownloadAllCoordinator.shared` (:806) and calls its MainActor-isolated `calculateReclaimableRolloverBytes` (:807). I reproduced both diagnostics with an exact-pattern probe under `swiftc 6.0 -swift-version 6 -strict-concurrency=complete`, and confirmed the `@MainActor`-annotated variant compiles clean. Because CI runs `xcodebuild test -only-testing:InstagramDigestTests`, this reds the CI gate itself.
-- The fix is one line (annotate the test `@MainActor`; the compiler suggests exactly this). No production-code change is needed.
+- All 6 P0 remediations PASS. The safety-critical core (no-destructive-bootstrap, MIN-deploy floor, no force-unwrap crash, thumbnail-preserving rollover, 1-tap banner, stale-URL failure detection) is faithfully implemented.
+- All 4 architectural invariants HOLD: byte-for-byte `data.json` preservation, zero-R2 in direct mode, MRT offline capability, container isolation.
+- Python regression suite is fully green: **211/211 pytest pass**, independently re-run by the lead auditor in this pass (see §7).
+- **6 FAILs block release.** Two are load-bearing: AUDIT-032 (Swift test target does not compile, reds the CI `xcodebuild test` gate and voids all Swift test evidence) and AUDIT-044 (production no-change deploy path crashes). Four are spec-compliance gaps: AUDIT-041, AUDIT-027, AUDIT-070, AUDIT-071. One PARTIAL (AUDIT-079) is a single missing sub-item.
+- Swift verdicts rest on inspection plus lead-run `swiftc 6.0` compiler probes (Linux). Full `xcodebuild` proof is delegated to CI per §8 gate (f) — same residual as the prior pass, explicitly carried, not silently dropped.
 
-**Release approval: CONDITIONAL.** The branch is approved to ship once (a) the one-line blocker fix lands and (b) `build-ipa.yml` is green on the branch. No other work gates release. All other ship gates (§8) already pass.
+**Release approval: NOT GRANTED.** The branch is approved to ship once (a) the 7 fix prescriptions in §5 land, (b) `build-ipa.yml` is green on the branch (proving 032 fixed and no further Swift breakage), and (c) the §8 ship gates pass. No other work gates release.
 
-**Certification score: 9.1 / 10 (conditional certification).** Math: 35 full passes + 7 accepted partials + 1 blocking partial; zero fails; all P0s effective; 3 of 4 architectural invariants fully hold and the 4th (container isolation) holds in production code with the gap confined to the same blocking test. The 0.9 deduction is the red test target (0.6) plus accepted partial legs (0.3).
+**Certification score: 7.6 / 10 — NOT CERTIFIED (blocked).** Math: 10.0 − 0.8 (032: uncompilable test target blocks all Swift verification + CI) − 0.5 (044: production no-change deploy crash) − 0.3 (041: silent Xcode drift, fails open) − 0.2 × 3 (027/070/071: dead spec promises / dead gates) − 0.1 (079: one missing sub-item) − 0.1 (residual: no `xcodebuild` run possible on Linux). The 0.9 gap to the prior pass's 9.1 is new-finding coverage plus two genuinely load-bearing defects, not regression: prior PASS verdicts were not overturned.
 
 ## 1. Method & evidence standard
 
-- Four independent domain auditors inspected every cited implementation and test body against `AUDIT_LEDGER.json` remediation specs over `git diff HEAD`: Python Pipeline, Swift Engine, Swift UI, CI/CD + invariants.
-- An adversarial critic re-opened the highest-risk bodies (P0s, concurrency isolation, byte-preservation, purge/safety logic) with concrete falsification targets; two verdicts were overturned and re-verified with the Swift 6.0 compiler (Equatable-break claim REFUTED, :806-807 break CONFIRMED).
-- Lead-auditor triangulation (this pass): exact-pattern `swiftc` probes with sensitivity controls, full-file reads of `DigestDataService.swift` / `DownloadAllCoordinator.swift` decl / `build-ipa.yml` / skip-gate / `main.py` P0 blocks, and an independent `pytest tests/test_direct_stream_mode.py` run (23 passed) with a `data/` pollution check (clean).
-- Residual limitation (not blocking): full `xcodebuild` is impossible on Linux (no UIKit/SwiftUI SDK), so Swift compile verdicts rest on Swift 6.0 frontend diagnostics plus pattern-exact probes — same Swift major as pinned Xcode 16.2. Final compile proof is delegated to CI per §7 gate (b).
+- Five parallel domain auditors inspected every cited implementation and test body against the ledger remediation specs over `git diff HEAD` / `git diff origin/arch/direct-meta-stream`: Python Pipeline (32 findings), Swift Engine (27), Swift UI (24), CI/CD (5), plus a cross-cutting P0 + invariants auditor (6 P0s + INV-1..4 + concurrency).
+- An adversarial critic cross-checked coverage (32+27+24+5 = 88, overlap reconciled) and spot-re-opened the highest-risk bodies. Two critic claims were corrected at lead level (see §6): the AUDIT-032 "4 compile errors" count (3 confirmed, 1 refuted by compiler) and the severity roll-up (041 is P1 per ledger, not "unmapped").
+- Lead-auditor triangulation (this pass, all observed first-hand):
+  - Full-file reads of every FAIL/PARTIAL site: `site_builder.py` imports + no-change block, `build-ipa.yml` Xcode step, `REQUIREMENTS.md` §5, `DigestManifest.swift` init, `DownloadAllSheet.swift`, `GitHubBookmarkSyncService.swift` sync signature, `GitHubSyncModal.swift` validation/a11y/progress, `MediaCacheManager.swift` actor + `CacheError` nesting + ledger member, and all four AUDIT-032 test sites.
+  - `swiftc 6.0` (Linux, Swift 6.0 RELEASE) typecheck probes in `/tmp` (kept out of the repo): verbatim-signature replica probes for the `runDate:` and `Equatable` claims, a pattern-exact actor-nesting probe for the bare-`CacheError` claim, positive controls for all three, and a sensitivity control proving the generic-constraint probe can detect non-conformance. Full transcripts in §7.
+  - Independent pytest re-runs: `tests/test_direct_stream_mode.py` (29 passed), plus the full regression set named by the audit (211 passed total across 12 files, zero failures).
+  - Repo-wide symbol grep to prove absence claims (`currentTotalBookmarkBytes`, `manifestAgeHours`, CI `grep` gate, contract comments).
+- Evidence tiers used in §4: **L1** = lead re-verified with observed output in this pass; **L2** = domain-auditor inspected bodies (child evidence, bodies opened, verdict recorded). Swift PASS verdicts are L2 + L1-probed where noted; none rest on uninspected summaries.
+- Residual limitation (non-blocking, carried explicitly): `xcodebuild` cannot run on Linux (no UIKit/SwiftUI/SwiftData SDKs), so Swift compile verdicts rest on `swiftc 6.0` frontend diagnostics plus pattern-exact probes — same Swift major as pinned Xcode 16.2. Final compile proof is delegated to CI gate (f) in §8. Concurrency behavior (022/025/034) is verified by serialization reasoning only, never under live concurrent load.
 
 ## 2. Remediation breakdown by domain and severity
 
-### 2.1 Python Pipeline (12 findings: 1 P0, 6 P1, 5 P2) — 12 PASS
-
-| ID | Sev | Title | Verdict | Evidence |
+| Domain | Total | PASS | FAIL | PARTIAL |
 |---|---|---|---|---|
-| AUDIT-001 | P0 | Unplayable reels ship in direct manifest; deploy gates neutered | PASS | `main.py:2258-2274` playable/dead filter via `is_direct_stream_url`, `dropped=dead`; zero-playable + MIN_DEPLOY gates effective on filtered list (lead-auditor read) |
-| AUDIT-007 | P1 | `r2_url` contaminated with Meta CDN URLs in persisted digest | PASS | `main.py:2376-2383` mode-gated persist; `r2_url` popped in direct mode (lead-auditor read) |
-| AUDIT-008 | P1 | Direct deploy gate checks wrong keys, single-URL threshold | PASS | `site_builder.py:649-681` video_url-only 60% quorum with logging |
-| AUDIT-009 | P1 | Serve-check exception path returns deploy success | PASS | `site_builder.py:899-901` fail-closed `return False` |
-| AUDIT-010 | P1 | Static marker path bypasses DATA_DIR isolation | PASS | `config.py:126-133` dynamic helper + `site_builder.py:906` call site; conftest tripwire extended |
-| AUDIT-011 | P1 | Direct-mode expand reuses expired/stale CDN URLs | PASS | `main.py:3018-3032` playable filter + MIN_DEPLOY on post-filter list; validated-only seeding |
-| AUDIT-012 | P1 | No legacy-parity, weak bypass coverage | PASS | Legacy-parity test + 10-fn poison bypass over `_estimate_run`/reconcile/publish/`build_site`; build-only/deploy-only/expand/URL-edge/byte cases |
-| AUDIT-025 | P2 | Manifest advertises thumbnails that may not exist | PASS | `site_builder.py:113` existence check, apple-touch-icon fallback |
-| AUDIT-026 | P2 | `extra_manifest` clobbers reserved keys; `budget_capped` dropped | PASS | `site_builder.py:150` reserved-key refusal + budget flag threading |
-| AUDIT-027 | P2 | Blanked video_urls silent, no dropped-reel logging | PASS | `site_builder.py:131` blanked-IDs warning |
-| AUDIT-028 | P2 | Reconcile returns success while orphaning legacy outbox | PASS | `main.py:566-586` stranded-outbox warning + return 1; dead guard deleted |
-| AUDIT-029 | P2 | No gh-pages bootstrap when branch absent | PASS | `site_builder.py:764-799` init-on-branch-not-found; invariant skipped only in bootstrap |
+| python_pipeline | 32 | 31 | 044 | — |
+| swift_engine | 27 | 23 | 027, 032, 070, 071 | — |
+| swift_ui | 24 | 23 | — | 079 |
+| ci_cd | 5 | 4 | 041 | — |
+| **Total** | **88** | **81** | **6** | **1** |
 
-Accepted deviation (non-failing): legacy quorum also accepts `video_cdn_url`; 001/007/011 tests simulate inline with real expand cover via `_run_expand`.
-
-### 2.2 Swift Engine (11 findings: 1 P0, 3 P1, 7 P2) — 10 PASS, 1 PARTIAL
-
-| ID | Sev | Title | Verdict | Evidence |
+| Severity | Total | PASS | FAIL | PARTIAL |
 |---|---|---|---|---|
-| AUDIT-002 | P0 | Direct-stream tests purge the real app container | PASS | `LibraryPathResolver(baseURL:tmp)` + `MediaCacheManager(pathResolver:)` with defer cleanup, `DirectStreamTests.swift:721-778` |
-| AUDIT-013 | P1 | Force-unwrap crash on hostile bookmark reelID | PASS | Optional `canonicalUrl` + `sanitizeComponent`, `DigestState.swift:67-68,88-95`; guarded call sites |
-| AUDIT-014 | P1 | Expired-URL 403/410 has no manifest-refresh recovery | PARTIAL | Suspend-once + `fetchManifest(bypassCache:true)` + queue rebuild + fail-fast present (`DownloadAllCoordinator.swift:585-626`); in-flight suspended tasks keep expired URLs, second 403 wipes batch — see §3 |
-| AUDIT-015 | P1 | Partial batch success misreported as total failure | PASS | `.completedWithFailures` + `retryFailedItems`, consumed by sheet/banner |
-| AUDIT-030 | P2 | Rollover purge leaves stale `.cached` rows | PASS | `MediaCacheManager.swift:298-316` evict flip + `reconcileBookmarkStorageLedger()` |
-| AUDIT-031 | P2 | Re-bookmark silently keeps stale weekID | PASS | `BookmarkController.swift:59-63` fetch-first, in-place update both modes |
-| AUDIT-032 | P2 | Missing one-time legacy Bookmarks/ migration | PASS | One-shot purge + ledger zero, wired at launch (`InstagramDigestApp.swift:38`) |
-| AUDIT-033 | P2 | Preflight-after-purge strands user with zero weeks | PASS | Pre-purge reclaimable-bytes abort (`DownloadAllCoordinator.swift:100-149`); post-purge gate kept |
-| AUDIT-034 | P2 | Rollover purge bypasses LivePinSet protection | PASS | Suspension handler + LivePinSet/`protectedReelIDs` filtering incl `.part`/`.dat`; caller contract documented |
-| AUDIT-035 | P2 | Challenge HTML on HTTP 200 misclassified | PASS | Content-Type + body sniff → `.authOrChallengeRequired` (`BookmarkResolver.swift:145-153`) |
-| AUDIT-036 | P2 | Resolver retry ignores task cancellation | PASS | `Task.isCancelled` on entry/after-response/after-each-sleep |
+| P0 | 6 | 6 | — | — |
+| P1 | 36 | 33 | 027, 032, 041 | — |
+| P2 | 46 | 42 | 044, 070, 071 | 079 |
+| **Total** | **88** | **81** | **6** | **1** |
 
-Concurrency isolation: PASS — `MediaCacheManager`/`DigestDataService`/`BookmarkResolver` are actors with Sendable state and per-method ModelContexts; `BookmarkController` @MainActor; `DownloadAllCoordinator` @MainActor + @unchecked Sendable with nonisolated delegates hopping via `Task { @MainActor }`. No data races or await-in-wrong-context found in production code.
+P0 detail (all PASS, L1 re-verified): 001 destructive-bootstrap deleted, clone failure returns False (`site_builder.py:844-851`); 002 `ceil(0.6*TOP)` floor gate pre-overlay + `_deploy_only` counts direct-manifest items (`site_builder.py:801-808`, `main.py:3254-3270`); 003 throwing repo/URL guards, zero force-unwraps, invalid-repo test (`GitHubBookmarkSyncService.swift:179-193`, `DirectStreamTests.swift:1031`); 004 rollover cleanup restricted to `.mp4`, `.thumb.jpg` untouched (`MediaCacheManager.swift:275-281`); 005 banner embedded, new-week alert, dead params removed (`InstagramDigestApp.swift:350-357,578-587,662`); 006 reachability-gated stored-URL branch + fail/status observers falling back to resolver, teardown invalidates (`BookmarksSheet.swift:982,992,1081-1096,1199-1204`).
 
-### 2.3 Swift UI (10 findings: 1 P0, 5 P1, 4 P2) — 8 PASS, 2 PARTIAL
+## 3. FAIL / PARTIAL detail (all L1 re-verified)
 
-| ID | Sev | Title | Verdict | Evidence |
+**AUDIT-032 [P1, swift_engine] — FAIL, release blocker.** `Tests/InstagramDigestTests/DirectStreamTests.swift` does not compile; any single error reds the whole test target and the CI `xcodebuild test` gate, voiding all Swift test evidence (including 030/066/069 bodies, unexecutable until fixed).
+1. `:258-259` pass `runDate:` to `DigestManifest(...)`; the real init (`DigestManifest.swift:32-39`) has no such parameter (`run_date` exists only as a `CodingKeys` case, `:51`). Compiler: `error: extra argument 'runDate' in call` on a signature-verbatim probe.
+2. `:1189` catches `let CacheError.sizeMismatch`; `CacheError` is nested in `public actor MediaCacheManager` (`MediaCacheManager.swift:6,861`) and the test file references it once, bare, with zero qualified uses — unqualified lookup cannot resolve a nested type across files. Compiler: `error: cannot find 'CacheError' in scope` on a pattern-exact probe.
+3. `:1307` awaits `manager.currentTotalBookmarkBytes`; repo-wide grep proves no such member exists in `Sources/` — the real ledger member is actor-isolated `totalBookmarkBytes` (`MediaCacheManager.swift:58`, used correctly at `BookmarksSheet.swift:421`).
+4. (Claimed 4th error REFUTED — see §6.) Fix: drop `runDate:` (or add the param), qualify `MediaCacheManager.CacheError`, use `totalBookmarkBytes`, re-run `xcodebuild test`.
+
+**AUDIT-044 [P2, python_pipeline] — FAIL, release blocker.** `site_builder.py:951` calls bare `time.time()` but the module has no top-level `import time` (imports at `:7-17`; only local `import time as _time` at `:994`/`:1093`). On the no-change path with a configured `DIRECT_PAGES_MANIFEST_URL`, the `NameError` is swallowed by the GET `except` handler (`:964-965`, mislogged as a GET failure), execution falls through to `git commit` against an empty diff with `check=True` (`:974-978`), which raises `CalledProcessError` — the no-change path can never return `True` in production. Production tests mask it (`DIRECT_PAGES_MANIFEST_URL=''`, `:966-972` early-`True` branch). Fix: use `_time` (import at the top of the no-change block) AND restructure the fall-through to skip commit/push straight to the poll loop per spec; add a regression test with a configured URL on the no-change path.
+
+**AUDIT-041 [P1, ci_cd] — FAIL.** `build-ipa.yml:53` attempts `Xcode_16.2 || Xcode_16.1` but the spec's enforcement gate is missing: no `xcodebuild -version | grep -q 'Xcode 16'` check, and the terminal `|| true` fails open — a runner lacking both keeps the silent-drift defect the finding was raised to kill; the 16.1 fallback is itself an unpinned minor. Fix: add the `grep -q 'Xcode 16' || { echo; exit 1; }` gate, drop the trailing `|| true`.
+
+**AUDIT-070 [P2, swift_engine] — FAIL.** No `manifestAgeHours` helper exists anywhere (repo-wide grep: zero matches) and `generatedAt` is consumed only once (`InstagramDigestApp.swift:437`, feeding a freshness caption, never passed to the sheet or a gate) — the spec's >48h stale-manifest gate ("Week links likely expired — re-sync from workstation") cannot fire; users can bulk-download an expired week. Fix: add the pure helper + gate before queue start per spec.
+
+**AUDIT-027 [P2, swift_engine] — FAIL (docs leg).** Neither spec option was taken: no minimal Release-Asset upload exists (zero release-upload code), `video_asset_name` is still written (`migrate_r2_bookmarks_to_gh.py:166`; DTO field `GitHubBookmarkSyncService.swift:13,92,332`), and `REQUIREMENTS.md:62-65` still mandates Single Repo + Release Assets with no "resolver-only video restore; Release Assets deferred" amendment — the docs promise what the code does not do. Fix (cheapest): amend REQUIREMENTS per spec option (b) and stop writing the field.
+
+**AUDIT-071 [P2, swift_engine] — FAIL.** Zero contract markers: no twin file+line comment on either manifest-URL constant (`DigestDataService.swift` has no twin/contract comment) and no CI assertion (no `grep`/`data_direct.json`/`contract` match under `.github/`) — an env-override drift still silently breaks iOS. Fix: add both one-line comments + the one-line CI `grep -q 'Instagram_digest/data_direct.json' ... || exit 1` per spec.
+
+**AUDIT-079 [P2, swift_ui] — PARTIAL (4/5 sub-items).** Done: empty-PAT disable + repo `owner/name` validation with inline hint, a11y ids (`GitHubRepoField`, `GitHubPATField`, `GitHubSyncButton`), `isSyncing` token with delayed-dismiss guard (`GitHubSyncModal.swift:12,33-38,57,68,96-112,138-160`); modal shows only an indeterminate `ProgressView` (`:97`). Missing: the progress closure — `syncWithGitHub(repo:pat:localBookmarks:context:)` (`GitHubBookmarkSyncService.swift:170-175`) exposes no `(downloaded/total)` hook, so per-thumbnail progress cannot be wired. Fix: add the engine progress callback first, then wire it into the modal's `ProgressView`.
+
+## 4. Full 88-finding verdict table
+
+Tier: L1 = lead re-verified with observed output; L2 = domain-auditor inspected bodies. Swift compile/behavior legs are inspection + `swiftc` probes; final proof delegated to CI gate (f).
+
+| ID | Domain | Sev | Verdict | Evidence / proof pointer |
 |---|---|---|---|---|
-| AUDIT-003 | P0 | Empty-batch Start wipes old week, reports success | PASS | Disabled Start/Retry + "already downloaded or watched" state (`DownloadAllSheet.swift:100-108,201,335`); engine early-return before rollover (`DownloadAllCoordinator.swift:132`) |
-| AUDIT-016 | P1 | Unsave plays next bookmark after unmount | PASS | `handleUnsave` returns after teardown/onClose/onDelete, no `loadVideo` (`BookmarksSheet.swift:951-963`) |
-| AUDIT-017 | P1 | Synchronous FS scans in view bodies | PARTIAL | Banner scan moved to detached task + MainActor write; grid cells still stat per render (`BookmarksSheet.swift:159`) — see §3 |
-| AUDIT-018 | P1 | Badge/playback presence mismatch on zero-byte files | PASS | Single `resolvedLocalFileURL != nil` predicate matches `loadVideo` gate |
-| AUDIT-019 | P1 | @State mutated off main actor after purge/delete | PASS | `Task { @MainActor in ... }` for purge/delete writes; `.task` refresh confined |
-| AUDIT-020 | P1 | Player offline error mislabels current-week reels | PASS | Week-branched copy + Download Week affordance + per-case icons, wired via app |
-| AUDIT-037 | P2 | Banner overclaims completion, mislabels failed/paused | PARTIAL | Failed/paused/partial copy fixed; `.completed` still prints manifest `reels.count` — see §3 |
-| AUDIT-038 | P2 | Stale R2 storage gauge in direct mode | PASS | Legacy gauge gated off; clean direct-mode header |
-| AUDIT-039 | P2 | Silent black screen when no playable URL | PASS | `resolutionError` + Retry in both modes, no silent return |
-| AUDIT-040 | P2 | Badges untestable, week fallback lossy | PASS | `BookmarkBadge_<i>_<state>` identifiers; empty weekID treated as unknown |
+| 001 | python | P0 | PASS (L1) | Clone-fail returns False, no orphan/init; tests assert `git init` never invoked |
+| 002 | python | P0 | PASS (L1) | `ceil(0.6*TOP)` floor pre-overlay; `_deploy_only` counts direct-manifest items |
+| 003 | engine | P0 | PASS (L1) | Throwing repo/URL guards, zero force-unwraps; invalid-repo throw test |
+| 004 | engine | P0 | PASS (L1) | Rollover cleanup `.mp4`-only; `.thumb.jpg` preserved |
+| 005 | UI | P0 | PASS (L1) | Banner embedded, new-week alert, dead params removed |
+| 006 | UI | P0 | PASS (L1) | Stored-URL reachability gate + fail/status observers → resolver fallback |
+| 007 | python | P1 | PASS (L2) | `isinstance(str)` candidate guard; non-string drop-not-crash test |
+| 008 | python | P1 | PASS (L2) | `_pick_playable` validity-ordered selection at all 4 sites |
+| 009 | python | P1 | PASS (L2) | `--expand` direct-mode MIN gate; no expired-reel deletion |
+| 010 | python | P1 | PASS (L2) | Sync shrink MIN-gated when `deploy=False` |
+| 011 | python | P1 | PASS (L2) | R2 `video_url` clobber removed before direct writer |
+| 012 | python | P1 | PASS (L2) | Thumbnail prune no longer deletes production thumbs on unreadable remote |
+| 013 | python | P1 | PASS (L2) | Playwright-fallback CDN URL threaded through, not discarded |
+| 014 | python | P1 | PASS (L2) | `~/.env` override surfaced; startup mode logged |
+| 015 | python | P1 | PASS (L2) | 3 direct-mode tests execute production filter code |
+| 016 | python | P1 | PASS (L2) | Bootstrap test asserts failure, not the destructive outcome |
+| 017 | python | P1 | PASS (L2) | Migration skips failed downloads; size-validated uploads |
+| 018 | python | P1 | PASS (L2) | Migration carries thumbnails; restore contract holds |
+| 019 | python | P1 | PASS (L2) | Healthcheck Pages gate covers `data_direct.json` |
+| 020 | engine | P1 | PASS (L2) | Duplicate-tap guard covers `.downloading`, not just `.preparing` |
+| 021 | engine | P1 | PASS (L2) | Preflight excludes pinned Bookmarks + protected files |
+| 022 | engine | P1 | PASS (L2) | 403/410 refresh serialized; sticky pause preserved (no live-load proof) |
+| 023 | engine | P1 | PASS (L2) | Direct-mode remove defers bound (playing) file like legacy |
+| 024 | engine | P1 | PASS (L2) | Direct add records `.cached` only after copy success |
+| 025 | engine | P1 | PASS (L2) | True LRU, playing-video protection, Unlimited honored (no live-load proof) |
+| 026 | engine | P1 | PASS (L2) | Resolver preserves cancellation/programmer error; `.offline` narrowed |
+| 027 | engine | P1 | FAIL (L1) | §3: no upload, field still written, REQUIREMENTS unamended |
+| 028 | engine | P1 | PASS (L2) | Isolated-copies vs plan conflict resolved per spec |
+| 029 | engine | P1 | PASS (L2) | Rollover resume awaited; suspension race closed |
+| 030 | engine | P1 | PASS (L2) | Ledger decremented only after verified deletion |
+| 031 | engine | P1 | PASS (L2) | Thumbnail PUT carries SHA; remote delete path exists |
+| 032 | engine | P1 | FAIL (L1) | §3: 3 compiler-confirmed errors; test target uncompilable |
+| 033 | UI | P1 | PASS (L2) | Share-sheet identity stabilized (no per-pass UUID) |
+| 034 | UI | P1 | PASS (L2) | Badges observe coordinator; live-update (no race-load proof) |
+| 035 | UI | P1 | PASS (L2) | `onAppear` preserves finished state / green badge |
+| 036 | UI | P1 | PASS (L2) | Live failed-count in banner + sheet progress |
+| 037 | UI | P1 | PASS (L2) | Offline playlist observes connectivity; restores on reconnect |
+| 038 | UI | P1 | PASS (L2) | Cloudflare Owner-Key dialog + remote calls excised |
+| 039 | UI | P1 | PASS (L2) | Share path iPad-safe, no temp leak, failure surfaced |
+| 040 | CI/CD | P1 | PASS (L1) | `python-tests` job: 3.12, pip cache, `pytest tests/test_direct_stream_mode.py -q` |
+| 041 | CI/CD | P1 | FAIL (L1) | §3: `|| true` fails open, no `grep 'Xcode 16'` gate |
+| 042 | CI/CD | P1 | PASS (L1) | XcodeGen `curl -sfSL` + pinned sha256 verified vs upstream 2.42.0 |
+| 043 | python | P2 | PASS (L2) | Poll verifies URL validity, not just `run_date` |
+| 044 | python | P2 | FAIL (L1) | §3: `NameError` + fall-through-to-empty-commit; no-change path crashes |
+| 045 | python | P2 | PASS (L2) | Quorum uses ceiling floor for small manifests |
+| 046 | python | P2 | PASS (L2) | Writer drops id-less items, canonical URL, sane `size_bytes` |
+| 047 | python | P2 | PASS (L2) | R2/Worker vars no longer leak into direct HTML |
+| 048 | python | P2 | PASS (L2) | Health session check green in cookie-free mode |
+| 049 | python | P2 | PASS (L2) | Manifest URL unfrozen, Cobalt URL validated, sentinel live |
+| 050 | python | P2 | PASS (L2) | Deploy defaults resolved at call time, not import |
+| 051 | python | P2 | PASS (L2) | Migration paths/counts/tags parameterized; docstring current |
+| 052 | python | P2 | PASS (L2) | Test batch file + data dir share one tmp tree |
+| 053 | python | P2 | PASS (L2) | Zero-playable path cites real outbox; resume set pre-drop |
+| 054 | python | P2 | PASS (L2) | Expand log arithmetic + leftover from post-filter list |
+| 055 | python | P2 | PASS (L2) | `storage_r2` import lazy; zero-cloud runs without boto3 |
+| 056 | python | P2 | PASS (L2) | `is_direct_stream_url` strips padding before verdict |
+| 057 | python | P2 | PASS (L2) | Reconcile scans stranded outbox on unreadable digest |
+| 058 | python | P2 | PASS (L2) | `.env.example` covers new auth fallbacks |
+| 059 | python | P2 | PASS (L2) | Writer strips `local_url`, no `video_cdn_url` duplication |
+| 060 | engine | P2 | PASS (L2) | `ReelItem` rejects `r2_url`/`local_url` fallback |
+| 061 | engine | P2 | PASS (L2) | Fallback URLs sanitize hostile ids |
+| 062 | engine | P2 | PASS (L2) | Fallback thumb name matches pipeline writer |
+| 063 | engine | P2 | PASS (L2) | Resolver endpoint validated, not snapshotted raw |
+| 064 | engine | P2 | PASS (L2) | Resolver HTTPS check case-insensitive + host-checked |
+| 065 | engine | P2 | PASS (L2) | `fetchManifest` refuses explicit R2/worker URL in directMode |
+| 066 | engine | P2 | PASS (L2) | `promotePartFile` upper bound + playability check |
+| 067 | engine | P2 | PASS (L2) | Resume keyed by `(weekID,reelID)`; bookmark filter fixed |
+| 068 | engine | P2 | PASS (L2) | Redundant `??` removed; tasks/prefetch cleaned; date fallback sane |
+| 069 | engine | P2 | PASS (L2) | Strict API-key/cancellation/empty-manifest assertions |
+| 070 | engine | P2 | FAIL (L1) | §3: no `manifestAgeHours`, `generatedAt` never gated |
+| 071 | engine | P2 | FAIL (L1) | §3: no twin comments, no CI grep gate |
+| 072 | UI | P2 | PASS (L2) | Spec-banned finished-state copy removed from banner |
+| 073 | UI | P2 | PASS (L2) | Dead header position/count params removed |
+| 074 | UI | P2 | PASS (L2) | `loadManifest` tasks serialized; Retry-spam race closed |
+| 075 | UI | P2 | PASS (L2) | Banner count scan single-tasked; stale-write race closed |
+| 076 | UI | P2 | PASS (L2) | 9:16 cells adaptive; redundant modifier removed |
+| 077 | UI | P2 | PASS (L2) | Detox single source of truth; covers feed + bookmarks |
+| 078 | UI | P2 | PASS (L2) | Sort no longer refires on Settings open/close |
+| 079 | UI | P2 | PARTIAL (L1) | §3: 4/5 done; engine progress closure missing |
+| 080 | UI | P2 | PASS (L2) | Empty bookmarks state offers GitHub-restore CTA |
+| 081 | UI | P2 | PASS (L2) | Settings persistence unified (no keystroke/Done split) |
+| 082 | UI | P2 | PASS (L2) | Import/export banners mutually aware; errors clearable |
+| 083 | UI | P2 | PASS (L2) | Grid title reflects filtered subset |
+| 084 | UI | P2 | PASS (L2) | Sheet chaining completion-driven, not fixed-delay |
+| 085 | UI | P2 | PASS (L2) | Share downloads structured + cancellable |
+| 086 | UI | P2 | PASS (L2) | Singleton observation + badge-input + Reachability hygiene |
+| 087 | CI/CD | P2 | PASS (L1) | `.gitignore` covers `*.xcodeproj/`, `*.xcresult/` (check-ignore confirmed) |
+| 088 | CI/CD | P2 | PASS (L1) | Sim boot tolerates booted device; IPA step fail-fast on empty path |
 
-### 2.4 CI/CD (10 findings: 3 P0, 4 P1, 3 P2) — 5 PASS, 5 PARTIAL
+## 5. Architectural invariant confirmation (all HOLD, L1/L2)
 
-| ID | Sev | Title | Verdict | Evidence |
-|---|---|---|---|---|
-| AUDIT-004 | P0 | Cobalt resolver broken live: hardcoded instance, no auth/fallback | PARTIAL | Endpoint/key overrides + injection, auth header, 400/401/403 mapping, contract tests — all PASS; no fallback instance documented, no opt-in live smoke (user decision pending) — see §3 |
-| AUDIT-005 | P0 | Legacy Swift test fails under hardcoded directMode (CI red) | PASS | `XCTSkipIf(directMode)` gate (`AuditFixesTests.swift:160`, lead-auditor read); legacy coverage preserved via skip, not delete |
-| AUDIT-006 | P0 | Empty video_url ships; iOS silently drops reels | PARTIAL | Python leg PASS (drop empties, `count=len(items)`); Swift leg missing (ModelTests covers skip only, never asserts count) — see §3 |
-| AUDIT-021 | P1 | CI commits unsigned IPA binaries to git | PASS | Commit/push steps removed, `contents: read`, artifact-only distribution (lead-auditor read of `build-ipa.yml`) |
-| AUDIT-022 | P1 | Empty direct manifest returned, not rejected | PARTIAL | `.emptyManifest` thrown on network+file paths, cache/bundle skip empties — rejection behavior real; error is swallowed internally so callers see `URLError`, and the test's specific-error assertion is vacuous — see §3 |
-| AUDIT-023 | P1 | Bundle fallback can serve production R2 manifest | PARTIAL | `channel == direct` gate real (`DigestDataService.swift:114-123`); test asserts only `directMode`, never exercises fallback — see §3 |
-| AUDIT-024 | P1 | Direct channel never prunes stale gh-pages thumbnails | PASS | Post-overlay prune before sha re-verify, `.nojekyll`/`.tmp-*` preserved |
-| AUDIT-041 | P2 | Unpinned deps: pip floors, xcodegen, Xcode | PASS | Xcode 16.2 + XcodeGen 2.42.0 + actions@v4 pinned; pip deps pinned (`cryptography` floored ≥41, accepted) |
-| AUDIT-042 | P2 | No re-sign/install runbook for unsigned IPA | PASS | `docs/RE_SIGN_AND_INSTALL.md` (Sideloadly/AltStore/TrollStore/LiveContainer/codesign), referenced in CI logs |
-| AUDIT-043 | P2 | Swift test gaps + tautological routing test | PARTIAL (BLOCKER) | Golden decode, non-tautological routing, retry/5xx/timeout/non-HTTPS/auth-omission bodies all verified; `:806-807` strict-concurrency break stops the test target building — see §4 |
+- **INV-1 — 100% byte-for-byte production `data.json` preservation: HOLD.** SHA-before + existence gate (`site_builder.py:853-858`), SHA-after abort (`:923-929`); overlay writes only `data_direct.json`/thumbs/`.nojekyll`; the `git-init` path at `:1068` is legacy-only (direct early-returns at `:1046`). Python byte-identity tests green (`tests/test_direct_stream_mode.py:806-868`).
+- **INV-2 — Zero R2 storage/bandwidth in direct mode: HOLD.** Every `storage_r2` call site is unreachable in direct mode: `_publish_digest` (`main.py:389-390`), reconcile early-return (`:624-625`), 5E upload pool inside the non-direct `else` (`:2303-2347`), expand (`:3057`/`:3071`), estimate (`:3218`), purges (`:2561-2563`). Poisoned-R2 hermetic sync/expand/build tests green. Non-destructive-refactor invariant respected: `storage_r2.py` etc. retained, bypassed by toggle.
+- **INV-3 — MRT offline capability: HOLD.** Disk-cache fallback (`DigestDataService.swift:110-122`), bundle fallback (`:124-136`), local-file-first playback (`AVPlayerPool.swift:487-489`, `resolvedLocal ?? remote`); honest offline badges for expired/older bookmarks (006, 037).
+- **INV-4 — Container isolation: HOLD.** Application Support roots (`LibraryPathResolver.swift:18-27`), traversal guard (`:38-49`); `/tmp` only for transient share-staging with cleanup (`InstagramDigestApp.swift:1062,1196`).
+- **Concurrency isolation: HOLD by inspection + probes (no live-load proof).** `@MainActor` on `DownloadAllCoordinator`, `BookmarkController`, `GitHubBookmarkSyncService`; `Sendable` value types; `weak-self` Task/observer closures; observer invalidation in teardown. Runtime behavior of the 403-refresh/MainActor fixes (022/025/034) verified by serialization reasoning only. Residual: exercise under concurrent load on device (UAT §6 soak) and keep `SWIFT_STRICT_CONCURRENCY=complete` clean in CI.
 
-## 3. PARTIAL register (7 non-blocking + 1 blocking)
+## 6. Discrepancies found and resolved at lead level
 
-| ID | What is missing | User-visible impact at personal scale | Disposition |
-|---|---|---|---|
-| 004 | No documented fallback Cobalt instance; no opt-in live smoke test; single hardcoded default remains (overridable via Settings) | None until the default instance fails; override path exists | ACCEPT — needs the user's self-host-vs-API-key call; UAT covers override + honest-error paths |
-| 006-Swift | No Swift test asserting lossy-skip/count behavior | None (Python leg guarantees no empties ship) | ACCEPT — add when ModelTests next touched |
-| 014 | In-flight suspended tasks keep expired URLs; a second 403 wipes the recovered batch | Rare double-expiry during one bulk download shows failed state with retry | ACCEPT — first-403 recovery (the common case) verified; fail-fast copy is honest |
-| 017-grid | Grid cells still stat FS per render | Minor scroll jank risk on 250-cell grids during progress publishes | ACCEPT — banner (the hot path) fixed; revisit only if felt on device |
-| 022-test | `.emptyManifest` never surfaces to callers (internal skip-to-fallback); test's `XCTAssertEqual(err, .emptyManifest)` branch is dead but the throw-vs-return assertion is live | None — rejection behavior (throw, fall back to cache) is what the spec required and it holds | ACCEPT — optionally re-point the test at the `URLError` fallback contract |
-| 023-test | Bundle-fallback policy test asserts only `directMode` | None (repo bundles no `data.json`, so the path is latent) | ACCEPT — strengthen if a bundled manifest is ever added |
-| 037-copy | `.completed` prints manifest `reels.count` after unwatched-only subsets | Banner can overclaim "All N cached" after a subset download | ACCEPT — failed/paused/partial copy (the confusing states) fixed; cosmetic follow-up |
-| 043-test | `:806-807` strict-concurrency build break (see §4) | CI red; no test signal until fixed | **BLOCKER — fix before ship** |
+1. **AUDIT-032 "4 compile errors" → 3 confirmed, 1 refuted.** The critic's 4th claim (`XCTAssertEqual(err, .emptyManifest)` at `:249` fails for lack of `Equatable`) is wrong: payload-less Swift enums implicitly conform to `Equatable`. Isolated `swiftc 6.0` probe with a verbatim `Error, LocalizedError` enum compiles clean (exit 0, zero diagnostics), while a control struct with a closure member correctly errors (`requires that 'NotEq' conform to 'Equatable'`), proving the probe detects non-conformance. All three positive controls (no-`runDate` call, `Equatable` enum, qualified `CacheError`) compile clean. FAIL verdict stands — one error is enough to red the target — but the evidence record is corrected.
+2. **Severity roll-up corrected.** The synthesis left 041 "unmapped"; the ledger records 041 as P1, so P1 is 33/36 PASS (FAIL 027/032/041) and P2 is 42/46 + 1 PARTIAL (FAIL 044/070/071). Totals unchanged: 81/6/1.
+3. **"No Swift toolchain on Linux" corrected.** `swiftc` 6.0 (Swift 6.0 RELEASE) is installed; all compiler claims above were executed, not inferred. What remains Linux-impossible is only full `xcodebuild` (UIKit/SwiftUI/SwiftData SDKs) — e.g. the real `DigestManifest.swift` cannot typecheck on Linux because corelibs-foundation exposes `URLResponse` as `AnyObject` (observed: `non-nominal type 'URLResponse' cannot be extended`), hence verbatim-signature probes.
+4. **AUDIT-044 mechanics made precise.** The defect is not "returns False": the `NameError` is swallowed by the GET handler and execution falls through to `git commit` on an empty diff with `check=True`, raising `CalledProcessError`. Observable outcome is the same class (no-change path never succeeds with a configured URL) but the fix must also restructure the fall-through, not just the import.
 
-A note on 022-test: the critic's initial FAIL (XCTAssertEqual requires Equatable; enum declares none) was refuted by compiler probe — no-payload Swift enums satisfy `Equatable` implicitly, and `swiftc 6.0 -typecheck` accepts the exact statement while rejecting a non-Equatable struct control. The line compiles; it is unreachable, not broken.
+## 7. Observed evidence transcripts (lead)
 
-## 4. Release blocker deep-dive — AUDIT-043 `:806-807`
+pytest (this pass, Linux, repo `.venv`):
+- `.venv/bin/python -m pytest tests/test_direct_stream_mode.py -q` → `29 passed in 0.73s`
+- `... test_direct_stream_mode.py test_architectural_fixes.py test_notifier.py test_site_builder.py test_cookie_free_uat.py -q` → `95 passed in 16.72s`
+- `... test_upload_ordering.py test_sync_resume.py test_expand_resume.py test_durability.py test_teardown_final.py test_fable_audit_fixes.py test_stalled_job_safeguards.py -q` → `116 passed in 13.07s`
+- Total: 95 + 116 = **211 passed, 0 failed** — matches the audit's regression claim exactly (29 direct-stream + 182 surrounding).
 
-- **Site:** `testCoordinatorPreflightReclaimableRolloverBytes()` (`DirectStreamTests.swift:793-808`). Test class is nonisolated (`final class DirectStreamTests: XCTestCase`); the test func is sync nonisolated. It reads `DownloadAllCoordinator.shared` (:806, `@MainActor`-isolated static of a `@MainActor final class`) and calls `calculateReclaimableRolloverBytes` (:807, MainActor-isolated instance method). `project.yml:13` sets `SWIFT_STRICT_CONCURRENCY: complete`.
-- **Proof:** pattern-exact probe under `swiftc 6.0 -swift-version 6 -strict-concurrency=complete` reproduces both hard errors (`main actor-isolated static property 'shared' can not be referenced from a nonisolated context`; `call to main actor-isolated instance method ... in a synchronous nonisolated context`). The `@MainActor`-annotated variant emits zero diagnostics. Sensitivity controls (deliberate type error, non-Equatable struct) confirm the probe harness reports failures faithfully.
-- **Blast radius:** the whole `InstagramDigestTests` target fails to build, so CI's `xcodebuild test -only-testing:InstagramDigestTests` step goes red and no Swift test signal exists until fixed. Production code is unaffected.
-- **Fix (one line, test-only):** annotate the test `@MainActor` (the compiler's own suggestion). Recommended follow-up in the same edit: the test's tmp scaffolding is currently dead — `calculateReclaimableRolloverBytes` reads `LibraryPathResolver.shared` paths, not the tmp resolver — and `XCTAssertGreaterThanOrEqual(bytes, 0)` is vacuous. Either inject a base URL into the calc or drop the scaffolding and assert the real-container read path explicitly. Neither follow-up gates release.
-- **Gate:** §7(b) — CI green on the branch after the fix.
+swiftc probes (this pass, `/tmp/audit032_*.swift`, kept out of the repo):
+- Signature-verbatim probe → `/tmp/audit032_sig_probe.swift:22:59: error: extra argument 'runDate' in call` (replica of test `:258`).
+- Actor-nesting probe → `/tmp/audit032_nested_probe.swift:14:15: error: cannot find 'CacheError' in scope` (replica of test `:1189`).
+- Exhaustive grep: `currentTotalBookmarkBytes` — zero matches in `Sources/`; real member `totalBookmarkBytes` at `MediaCacheManager.swift:58` (replica of test `:1307` failure).
+- Equatable isolation probe → clean (exit 0, no diagnostics); sensitivity control → `error: ... requires that 'NotEq' conform to 'Equatable'`; positive-control file → clean.
+All greps above ran against the working tree on `arch/direct-meta-stream` in its HEAD state for this pass.
 
-## 5. Architectural invariant confirmation
+## 8. Ship gates and final certification
 
-| Invariant | Status | Basis |
-|---|---|---|
-| 100% byte-for-byte preservation of production `data.json` | PASS | Pre/post sha256 invariant (`site_builder.py:840-848`); direct overlay copies `data_direct.json` only; pytest byte-identity/mutation/missing-data abort cases pass; no bare-sync runs performed during audit |
-| Zero R2 storage/bandwidth (S3 bypass) | PASS | 10-function poison bypass across `_estimate_run`/reconcile/publish/`build_site`/expand; legacy-parity test proves the toggle cuts both ways; `DIRECT_STREAM_MODE` default True skips R2 by design; `data/` clean after suite |
-| MRT offline capability | PASS | Resolver-offline/local-first/fallback tests; week-branched offline copy + Download Week wiring; `.completedWithFailures` partial-success UX; honest offline badges per the offline matrix |
-| Container isolation (tests never touch the real container) | PARTIAL | Purge/routing tests tmp-isolated with cleanup; Python `DATA_DIR` isolation + tripwire clean. Gap confined to the blocking test (§4): `:793-809` builds dead tmp scaffolding while the calc reads `.shared` paths. Production code fully isolated. Returns to PASS with the blocker fix + scaffolding follow-up. |
+Release is approved when ALL of the following hold; (a)-(e) are code fixes, (f)-(h) are verification:
 
-## 6. Concurrency, thread-safety & regression statement
+- (a) AUDIT-032 fixed: `DirectStreamTests.swift` compiles; `:258-259`, `:1189`, `:1307` corrected.
+- (b) AUDIT-044 fixed: no-change path with configured URL verified by a new regression test (marker written, `True` returned, no commit attempted).
+- (c) AUDIT-041 fixed: `grep -q 'Xcode 16'` gate present, trailing `|| true` removed.
+- (d) AUDIT-027/070/071 fixed per §3 prescriptions (docs amendment + field removal; stale-gate helper + wiring; twin comments + CI grep).
+- (e) AUDIT-079 completed: engine progress callback added and wired to the modal `ProgressView`.
+- (f) `build-ipa.yml` green on the branch (unit + UI tests + release gates) — the authoritative close-out for all Swift compile/concurrency verdicts.
+- (g) Full pytest regression re-run green (≥211 passed) with `data/` pollution check clean (no new files, `data.json` byte-identical).
+- (h) Stage 4e UAT (`.workflow/UAT_PLAN.md`) executed: automated matrix green + on-device checklist signed off by the user.
 
-- Swift production code: clean under Swift 6 strict concurrency — actors for services, @MainActor for UI-touching controllers, Sendable state, MainActor-hopped delegate callbacks, `Task.isCancelled` cooperative cancellation in the resolver. The single isolation defect is the test-only §4 break.
-- Python pipeline: process-safe — 3-hour checkpoint TTL, stranded-outbox detection, fail-closed deploy verification, DATA_DIR-scoped tests with tripwire. No bare `main.py`/`--sync` runs were executed during this audit.
-- Regression evidence: `pytest tests/test_direct_stream_mode.py` → 23 passed (independent lead-auditor run); `site_builder` + JIT suites → 7 passed (domain auditor); `data/` clean; Swift signal pending §7(b) solely due to §4.
+**Final certification: 7.6 / 10 — NOT CERTIFIED, RELEASE BLOCKED.** The safety core (6/6 P0s, 4/4 invariants, 211/211 pytest) is genuinely strong, but a release cannot be certified while the Swift test target does not compile, the production no-change deploy path crashes, and the toolchain pin fails open. On gates (a)-(h) passing, this report's machinery re-scores to ≥9.0 and the lead recommends GO without further audit.
 
-## 7. Certification score & release approval
+— Lead Auditor / Independent QA Lead, Stage 4d, 2026-10-25.
 
-- **Score: 9.1 / 10 — conditional certification** (35 PASS, 7 accepted PARTIALs, 1 blocking PARTIAL, 0 FAIL; all P0s behaviorally effective; 3/4 invariants fully PASS with the 4th production-clean).
-- **Release approval: CONDITIONAL GO.** Ship gates:
-  - (a) Land the §4 one-line fix (test-only, zero production risk).
-  - (b) `build-ipa.yml` green on `arch/direct-meta-stream` (unit + XCUITest + unsigned IPA artifact).
-  - (c) Execute `.workflow/UAT_PLAN.md` §6 on-device checklist; all P0 cases pass.
-- On gates (a)+(b) passing with no new findings, this report's verdict converts to **GO** without re-audit; the 7 accepted PARTIALs in §3 stand as documented known limitations.
-
-## Appendix A — Lead-auditor verification commands (observed)
-
-- `swiftc -typecheck` probes (`/tmp/audit43/`): no-payload-enum `XCTAssertEqual` accepted; struct control rejected; sync-nonisolated `@MainActor.shared` access rejected with 2 errors; `@MainActor` variant clean. `swiftc`: Swift 6.0, Linux x86_64.
-- `.venv/bin/python -m pytest tests/test_direct_stream_mode.py -q` → `23 passed in 0.62s`.
-- `git status --short data/` → clean; no `sync_progress_*` / `expand_checkpoint_*` / `expand_progress_*` present.
-- Direct reads: `DigestDataService.swift` (full), `DownloadAllCoordinator.swift` (:1-40, :95-169), `DirectStreamTests.swift` (:1-115, :200-270, :740-809), `main.py` (:2245-2280, :2370-2420), `AuditFixesTests.swift` (:150-185), `build-ipa.yml` (full), `docs/RE_SIGN_AND_INSTALL.md` (head), `.workflow/REQUIREMENTS.md` (full), `.workflow/AUDIT_LEDGER.json` (full, 43 entries).

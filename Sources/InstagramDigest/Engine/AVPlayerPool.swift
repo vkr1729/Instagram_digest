@@ -77,6 +77,15 @@ public final class AVPlayerPool: ObservableObject {
         [slotPrev, slotCurrent, slotNext]
     }
 
+    /// Set of reel IDs currently bound to active player slots (slotPrev, slotCurrent, slotNext)
+    public var boundReelIDs: Set<String> {
+        var ids = Set<String>()
+        if let id = slotCurrent.slotItem?.reel.id { ids.insert(id) }
+        if let id = slotPrev.slotItem?.reel.id { ids.insert(id) }
+        if let id = slotNext.slotItem?.reel.id { ids.insert(id) }
+        return ids
+    }
+
     /// Monotonic generation counter to invalidate asynchronous tasks
     public private(set) var poolGeneration: UInt64 = 0
 

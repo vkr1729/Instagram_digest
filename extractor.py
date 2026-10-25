@@ -1574,11 +1574,12 @@ def download_reel_video(
     max_retries: int = 3,
     cookie_free: bool = False,
     **_ignored: Any,
-) -> bool:
+) -> tuple[bool, str]:
     """
     Download a single reel video to output_path.
+    Returns (success: bool, discovered_cdn_url: str).
     1. If video_cdn_url is provided, stream-downloads directly with requests (fast & resilient).
-    2. Otherwise uses Playwright to extract video_cdn_url and stream-download.
+    2. Otherwise uses Playwright / metadata extraction to extract video_cdn_url and stream-download.
     3. Falls back to yt-dlp if direct stream fails.
     """
     import requests
@@ -1646,7 +1647,7 @@ def download_reel_video(
                             temp_path.replace(output_path)
                             logger.info("Successfully downloaded %.2f MB to %s",
                                         output_path.stat().st_size / (1024 * 1024), output_path.name)
-                            return True
+                            return (True, cdn_target or "")
                         else:
                             logger.warning("Downloaded stream failed integrity check (%d bytes), retrying...",
                                            temp_path.stat().st_size if temp_path.exists() else 0)
@@ -1681,7 +1682,7 @@ def download_reel_video(
                 temp_path.replace(output_path)
                 logger.info("Successfully downloaded %.2f MB via yt-dlp to %s",
                             output_path.stat().st_size / (1024 * 1024), output_path.name)
-                return True
+                return (True, cdn_target or "")
             else:
                 temp_path.unlink(missing_ok=True)
                 err_snippet = (res.stderr or "").strip()[-250:]
@@ -1698,7 +1699,13 @@ def download_reel_video(
 
     if temp_path.exists():
         temp_path.unlink(missing_ok=True)
-    return False
+    return (False, "")
+
+
+def download_reel_video_bool(*args: Any, **kwargs: Any) -> bool:
+    """Bool-compatible wrapper for download_reel_video returning only success boolean."""
+    res = download_reel_video(*args, **kwargs)
+    return res[0] if isinstance(res, tuple) else bool(res)
 
 
 def extract_external_reels_from_feed(

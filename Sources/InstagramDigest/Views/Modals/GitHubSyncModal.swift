@@ -12,6 +12,8 @@ public struct GitHubSyncModal: View {
     @State private var isSyncing: Bool = false
     @State private var errorMessage: String? = nil
     @State private var successMessage: String? = nil
+    @State private var syncProgress: (current: Int, total: Int)? = nil
+    @State private var dismissTask: Task<Void, Never>? = nil
 
     public init(
         repo: Binding<String>,
@@ -27,21 +29,44 @@ public struct GitHubSyncModal: View {
         self.onSuccess = onSuccess
     }
 
+    private var isRepoFormatValid: Bool {
+        let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: "/")
+        return parts.count == 2 && !parts[0].isEmpty && !parts[1].isEmpty && !trimmed.contains(" ")
+    }
+
+    private var canSync: Bool {
+        !isSyncing && isRepoFormatValid && !pat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("GitHub Bookmark Repository").foregroundColor(.white.opacity(0.6))) {
+                Section(
+                    header: Text("GitHub Bookmark Repository").foregroundColor(.white.opacity(0.6)),
+                    footer: Group {
+                        if !repo.isEmpty && !isRepoFormatValid {
+                            Text("Repository must be in owner/repo format (e.g. username/my-repo)")
+                                .foregroundColor(.orange)
+                                .font(.system(size: 11))
+                        }
+                    }
+                ) {
                     TextField("owner/repo (e.g. vkreddy1729-ops/ig-bookmarks)", text: $repo)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
+                        .accessibilityIdentifier("GitHubRepoField")
                 }
                 .listRowBackground(Color.white.opacity(0.08))
 
-                Section(header: Text("Personal Access Token (PAT)").foregroundColor(.white.opacity(0.6)),
-                        footer: Text("Requires repo / contents read & write permissions.").foregroundColor(.white.opacity(0.4))) {
+                Section(
+                    header: Text("Personal Access Token (PAT)").foregroundColor(.white.opacity(0.6)),
+                    footer: Text("Requires repo / contents read & write permissions.").foregroundColor(.white.opacity(0.4))
+                ) {
                     SecureField("ghp_... or gho_...", text: $pat)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
+                        .accessibilityIdentifier("GitHubPATField")
                 }
                 .listRowBackground(Color.white.opacity(0.08))
 
@@ -70,11 +95,20 @@ public struct GitHubSyncModal: View {
                         HStack {
                             Spacer()
                             if isSyncing {
-                                ProgressView()
-                                    .tint(.white)
-                                    .padding(.trailing, 8)
-                                Text("Syncing...")
-                                    .fontWeight(.bold)
+                                if let p = syncProgress, p.total > 0 {
+                                    ProgressView(value: Double(p.current), total: Double(p.total))
+                                        .tint(.white)
+                                        .frame(width: 80)
+                                        .padding(.trailing, 8)
+                                    Text("Syncing (\(p.current)/\(p.total))...")
+                                        .fontWeight(.bold)
+                                } else {
+                                    ProgressView()
+                                        .tint(.white)
+                                        .padding(.trailing, 8)
+                                    Text("Syncing...")
+                                        .fontWeight(.bold)
+                                }
                             } else {
                                 Image(systemName: "arrow.triangle.2.circlepath")
                                 Text("Sync Bookmarks Now")
@@ -84,9 +118,10 @@ public struct GitHubSyncModal: View {
                         }
                     }
                     .foregroundColor(.white)
-                    .disabled(isSyncing || repo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSync)
+                    .accessibilityIdentifier("GitHubSyncButton")
                 }
-                .listRowBackground(Color.cyan.opacity(0.8))
+                .listRowBackground(canSync ? Color.cyan.opacity(0.8) : Color.white.opacity(0.12))
             }
             .scrollContentBackground(.hidden)
             .background(Color.black.ignoresSafeArea())
@@ -95,18 +130,25 @@ public struct GitHubSyncModal: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close") {
+                        dismissTask?.cancel()
                         dismiss()
                     }
                     .foregroundColor(.white.opacity(0.8))
+                    .accessibilityIdentifier("GitHubCloseButton")
                 }
+            }
+            .onDisappear {
+                dismissTask?.cancel()
             }
         }
     }
 
     private func performSync() {
+        guard canSync else { return }
         isSyncing = true
         errorMessage = nil
         successMessage = nil
+        syncProgress = nil
 
         Task { @MainActor in
             do {
@@ -114,13 +156,22 @@ public struct GitHubSyncModal: View {
                     repo: repo,
                     pat: pat,
                     localBookmarks: localBookmarks,
-                    context: context
+                    context: context,
+                    onProgress: { [weak dismissTask] current, total in
+                        _ = dismissTask
+                        Task { @MainActor in
+                            self.syncProgress = (current, total)
+                        }
+                    }
                 )
                 isSyncing = false
                 successMessage = result.message
                 onSuccess(result.message)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                    dismiss()
+                dismissTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    if !Task.isCancelled {
+                        dismiss()
+                    }
                 }
             } catch {
                 isSyncing = false

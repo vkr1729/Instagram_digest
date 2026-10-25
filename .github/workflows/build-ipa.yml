@@ -11,6 +11,37 @@ on:
     - cron: "0 6 * * 1"
 
 jobs:
+  python-tests:
+    name: Run Python Direct Stream Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Run Python direct stream tests
+        run: |
+          pytest tests/test_direct_stream_mode.py -q
+
+      - name: Verify Direct Manifest Contract Pair (AUDIT-071)
+        run: |
+          grep -q 'Instagram_digest/data_direct.json' Sources/InstagramDigest/Engine/DigestDataService.swift || { echo "ERROR: DigestDataService directManifestURL does not match contract path"; exit 1; }
+          grep -q 'data_direct.json' config.py || { echo "ERROR: config.py does not define direct manifest path"; exit 1; }
+
   build-and-test:
     name: Build, Test & Package IPA
     runs-on: macos-15
@@ -24,14 +55,18 @@ jobs:
 
       - name: Select Xcode Version
         run: |
+          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
           xcode-select -p
           xcodebuild -version
+          xcodebuild -version | grep -q 'Xcode 16' || { echo "ERROR: Expected Xcode 16 toolchain"; exit 1; }
           sudo xcodebuild -runFirstLaunch || true
 
       - name: Install XcodeGen
         run: |
           XCODEGEN_VERSION="2.42.0"
-          curl -sLo /tmp/xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          XCODEGEN_SHA256="a760b4bf97460341316a2c00d8c87b2946c6c2729eb57e9a72abb3ef7bc0ef82"
+          curl -sfSL -o /tmp/xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  /tmp/xcodegen.zip" | shasum -a 256 -c -
           unzip -q /tmp/xcodegen.zip -d /tmp
           sudo /tmp/xcodegen/install.sh
           xcodegen --version
@@ -52,7 +87,7 @@ jobs:
             exit 1
           fi
           echo "Discovered simulator UDID: $DEVICE_ID"
-          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
           xcrun simctl bootstatus "$DEVICE_ID" -b
           echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
 
@@ -116,6 +151,7 @@ jobs:
         run: |
           mkdir -p Payload
           APP_PATH=$(find build/Build/Products/Release-iphoneos/ -maxdepth 1 -name "*.app" | head -n 1)
+          [ -n "$APP_PATH" ] && [ -d "$APP_PATH" ] || { echo "ERROR: No .app found under build/Build/Products/Release-iphoneos/"; exit 1; }
           echo "Packaging app bundle: $APP_PATH"
           cp -R "$APP_PATH" Payload/
           zip -qr InstagramDigestDirect.ipa Payload

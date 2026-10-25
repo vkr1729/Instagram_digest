@@ -17,8 +17,8 @@ public actor BookmarkResolver {
     public static let defaultEndpoint = URL(string: "https://api.cobalt.tools/")!
 
     private let session: URLSession
-    private let endpoint: URL
-    private let apiKey: String?
+    private let configuredEndpoint: URL?
+    private let configuredApiKey: String?
 
     public init(
         session: URLSession? = nil,
@@ -35,23 +35,44 @@ public actor BookmarkResolver {
             self.session = URLSession(configuration: config)
         }
 
-        if let endpoint = endpoint {
-            self.endpoint = endpoint
-        } else if let customUrlStr = UserDefaults.standard.string(forKey: "cobalt_api_url"),
-                  let customURL = URL(string: customUrlStr),
-                  !customUrlStr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.endpoint = customURL
-        } else {
-            self.endpoint = Self.defaultEndpoint
-        }
+        self.configuredEndpoint = endpoint
+        self.configuredApiKey = apiKey
+    }
 
-        if let apiKey = apiKey {
-            self.apiKey = apiKey
-        } else {
-            let key = UserDefaults.standard.string(forKey: "cobalt_api_key")
-                ?? UserDefaults.standard.string(forKey: "cobalt_api_token")
-            self.apiKey = key
+    /// Validates an endpoint URL string: enforces HTTPS, valid host, and strips trailing slash (AUDIT-063)
+    public static func validateEndpoint(_ urlString: String?) -> URL? {
+        guard let raw = urlString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        var clean = raw
+        if clean.hasSuffix("/") {
+            clean = String(clean.dropLast())
         }
+        guard let u = URL(string: clean),
+              u.scheme?.lowercased() == "https",
+              let host = u.host, !host.isEmpty else {
+            return nil
+        }
+        return u
+    }
+
+    public func effectiveEndpoint() -> URL {
+        if let configured = configuredEndpoint {
+            return configured
+        }
+        if let customStr = UserDefaults.standard.string(forKey: "cobalt_api_url"),
+           let valid = Self.validateEndpoint(customStr) {
+            return valid
+        }
+        return Self.defaultEndpoint
+    }
+
+    public func effectiveApiKey() -> String? {
+        if let configured = configuredApiKey {
+            return configured
+        }
+        let key = UserDefaults.standard.string(forKey: "cobalt_api_key")
+            ?? UserDefaults.standard.string(forKey: "cobalt_api_token")
+        let trimmed = key?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 
     /// Resolves a canonical reel permalink to a fresh, playable MP4 stream URL.
@@ -64,6 +85,9 @@ public actor BookmarkResolver {
         if Task.isCancelled {
             return .failed("Task cancelled")
         }
+
+        let endpoint = effectiveEndpoint()
+        let apiKey = effectiveApiKey()
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -159,7 +183,11 @@ public actor BookmarkResolver {
 
             let status = (json["status"] as? String) ?? ""
             if status == "tunnel" || status == "redirect" {
-                if let streamStr = json["url"] as? String, let streamURL = URL(string: streamStr), streamURL.scheme == "https" {
+                // AUDIT-064: Case-insensitive HTTPS scheme and non-nil host check
+                if let streamStr = json["url"] as? String,
+                   let streamURL = URL(string: streamStr),
+                   streamURL.scheme?.lowercased() == "https",
+                   let host = streamURL.host, !host.isEmpty {
                     return .success(streamURL)
                 }
                 return .failed("Missing or invalid HTTPS stream URL in response")
@@ -181,10 +209,17 @@ public actor BookmarkResolver {
                 }
                 return await resolveWithRetry(url: url, attempt: 2)
             }
-            if urlError.code == .notConnectedToInternet || urlError.code == .networkConnectionLost || urlError.code == .timedOut {
+            // AUDIT-026: Differentiate genuine network errors from programmer errors and cancellation
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .timedOut,
+                 .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                 .secureConnectionFailed, .serverCertificateUntrusted:
                 return .offline
+            case .cancelled, .userCancelledAuthentication:
+                return .failed("Task cancelled")
+            default:
+                return .failed(urlError.localizedDescription)
             }
-            return .offline
         } catch {
             return .failed(error.localizedDescription)
         }

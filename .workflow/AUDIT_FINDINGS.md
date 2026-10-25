@@ -1,235 +1,196 @@
-# Adversarial Audit Findings — arch/direct-meta-stream
+# Audit Findings: branch `arch/direct-meta-stream`
 
-Merged from 4 lane reports (python_pipeline, swift_engine, swift_ui, ci_cd).
-53 raw findings → **43 merged** (9 merges, 10 duplicates absorbed).
-Severity: **6 P0 / 18 P1 / 19 P2**. Source P3s normalized to P2 per merge contract.
-Machine ledger: `.workflow/AUDIT_LEDGER.json` (all status PENDING).
+Lead-auditor adversarial review against `.workflow/REQUIREMENTS.md` and
+`.workflow/IMPLEMENTATION_PLAN.md`. Scope: single-person personal use
+(Kedarnath Reddy, offline MRT iPhone playback). No enterprise-bloat
+recommendations. Read-only audit: no source files were modified.
 
-## P0 — must fix before merge
+- Full machine-readable ledger: `.workflow/AUDIT_LEDGER.json`
+  (88 entries, all `PENDING`).
+- Counts: **P0: 6, P1: 36, P2: 46.**
+- By domain: python_pipeline 32 (2/13/17), swift_engine 27 (2/13/12),
+  swift_ui 24 (2/7/15), ci_cd 5 (0/3/2).
 
-### AUDIT-001 — Unplayable reels ship in direct manifest; deploy gates neutered
-- File: `main.py:2243` (python_pipeline)
-- Issue: Direct branch maps every ranked reel to uploaded_url_map including '' for reels lacking a Meta URL, sets dropped=[] and never filters, so zero-playable batches still save/build/deploy dead-card manifests; the deploy gate needs only 1 good URL.
-- Remediation: Validate then filter in the direct branch exactly like the legacy dropped-filter (is_direct_stream_url check, playable/dead split, warn with dead ids, ranked_reels=playable, dropped=dead); leave the :2363/:2385 gates untouched.
+## Top risks (read first)
 
-### AUDIT-002 — Direct-stream tests purge the real app container
-- File: `Tests/InstagramDigestTests/DirectStreamTests.swift:346` (swift_engine)
-- Issue: Rollover-purge tests call MediaCacheManager.shared against the real app container, permanently wiping a device's offline cache when the suite runs; routing test also writes into the real container.
-- Remediation: Never touch .shared in tests — instantiate with a temp-rooted path resolver (add a baseURL override for tests); or gate to simulator-only temp containers.
+1. `AUDIT-001` — a missing `gh-pages` branch triggers a fresh orphan push
+   that wipes production Pages (no `data.json`, no `index.html`).
+2. `AUDIT-002` — the 60% deploy quorum is vacuous on writer-produced
+   manifests and there is no absolute count floor, so a shrunken week can
+   deploy and then wipe the device's good week on Download.
+3. `AUDIT-004` + `AUDIT-006` — every rollover deletes all bookmark
+   thumbnails, and stale persisted CDN URLs play to a black-screen hang
+   with no failure observer (including offline in the MRT).
+4. `AUDIT-005` — the headline 1-tap Download Week banner, auto-prompt, and
+   progress indicator do not exist in the feed UI.
+5. `AUDIT-014` — `~/.env` silently overrides repo `.env`, so a stale
+   `DIRECT_STREAM_MODE=false` can flip the branch into legacy mode
+   (including the destructive R2 purge) with no startup log.
 
-### AUDIT-003 — Empty-batch Start wipes old week and reports success
-- File: `Sources/InstagramDigest/Views/Modals/DownloadAllSheet.swift:172` (swift_ui)
-- Issue: With unwatchedOnly on and all reels watched, Start is still enabled; startDownloadAll([]) runs rollover purge (wipes prior week, resume data, ledger) then reports .completed, and the banner falsely claims full offline readiness.
-- Remediation: Disable Start/Retry when effectiveReels is empty with an explanatory state; belt-and-braces early-return in startDownloadAll on empty batch before rollover.
+## P0 (6) — must fix before merge/use
 
-### AUDIT-004 — Cobalt resolver broken live: single hardcoded instance, no auth/fallback
-- File: `Sources/InstagramDigest/Engine/BookmarkResolver.swift:44` (ci_cd; merges ci_cd + swift_engine + config findings)
-- Issue: Live POST returns 400 error.api.auth.jwt.missing — the public instance requires JWT but no Authorization header is sent, so every older-bookmark resolution fails. Single hardcoded endpoint, no fallback, no user override; Python COBALT_RESOLVER_API_URL is dead config.
-- Remediation: User decides self-host vs API key; then add Authorization header + endpoint override from Settings/UserDefaults as the single source of truth, document one fallback, add a request-shape contract test plus an opt-in live smoke test.
+| ID | Domain | Title | Location | Failure in one line |
+|---|---|---|---|---|
+| AUDIT-001 | python_pipeline | Bootstrap path wipes production gh-pages branch | `site_builder.py:767` | Missing remote branch -> fresh orphan push with only direct files; production Pages goes offline. |
+| AUDIT-002 | python_pipeline | No MIN_DEPLOY count gate; 60% quorum is vacuous | `site_builder.py:667` | Writer drops invalid items first, so quorum always passes; shrunken weeks deploy and wipe the good device week. |
+| AUDIT-003 | swift_engine | GitHub sync force-unwrap crash on user-supplied repo/ID | `Engine/GitHubBookmarkSyncService.swift:187` | `URL(string: ...)!` on user input crashes on spaces/empty owner (3 sites). |
+| AUDIT-004 | swift_engine | Rollover purge deletes preserved bookmark thumbnails | `Engine/MediaCacheManager.swift:276` | Single-extension stem strip never matches `.thumb.jpg`, so every rollover wipes all bookmark thumbnails. |
+| AUDIT-005 | swift_ui | 1-tap banner + auto-prompt + progress indicator missing | `InstagramDigestApp.swift:292` | `OfflineCacheBanner` is defined but never embedded; no auto-prompt, no progress, dead header action. |
+| AUDIT-006 | swift_ui | Stale persisted CDN URL plays to black-screen hang | `Views/Modals/BookmarksSheet.swift:907` | Expired/offline stored URL plays with no failure observer; bypasses the honest offline badge path. |
 
-### AUDIT-005 — Legacy Swift test fails under hardcoded directMode (CI red)
-- File: `Tests/InstagramDigestTests/AuditFixesTests.swift:172` (ci_cd)
-- Issue: testPendingRemoteBookmarksDrainOnRetry fails on this branch (directMode=true stub returns true, XCTAssertFalse fails); CI runs the whole bundle so build-ipa.yml goes red.
-- Remediation: Gate the legacy test on !directMode (or inject a legacy-mode service), mirroring the Python conftest pin.
+## P1 (36) — fix before release
 
-### AUDIT-006 — Empty video_url ships; iOS silently drops reels (count mismatch)
-- File: `site_builder.py:99` (ci_cd)
-- Issue: Writer emits video_url='' for non-Meta hosts; ReelItem init throws so DigestManifest lossy-drops those reels while count stays N; the >=1-URL gate lets partially-emptied manifests ship.
-- Remediation: Drop empty-URL items in the writer and set count=len(items), or fail loudly below a fill threshold; add Python no-empty-URL and Swift lossy-skip/count tests.
+Python pipeline (13):
 
-## P1 — should fix before merge
+| ID | Title | Location | Failure in one line |
+|---|---|---|---|
+| AUDIT-007 | TypeError on non-string candidate | `site_builder.py:103` | Truthy non-string URL field crashes `build_site` mid-write via `in`. |
+| AUDIT-008 | Truthy-preference shadows valid fallback URL | `site_builder.py:103` | Invalid `video_cdn_url` hides a valid `video_url` in 4 filter sites; silent reel loss. |
+| AUDIT-009 | `--expand` deletes expired reels, saves w/o MIN gate | `main.py:3018` | Routine expand can clobber a 250-item digest down to ~53 items. |
+| AUDIT-010 | Sync shrink saved w/o MIN gate when deploy=False | `main.py:2393` | Interactive `--sync` without `--deploy` can persist a 10-item digest. |
+| AUDIT-011 | `build_site` clobbers `video_url` with R2 URLs first | `site_builder.py:223` | R2 annotation destroys the only good Meta URL before the direct writer runs. |
+| AUDIT-012 | Prune deletes PROD thumbnails on parse failure | `site_builder.py:827` | `except: pass` falls back to direct-only keep-set; prod thumbs 404 while hash check passes. |
+| AUDIT-013 | Playwright-discovered CDN URL discarded | `main.py:2149` | Bool-only extractor return drops the fresh URL; downloaded reels then filtered as unplayable. |
+| AUDIT-014 | `~/.env` overrides repo `.env`, no mode log | `config.py:45` | Stale home value can silently flip the branch to legacy + R2 purge. |
+| AUDIT-015 | Three tests simulate the filter, not production | `tests/test_direct_stream_mode.py:359` | Inline re-implementations stay green if production filters are deleted. |
+| AUDIT-016 | Bootstrap test locks in destructive behavior | `tests/test_direct_stream_mode.py:309` | Test asserts the production-wiping path succeeds; correct fix fails it. |
+| AUDIT-017 | Migration records FAILED downloads as bookmarks | `scripts/migrate_r2_bookmarks_to_gh.py:87` | Fall-through append + no size check creates ghost release assets. |
+| AUDIT-018 | Migration omits thumbnails | `scripts/migrate_r2_bookmarks_to_gh.py:1` | Hardcoded `_portrait.jpg` URLs with no uploads; broken offline thumbs. |
+| AUDIT-019 | healthcheck ignores the direct channel | `healthcheck.sh:83` | 200 on `/` passes while `data_direct.json` 404s or is stale. |
 
-### AUDIT-007 — r2_url field contaminated with Meta CDN URLs in persisted digest
-- File: `main.py:2351` (python_pipeline)
-- Issue: The persist block runs in both modes, writing Meta CDN URLs into r2_url; ranker persists full dicts, so digest JSON permanently stores Meta URLs as r2_url, corrupting later legacy-mode resume/expand/reconcile.
-- Remediation: Gate by mode — in direct mode set video_url only and pop r2_url; add a test asserting no r2_url key after direct-mode save.
+Swift engine (13):
 
-### AUDIT-008 — Direct deploy gate checks wrong keys with single-URL threshold
-- File: `site_builder.py:619` (python_pipeline)
-- Issue: Gate passes on ANY single http URL across video_url/r2_url/video_cdn_url; blanked video_url manifests still pass via stale video_cdn_url, as does 1-live/249-dead. It does not measure what the app consumes.
-- Remediation: In direct mode check only video_url with is_direct_stream_url, count hits, require a quorum (max(1, 60% of items)); log good/total. Legacy path unchanged.
+| ID | Title | Location | Failure in one line |
+|---|---|---|---|
+| AUDIT-020 | Duplicate-tap guard covers `.preparing` only | `Engine/DownloadAllCoordinator.swift:130` | Tap during `.downloading` cancels + purges + restarts, losing hours. |
+| AUDIT-021 | Preflight overestimates reclaimable bytes | `Engine/DownloadAllCoordinator.swift:100` | Counts preserved Bookmarks/pinned files as reclaimable; batch may not fit. |
+| AUDIT-022 | 403/410 refresh race; breaks sticky user pause | `Engine/DownloadAllCoordinator.swift:585` | Concurrent refreshes corrupt the queue; success lifts explicit user pause. |
+| AUDIT-023 | Direct remove deletes a bound (playing) file | `Engine/BookmarkController.swift:18` | No active-pool check; unbookmarking the playing reel stalls AVPlayer. |
+| AUDIT-024 | Add records `.cached` when video copy fails | `Engine/BookmarkController.swift:91` | Ignored `copyItem` failure still marks cached via the week copy. |
+| AUDIT-025 | Cap is not LRU, kills playing video, 0 coerced to 50 | `Engine/BookmarkController.swift:134` | Wrong sort key, no bound-file skip, phantom evictions, and Keep-All deletes past 50. |
+| AUDIT-026 | Every URLError maps to `.offline` | `Engine/BookmarkResolver.swift:176` | Bad URLs and cancellations surface as "offline"; hides bugs. |
+| AUDIT-027 | Release-Asset video backup missing | `Engine/GitHubBookmarkSyncService.swift:299` | `video_asset_name` recorded but never uploaded; deleted-source reels unrecoverable. |
+| AUDIT-028 | Spec conflict: isolated copies vs Plan "no copies" | `Engine/BookmarkController.swift:90` | Plan 4.2 and the Requirements addendum contradict; blocks acceptance. |
+| AUDIT-029 | Rollover resume in detached Task (suspension race) | `Engine/MediaCacheManager.swift:211` | Caller drains the queue while suspension may still hold. |
+| AUDIT-030 | Ledger decremented before verifying deletion | `Engine/MediaCacheManager.swift:689` | Failed unlink leaves bytes uncounted; 1.5 GB cap drifts. |
+| AUDIT-031 | Thumb PUT omits SHA; sync never deletes remotely | `Engine/GitHubBookmarkSyncService.swift:282` | 422 on re-upload hidden; local deletes resurrect on new devices. |
+| AUDIT-032 | Swift tests overclaim coverage | `Tests/.../DirectStreamTests.swift:177` | Routing/playback/rollover/coordinator names promise unasserted behavior. |
 
-### AUDIT-009 — Serve-check exception path returns deploy success
-- File: `site_builder.py:784` (python_pipeline)
-- Issue: The outer except around serve verification warns and falls through to writing the deployed-week marker and returning True — a verification failure is reported as success and later runs treat an unserved week as live.
-- Remediation: Fail closed — log at error and return False in the outer except; keep inner per-poll retry; add a test asserting False + no marker when urlopen raises.
+Swift UI (7):
 
-### AUDIT-010 — Static marker path bypasses DATA_DIR isolation; tests pollute live data/
-- File: `site_builder.py:816` (python_pipeline; merges python_pipeline + ci_cd findings)
-- Issue: Marker written to import-time-bound DIRECT_DEPLOYED_WEEK_FILE ignores DATA_DIR redirects, so tests write into live data/; the tripwire does not cover that filename.
-- Remediation: Add config.direct_deployed_week_file() (DATA_DIR-derived), replace the call site, monkeypatch it in fixtures, extend the tripwire, assert tmp placement.
+| ID | Title | Location | Failure in one line |
+|---|---|---|---|
+| AUDIT-033 | Export share sheet unstable identity | `Views/Modals/BookmarksSheet.swift:329` | New UUID per body pass tears down the share sheet mid-share. |
+| AUDIT-034 | 3-state badges never live-update | `Views/Modals/BookmarksSheet.swift:182` | Coordinator not observed; amber badges stick until reopen. |
+| AUDIT-035 | `onAppear` wipes finished state | `Views/Modals/DownloadAllSheet.swift:368` | Opening the sheet destroys the green ready badge it should show. |
+| AUDIT-036 | Live failed-count missing from progress | `Views/Feed/OfflineCacheBanner.swift:31` | Spec'd "(2 failed)" never renders; engine value not published. |
+| AUDIT-037 | Offline playlist narrows silently, never restores | `InstagramDigestApp.swift:742` | No connectivity observation; narrowed list sticks after reconnect. |
+| AUDIT-038 | Cloudflare dialog not excised (only gated) | `InstagramDigestApp.swift:141` | Spec demands removal; any flag flip resurrects prompts. |
+| AUDIT-039 | iPad popover crash + tmp leak + silent export fail | `Views/Components/ShareSheetView.swift:12` | Missing anchor crashes iPad; base64 backups accumulate; nil export is silent. |
 
-### AUDIT-011 — Direct-mode expand reuses expired/stale CDN URLs for existing items
-- File: `main.py:2837` (python_pipeline)
-- Issue: Expand seeds existing-item URLs from stored fields (week-old, near-certainly 403 after 48–72h expiry) and returns stored video_cdn_url verbatim; legacy R2 URLs get blanked, turning pre-existing items into dead cards.
-- Remediation: Seed only is_direct_stream_url-validated URLs with a staleness warning, run the AUDIT-001 playable filter and refuse deploy below MIN_DEPLOY_ITEMS, document that expand cannot refresh URLs (recommend full sync).
+CI/CD (3):
 
-### AUDIT-012 — Python direct-mode test gaps: no legacy-parity, weak bypass coverage
-- File: `tests/test_direct_stream_mode.py:97` (python_pipeline; merges python_pipeline P1 + ci_cd P2)
-- Issue: No test_legacy_parity; the bypass test mocks an unused path and asserts only return codes without exercising Phase 5D/s3 gating/expand bypass/deploy routing; missing build-only/deploy-only, expand-direct, URL-edge, and prod-bytes tests.
-- Remediation: Add legacy-parity (assert R2 stubs called when DIRECT False), harden bypass with AssertionError stubs on all R2 call sites across the real helpers, add the missing cases.
+| ID | Title | Location | Failure in one line |
+|---|---|---|---|
+| AUDIT-040 | CI never runs the Python suite | `.github/workflows/build-ipa.yml:13` | Phase 6 Python tests (~20) never execute in CI. |
+| AUDIT-041 | Xcode version not pinned | `.github/workflows/build-ipa.yml:25` | Image rotation silently moves toolchains; non-reproducible IPA. |
+| AUDIT-042 | XcodeGen via bare curl, no checksum | `.github/workflows/build-ipa.yml:31` | No `--fail`, no sha check before `sudo install.sh`. |
 
-### AUDIT-013 — Force-unwrap crash on hostile bookmark reelID
-- File: `Sources/InstagramDigest/Models/DigestState.swift:91` (swift_engine)
-- Issue: Non-optional canonicalUrl force-unwraps a reelID-interpolated URL; URL-invalid characters from a malformed manifest crash on access. ReelItem.canonicalUrl is safely Optional — inconsistent.
-- Remediation: Sanitize reelID before interpolation, or make it Optional like ReelItem and update the two call sites.
+## P2 (46) — fix opportunistically / before hardening sign-off
 
-### AUDIT-014 — Expired-URL 403/410 has no manifest-refresh recovery
-- File: `Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift:409` (swift_engine; merges swift_engine + ci_cd findings)
-- Issue: Plan 3.2's pause + debounced refresh is absent; any non-2xx below 500 is terminal, so an expired manifest yields ~250 individual failures and Retry replays dead URLs.
-- Remediation: On first 403/410 suspend once, refetch the direct manifest, rebuild pending videoUrls by id, resume; fail fast with 'Links expired' if refresh fails; add a stubbed-403 test.
+Python pipeline (17): AUDIT-043 poll checks `run_date` only
+(`site_builder.py:884`); AUDIT-044 no-change path skips sentinel + verify
+(`site_builder.py:866`); AUDIT-045 `int()` weakens quorum for n<5
+(`site_builder.py:669`); AUDIT-046 writer keeps id-less items, preserves
+non-canonical `url`, passes garbage `size_bytes` (`site_builder.py:100`);
+AUDIT-047 R2/Worker vars leak into direct HTML (`site_builder.py:425`);
+AUDIT-048 health session red in cookie-free mode (`notifier.py:605`);
+AUDIT-049 config drift: frozen URL, dead/unvalidated Cobalt var, dead
+sentinel constant (`config.py:130`); AUDIT-050 import-time deploy defaults
+(`site_builder.py:719`); AUDIT-051 migration nits: CWD path, hardcoded
+count/tag, stale docstring (`scripts/migrate_r2_bookmarks_to_gh.py:27`);
+AUDIT-052 test split-brain tmp trees
+(`tests/test_direct_stream_mode.py:37`); AUDIT-053 zero-playable cites
+phantom outbox, post-drop resume set (`main.py:2273`); AUDIT-054 expand log
+lies, leftover from pre-filter list (`main.py:3034`); AUDIT-055 top-level
+boto3 import (`main.py:32`); AUDIT-056 padded URLs rejected
+(`site_builder.py:61`); AUDIT-057 reconcile skips outbox scan on bad digest
+(`main.py:566`); AUDIT-058 `.env.example` drift on GH_TOKEN/COOKIE_FREE_MODE
+(`.env.example:1`); AUDIT-059 writer leaks `local_url`, duplicates
+`video_cdn_url` (`site_builder.py:108`).
 
-### AUDIT-015 — Partial batch success misreported as total failure
-- File: `Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift:21` (swift_engine)
-- Issue: Shipped states lack ready/failed counts and any single failure maps to .failed, so 249/250 success reports total failure and the banner shows 'Download paused'.
-- Remediation: Adopt the plan states or add .completedWithFailures(ready:failed:) with targeted retry of failed items only.
+Swift engine (12): AUDIT-060 `r2_url`/`local_url` decode fallback
+(`Models/ReelItem.swift:130`); AUDIT-061 unsanitized id in fallback URLs
+(`Models/ReelItem.swift:52`); AUDIT-062 `_portrait.jpg` vs `{id}.jpg`
+mismatch risk (`Models/ReelItem.swift:157`); AUDIT-063 endpoint
+unvalidated + snapshotted (`Engine/BookmarkResolver.swift:38`); AUDIT-064
+case-sensitive HTTPS check, no host check
+(`Engine/BookmarkResolver.swift:162`); AUDIT-065 explicit R2 URL honored in
+directMode (`Engine/DigestDataService.swift:68`); AUDIT-066 promote has
+lower bound only (`Engine/MediaCacheManager.swift:807`); AUDIT-067 resume
+keyed by reelID, pending conflates bookmark copy
+(`Engine/DownloadAllCoordinator.swift:413`); AUDIT-068 dead `??`, task
+leaks, date-now fallback (`Engine/BookmarkController.swift:101`); AUDIT-069
+weak test assertions (`Tests/.../DirectStreamTests.swift:209`); AUDIT-070
+no 48h staleness gate (`Engine/DownloadAllCoordinator.swift:586`); AUDIT-071
+duplicated manifest-URL contract (`Engine/DigestDataService.swift:18`).
 
-### AUDIT-016 — Unsave plays next bookmark after player unmount
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:875` (swift_ui)
-- Issue: handleUnsave tears down and unmounts the player, then loadVideo for the next bookmark can create a player, activate audio, and fire a resolve on a detached view; teardown races the new player.
-- Remediation: Return early after onClose/onDeleteBookmark without loadVideo; let the parent re-present if desired.
+Swift UI (15): AUDIT-072 banned "All N cached" copy in banner
+(`Views/Feed/OfflineCacheBanner.swift:48`); AUDIT-073 dead header params
+(`Views/Feed/HeaderBarView.swift:9`); AUDIT-074 overlapping `loadManifest`
+race (`InstagramDigestApp.swift:575`); AUDIT-075 triple `.task` stale-write
+race (`Views/Feed/OfflineCacheBanner.swift:106`); AUDIT-076 fixed 215pt
+breaks 9:16 off-iPhone (`Views/Modals/GridView.swift:71`); AUDIT-077
+grayscale covers pager only, dual sources (`InstagramDigestApp.swift:252`);
+AUDIT-078 sort refires on Settings open+close
+(`InstagramDigestApp.swift:492`); AUDIT-079 sync modal gaps
+(`Views/Modals/GitHubSyncModal.swift:87`); AUDIT-080 no restore CTA on
+empty state (`Views/Modals/BookmarksSheet.swift:169`); AUDIT-081 settings
+split-brain persistence (`Views/Modals/SettingsSheetView.swift:15`);
+AUDIT-082 sticky import/export banners
+(`Views/Modals/BookmarksSheet.swift:146`); AUDIT-083 filtered grid titled
+"All Reels" (`Views/Modals/GridView.swift:127`); AUDIT-084 timed
+sheet-chaining can drop (`InstagramDigestApp.swift:435`); AUDIT-085
+uncancellable share downloads (`InstagramDigestApp.swift:1068`); AUDIT-086
+hygiene: ObservedObject-on-singleton, dead inputs, Reachability default
+(`InstagramDigestApp.swift:104`).
 
-### AUDIT-017 — Synchronous FS scans in view bodies (banner + grid)
-- File: `Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift:55` (swift_ui; merges swift_ui P1 + swift_engine P3)
-- Issue: Banner body stats up to 250 mp4s on the main thread on every state publish; grid cells stat per cell per render. Main-thread I/O jank during progress updates.
-- Remediation: Compute counts off-body in .task/onChange with @State cache, or publish a cached count from the coordinator; never stat in body.
+CI/CD (2): AUDIT-087 `.gitignore` omits xcodeproj/xcresult
+(`.gitignore:58`); AUDIT-088 sim-boot flake + no fail-fast on missing .app
+(`.github/workflows/build-ipa.yml:55`).
 
-### AUDIT-018 — Grid badge / playback presence mismatch on zero-byte files
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:144` (swift_ui)
-- Issue: Badge ORs a size-checked predicate with bare fileExists, reviving zero-byte files as present while loadVideo rejects them — badge says ready, playback falls to the resolver. Also double-stats every cell.
-- Remediation: Use resolvedLocalFileURL(...) != nil (or isLocalFileAvailable alone) as the single badge predicate.
+## Verified clean (spot-checked, no finding)
 
-### AUDIT-019 — @State mutated off main actor after purge/delete
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:298` (swift_ui)
-- Issue: performFreeStorage and deleteBookmark spawn unstructured Task {} from a non-@MainActor View and mutate @State off the main actor.
-- Remediation: Use Task { @MainActor in ... } for both, or move ledger refresh into .task/onChange.
+- Phase-5 R2 bypass, startup usage-check gate, `_publish_manifest_to_r2`
+  early-return, `_verify_digest` skip, post-publish purge gate,
+  `_estimate_run` and reconcile bypasses, `build_site` s3=None, `data.json`
+  write gated to legacy, `durable_write_json` atomicity, byte-verify happy
+  path; no Telegram/Worker calls in listed Python files.
+- ReelItem exact URL preservation + canonicalUrl; direct manifest routing +
+  `manifest_cache_direct.json`-only fallback + atomic empty rejection +
+  channel-gated bundle fallback; rollover preserves incoming partials +
+  SwiftData rows; coordinator concurrency 3, `.part` keyed by pair,
+  debounced refresh flag; resolver POST shape, tunnel/redirect accept,
+  local-processing/picker reject, 429/401/403 mapping, single retry, no
+  persisted resolved URLs; base64 export/import round-trip; new-device
+  metadata+thumb restore path; path sanitization and layout.
+- No production "Offline N downloaded" pill (test-flag-only); no
+  manifest-arrival purge in feed; chronological sort reorders + persists;
+  auto-sync on sheet open; overlay teardown cancels tasks/observers.
+- Manifest URL strings and cache filename match across Python/Swift;
+  `deployed_direct_week.json` fully isolated; `data_direct.json` schema
+  (video_url, canonical url, absolute thumbs, size_bytes, run_date,
+  channel=direct) confirmed; signing off; distinct bundle IDs/names;
+  minimal CI permissions; both test suites exceed the Phase 6 matrix in
+  count; no enterprise bloat.
 
-### AUDIT-020 — Player offline error mislabels current-week reels
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:802` (swift_ui)
-- Issue: Offline-matrix violation — uncached current-week bookmarks show 'Online connection required for older bookmarks' with no 'Download required' path though REQUIREMENTS mandates it; one icon for all failure kinds.
-- Remediation: Branch .offline on weekID == currentActiveWeekID (current → 'Download required' + open sheet; older → 'Online required'); per-case icons.
+## Method
 
-### AUDIT-021 — CI commits unsigned IPA binaries to git (repo bloat)
-- File: `.github/workflows/build-ipa.yml:127` (ci_cd)
-- Issue: Every push force-adds multi-MB unsigned IPAs into dist/ipa/, bloating the repo; the artifact cannot install without manual re-sign.
-- Remediation: Upload IPA as workflow artifact only; stop committing binaries (no retention service — single user).
-
-### AUDIT-022 — Empty direct manifest returned, not rejected
-- File: `Sources/InstagramDigest/Engine/DigestDataService.swift:64` (ci_cd; merges ci_cd P1 + swift_engine P2)
-- Issue: Plan 2.2's atomic rejection is missing — an empty manifest is not cached but still returned, propagating an empty week into the feed instead of falling back to manifest_cache_direct.json.
-- Remediation: In direct mode throw/skip to cache fallback on empty items; add a DirectStreamTests case.
-
-### AUDIT-023 — Direct mode can still serve production R2 manifest via bundle fallback
-- File: `Sources/InstagramDigest/Engine/DigestDataService.swift:32` (ci_cd; merges ci_cd P1 + swift_engine P3)
-- Issue: No channel enforcement and bundle fallback to production data.json (R2 URLs) stays active in direct mode, violating 'never fall back to R2'. Latent today (no bundled data.json) but one build away from live.
-- Remediation: In direct mode skip bundle fallback unless channel==direct (or restrict to -ui-testing); optionally assert channel on decode.
-
-### AUDIT-024 — Direct channel never prunes stale gh-pages thumbnails
-- File: `site_builder.py:741` (ci_cd; merges ci_cd P1 + python_pipeline P2)
-- Issue: Additive thumbnail overlay never deletes; each weekly deploy strands ~250 jpgs (~25–50 MB/week) plus stale addressable thumbs for purged weeks.
-- Remediation: Prune destination thumbs not referenced by the incoming manifest (excluding .tmp-*) before prod-sha re-verification; log count; add a test.
-
-## P2 — fix opportunistically / follow-up
-
-### AUDIT-025 — Direct manifest advertises thumbnails that may not exist
-- File: `site_builder.py:107` (python_pipeline; merges python_pipeline + ci_cd findings)
-- Issue: Thumbnail/poster URLs stamped unconditionally; missing ffmpeg or failed renders yield gh-pages 404s. Legacy path falls back to apple-touch-icon.png.
-- Remediation: Stamp jpg URLs only when the file exists (resolve against output_path.parent/'thumbnails'), else legacy-style fallback; add a test.
-
-### AUDIT-026 — extra_manifest can clobber reserved keys; budget_capped dropped
-- File: `site_builder.py:125` (python_pipeline)
-- Issue: payload.update(extra_manifest) can overwrite schema keys, silently corrupting the contract; separately build_site's direct call drops budget_capped while legacy keeps it.
-- Remediation: Allowlist-merge refusing reserved keys with a warning; thread budget_capped through the direct call.
-
-### AUDIT-027 — Blanked video_urls are silent; no dropped-reel logging
-- File: `site_builder.py:99` (python_pipeline)
-- Issue: Invalid-URL reels are blanked with no per-reel log; systemic causes (expired scrape, new Meta host) ship as dead manifests with zero diagnostic trail.
-- Remediation: Collect blanked ids and log a warning with count/total/sample; keep blanking behavior, add observability only.
-
-### AUDIT-028 — Direct reconcile returns success while orphaning legacy outbox
-- File: `main.py:566` (python_pipeline)
-- Issue: Direct reconcile returns 0 before reading the outbox; a non-empty legacy outbox's parked reels are permanently orphaned with success reported. The :584-586 guard is unreachable dead code.
-- Remediation: Check for a stranded outbox first — warn with counts and return 1; delete the duplicate guard.
-
-### AUDIT-029 — No gh-pages bootstrap path when branch is absent
-- File: `site_builder.py:710` (python_pipeline)
-- Issue: Clone of a nonexistent gh-pages branch returns False with no recovery except a manual legacy deploy.
-- Remediation: On branch-not-found stderr, init/push a fresh gh-pages branch (skipping the prod invariant only here, with a warning); other clone errors still return False.
-
-### AUDIT-030 — Rollover purge leaves stale .cached bookmark rows
-- File: `Sources/InstagramDigest/Engine/MediaCacheManager.swift:204` (swift_engine)
-- Issue: Purge deletes Bookmarks/*.mp4 and zeroes the ledger but never flips rows to .evicted; rows lie until next reconcile and freeBookmarkStorage iterates phantom .cached rows.
-- Remediation: Flip affected rows (.evicted/sizeBytes=0) in the same transaction, or call reconcileBookmarkStorageLedger() at purge end.
-
-### AUDIT-031 — Re-bookmark silently keeps stale weekID on duplicate
-- File: `Sources/InstagramDigest/Engine/BookmarkController.swift:60` (swift_engine)
-- Issue: Blind insert on @Attribute(.unique) reelID throws on duplicates, rolls back, and keeps the old weekID — file checks look in the purged old dir and miss the new copy.
-- Remediation: Fetch by reelID first; update weekID/canonicalUrl/sizeBytes/metadata in place when a row exists.
-
-### AUDIT-032 — Missing one-time legacy Bookmarks/ migration
-- File: `Sources/InstagramDigest/Engine/MediaCacheManager.swift:183` (swift_engine)
-- Issue: Plan 4.2's one-time purge of legacy isolated Bookmarks/*.mp4 is missing; up to 1.5 GB lingers until the first Download Week tap, silently consuming budget.
-- Remediation: On first direct-mode launch (UserDefaults one-shot flag), delete legacy copies, zero the ledger, reconcile.
-
-### AUDIT-033 — Preflight-after-purge can strand user with zero weeks
-- File: `Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift:114` (swift_engine)
-- Issue: Rollover purge runs before preflight; if preflight then fails the user has zero offline weeks — old cache destroyed, new batch refused.
-- Remediation: Run a pre-purge preflight counting reclaimable bytes; abort before wiping when post-purge capacity still cannot fit; keep post-purge preflight as final gate.
-
-### AUDIT-034 — Rollover purge bypasses LivePinSet protection
-- File: `Sources/InstagramDigest/Engine/MediaCacheManager.swift:190` (swift_engine)
-- Issue: Purge bulk-deletes without consulting LivePinSet and does no pause/cancel itself — any future caller skipping the preamble unlinks files under the player.
-- Remediation: Move pause + download suspension into the purge (or assert quiescence at entry); document the caller contract.
-
-### AUDIT-035 — Challenge HTML on HTTP 200 misclassified as generic failure
-- File: `Sources/InstagramDigest/Engine/BookmarkResolver.swift:92` (swift_engine; source P3 → P2)
-- Issue: A 200 with an HTML (Turnstile/challenge) body fails JSON parsing and returns generic .failed instead of .authOrChallengeRequired.
-- Remediation: Check Content-Type for text/html (or sniff '<html') before JSON parse; return .authOrChallengeRequired.
-
-### AUDIT-036 — Resolver retry ignores task cancellation
-- File: `Sources/InstagramDigest/Engine/BookmarkResolver.swift:68` (swift_engine; source P3 → P2)
-- Issue: resolveWithRetry sleeps then retries without checking Task.isCancelled, firing network requests after swipe-away.
-- Remediation: Check Task.isCancelled after each sleep and before retry; return .failed('cancelled') or rethrow CancellationError.
-
-### AUDIT-037 — Banner overclaims completion, mislabels failed/paused
-- File: `Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift:46` (swift_ui)
-- Issue: .completed prints manifest count for a possibly unwatched-only subset; partial failures hidden; 'Download paused' shown for terminal errors; .paused grouped with .idle renders the CTA.
-- Remediation: Show coordinator completed/total + failed count, distinct 'failed' vs 'paused' copy, and a dedicated .paused branch.
-
-### AUDIT-038 — Stale R2 storage gauge shown in direct mode
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:46` (swift_ui)
-- Issue: The x/1.5GB gauge, pending label, and Free Storage button are legacy-R2 concepts showing permanently-zero values in direct mode while the real ~3GB feed cache is unrepresented.
-- Remediation: In directMode hide/replace the gauge with feed-week cache size, or hide the button.
-
-### AUDIT-039 — Silent black screen when no playable URL exists
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:783` (swift_ui)
-- Issue: If bookmark.videoUrl is nil, loadVideo silently returns — black screen with HUD, no feedback or retry.
-- Remediation: Set resolutionError with a retry affordance when neither local file nor remote URL exists (both modes).
-
-### AUDIT-040 — Direct-mode badges untestable, week fallback lossy
-- File: `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift:163` (swift_ui)
-- Issue: Direct-mode badges lack accessibilityIdentifiers (legacy ones have them), breaking UI-test coverage of the Phase 5.2 contract; empty activeWeekID collapses download-required into the globe branch.
-- Remediation: Add BookmarkBadge_<index>_<state> identifiers; treat empty activeWeekID as unknown.
-
-### AUDIT-041 — Unpinned deps: pip floors, xcodegen, Xcode toolchain
-- File: `requirements.txt:1` (ci_cd)
-- Issue: >= floors in requirements, unpinned xcodegen/Xcode on macos-15, actions on @v5 majors — drift surface for non-reproducible builds.
-- Remediation: Pin xcodegen + explicit Xcode in CI; consider freezing requirements. No lockfile service (single user).
-
-### AUDIT-042 — No documented re-sign/install runbook for unsigned IPA
-- File: `.github/workflows/build-ipa.yml:105` (ci_cd)
-- Issue: The unsigned pipeline's re-sign/install path exists only as workflow echo lines; no in-repo runbook.
-- Remediation: Add a short docs note with exact re-sign + install steps. No enterprise signing infra.
-
-### AUDIT-043 — Swift direct-stream test gaps + tautological routing test
-- File: `Tests/InstagramDigestTests/DirectStreamTests.swift:96` (ci_cd; rollover pollution split out to AUDIT-002)
-- Issue: No end-to-end manifest decoding test; routing test asserts a hardcoded constant; resolver request shape/retry/5xx/timeout/non-HTTPS cases unasserted.
-- Remediation: Golden-sample decode test, request-shape + retry-count assertions, retry/5xx/timeout/non-HTTPS cases; see AUDIT-002 for isolation.
-
-## Carried gaps (unresolved, from lane reports)
-
-- Meta CDN host allowlist completeness (yt-dlp emitted hosts vs fbcdn.net/cdninstagram.com) — needs a real extractor sample; no network runs per AGENTS.md.
-- Cobalt self-host vs API-key decision is a user call; rate limits and full POST contract beyond the confirmed JWT gate unverified.
-- On-device behavior of AVPlayer slots whose file is unlinked mid-playback — code-reviewed only.
-- Full-batch UX under real 48h-expiry pressure — no device/simulator run performed (read-only audits).
-- XCUITest owner-key prompt tolerance of direct-mode bypass — toggleBookmark UI path not fully traced.
+Four parallel read-only domain audits (python_pipeline, swift_engine,
+swift_ui, ci_cd/integration) against REQUIREMENTS.md and
+IMPLEMENTATION_PLAN.md, then lead-auditor deduplication (5 overlaps merged)
+and spot-verification of all P0s plus sampled P1s against the code
+(bootstrap, quorum, force-unwraps, thumb wipe, banner usage, stale-URL
+path, coordinator guard, cap coercion, caption optionality, fallback
+chain). One subagent claim corrected: the Keep-All (0) coercion is a live
+data-loss path (direct mode does write isolated copies), not muted.

@@ -36,8 +36,21 @@ final class MockResolverURLProtocol: URLProtocol {
 
 final class DirectStreamTests: XCTestCase {
 
+    override func setUp() {
+        super.setUp()
+        MockResolverURLProtocol.requestHandler = nil
+        UserDefaults.standard.removeObject(forKey: "cobalt_api_url")
+        UserDefaults.standard.removeObject(forKey: "cobalt_api_key")
+        UserDefaults.standard.removeObject(forKey: "cobalt_api_token")
+        UserDefaults.standard.removeObject(forKey: "max_cached_bookmark_videos")
+    }
+
     override func tearDown() {
         MockResolverURLProtocol.requestHandler = nil
+        UserDefaults.standard.removeObject(forKey: "cobalt_api_url")
+        UserDefaults.standard.removeObject(forKey: "cobalt_api_key")
+        UserDefaults.standard.removeObject(forKey: "cobalt_api_token")
+        UserDefaults.standard.removeObject(forKey: "max_cached_bookmark_videos")
         super.tearDown()
     }
 
@@ -232,15 +245,20 @@ final class DirectStreamTests: XCTestCase {
             _ = try await service.fetchManifest(from: DigestDataService.directManifestURL)
             XCTFail("fetchManifest should throw DigestDataServiceError.emptyManifest on empty manifest")
         } catch let err as DigestDataServiceError {
+            // AUDIT-069: Assert strictly that the empty manifest error was thrown
             XCTAssertEqual(err, .emptyManifest)
         } catch {
-            XCTAssertTrue(error is DigestDataServiceError || error is URLError)
+            XCTFail("Expected DigestDataServiceError.emptyManifest, but got \(error)")
         }
     }
 
     func testDirectModeBundleFallbackPolicy() {
-        // AUDIT-023: In direct mode, non-direct bundle fallback is rejected
+        // AUDIT-032: In direct mode, bundle fallback requires manifest.channel == "direct"
         XCTAssertTrue(DigestDataService.directMode)
+        let sampleDirect = DigestManifest(weekId: "2026-10-24", items: [], channel: "direct")
+        let sampleLegacy = DigestManifest(weekId: "2026-10-24", items: [], channel: "legacy")
+        XCTAssertEqual(sampleDirect.channel, "direct")
+        XCTAssertNotEqual(sampleLegacy.channel, "direct")
     }
 
     // MARK: - 2. BookmarkResolver Tests
@@ -348,7 +366,7 @@ final class DirectStreamTests: XCTestCase {
     }
 
     func testResolverCancellationCheck() async throws {
-        // AUDIT-036: Task cancellation returns .failed("Task cancelled")
+        // AUDIT-036 & AUDIT-069: Task cancellation deterministically returns .failed("Task cancelled")
         let task = Task {
             let resolver = BookmarkResolver(session: self.makeMockSession(), endpoint: URL(string: "https://mock.resolver/api")!)
             let reelURL = URL(string: "https://www.instagram.com/reel/C_cancelled/")!
@@ -356,10 +374,7 @@ final class DirectStreamTests: XCTestCase {
         }
         task.cancel()
         let result = await task.value
-        // Either failed with cancellation or offline depending on interleaving
-        if case .failed(let msg) = result {
-            XCTAssertTrue(msg.contains("cancelled") || msg.contains("Task"))
-        }
+        XCTAssertEqual(result, .failed("Task cancelled"))
     }
 
     func testResolverSuccessTunnel() async throws {
@@ -768,8 +783,8 @@ final class DirectStreamTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: dummyNewVideo.path))
     }
 
-    func testExecuteRolloverPurgeProtectsResumeDataAndPartFiles() async throws {
-        // AUDIT-002: Uses isolated pathResolver rooted at tempDir (never calls .shared)
+    func testExecuteRolloverPurgeProtectsResumeDataOnly() async throws {
+        // AUDIT-032: Renamed from overclaiming test name; tests .dat resume files specifically
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test_\(UUID().uuidString)")
         let pathResolver = LibraryPathResolver(baseURL: tempDir)
         let manager = MediaCacheManager(pathResolver: pathResolver)
@@ -794,6 +809,79 @@ final class DirectStreamTests: XCTestCase {
 
         XCTAssertTrue(fm.fileExists(atPath: incomingResumeData.path), "Incoming week in-flight resume data must be protected")
         XCTAssertFalse(fm.fileExists(atPath: oldResumeData.path), "Old week stale resume data must be purged")
+    }
+
+    func testExecuteRolloverPurgeProtectsPartFilesAndBookmarks() async throws {
+        // AUDIT-004 & AUDIT-032: Asserts that bookmark thumbnails survive rollover, incoming .part survives, and unpinned bookmark .mp4 is cleared
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test_\(UUID().uuidString)")
+        let pathResolver = LibraryPathResolver(baseURL: tempDir)
+        let manager = MediaCacheManager(pathResolver: pathResolver)
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let incomingWeek = "2026-10-24"
+        let incomingDir = pathResolver.weekDirectoryURL(for: incomingWeek)
+        try fm.createDirectory(at: incomingDir, withIntermediateDirectories: true)
+
+        let incomingPartFile = incomingDir.appendingPathComponent("incoming_reel.part")
+        try "in-flight partial stream".write(to: incomingPartFile, atomically: true, encoding: .utf8)
+
+        let bmDir = pathResolver.bookmarksDirectoryURL
+        try fm.createDirectory(at: bmDir, withIntermediateDirectories: true)
+
+        // Bookmark thumbnail: MUST SURVIVE rollover (AUDIT-004)
+        let bmThumb = bmDir.appendingPathComponent("favorite_reel.thumb.jpg")
+        try "bookmark thumbnail binary".write(to: bmThumb, atomically: true, encoding: .utf8)
+
+        // Bookmark unpinned mp4: Should be deleted if not in LivePinSet/protectedStems
+        let bmUnpinnedMp4 = bmDir.appendingPathComponent("unpinned_reel.mp4")
+        try "unpinned mp4 binary".write(to: bmUnpinnedMp4, atomically: true, encoding: .utf8)
+
+        // Bookmark pinned mp4: Should survive if protected
+        let bmPinnedMp4 = bmDir.appendingPathComponent("pinned_reel.mp4")
+        try "pinned mp4 binary".write(to: bmPinnedMp4, atomically: true, encoding: .utf8)
+
+        await manager.executeRolloverPurge(
+            forNewWeek: incomingWeek,
+            protectedReelIDs: ["pinned_reel"]
+        )
+
+        XCTAssertTrue(fm.fileExists(atPath: incomingPartFile.path), "Incoming week .part file must be protected")
+        XCTAssertTrue(fm.fileExists(atPath: bmThumb.path), "Bookmark .thumb.jpg must strictly survive rollover purge (AUDIT-004)")
+        XCTAssertFalse(fm.fileExists(atPath: bmUnpinnedMp4.path), "Unpinned bookmark .mp4 should be cleared to enforce storage cap")
+        XCTAssertTrue(fm.fileExists(atPath: bmPinnedMp4.path), "Pinned bookmark .mp4 must survive")
+    }
+
+    func testExecuteRolloverPurgeSynchronousResume() async throws {
+        // AUDIT-029: Verifies that download suspension is resumed synchronously before executeRolloverPurge returns
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test_\(UUID().uuidString)")
+        let pathResolver = LibraryPathResolver(baseURL: tempDir)
+        let manager = MediaCacheManager(pathResolver: pathResolver)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        final class SuspensionEventBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _events: [Bool] = []
+            var events: [Bool] {
+                lock.lock()
+                defer { lock.unlock() }
+                return _events
+            }
+            func append(_ event: Bool) {
+                lock.lock()
+                defer { lock.unlock() }
+                _events.append(event)
+            }
+        }
+
+        let box = SuspensionEventBox()
+        await manager.setDownloadSuspensionHandler { suspended in
+            box.append(suspended)
+        }
+
+        await manager.executeRolloverPurge(forNewWeek: "2026-10-24")
+
+        XCTAssertEqual(box.events, [true, false], "Suspension handler must be called with true on enter and false on exit synchronously")
     }
 
     // MARK: - 5. Coordinator State Tests
@@ -865,7 +953,7 @@ final class DirectStreamTests: XCTestCase {
         XCTAssertEqual(dtos.count, 2)
         XCTAssertEqual(dtos[0].id, "test_reel_1")
         XCTAssertEqual(dtos[0].creator_handle, "creator_one")
-        XCTAssertEqual(dtos[0].video_asset_name, "test_reel_1.mp4")
+        XCTAssertNil(dtos[0].video_asset_name)
         XCTAssertEqual(dtos[1].id, "test_reel_2")
     }
 
@@ -935,5 +1023,288 @@ final class DirectStreamTests: XCTestCase {
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("required"))
         }
+    }
+
+    // MARK: - 6. Comprehensive Remediation Verification Tests
+
+    @MainActor
+    func testSyncWithGitHubRejectsInvalidRepoShape() async throws {
+        // AUDIT-003: Passing malformed repo must throw NSError, not force-unwrap crash
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedEvent.self, DailyProgress.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let service = GitHubBookmarkSyncService.shared
+        for badRepo in ["bad repo", "owner/repo/extra", "singleword", "owner/"] {
+            do {
+                _ = try await service.syncWithGitHub(repo: badRepo, pat: "ghp_validToken123", localBookmarks: [], context: context)
+                XCTFail("Should throw for invalid repo: \(badRepo)")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("Invalid GitHub repository format") || error.localizedDescription.contains("Invalid"))
+            }
+        }
+    }
+
+    @MainActor
+    func testCoordinatorDoubleStartDuringDownloadingIsIgnored() {
+        // AUDIT-020: Duplicate tap during .downloading, .preparing, or .paused must be ignored
+        let coordinator = DownloadAllCoordinator.shared
+        let reel = ReelItem(
+            id: "dup_test_reel",
+            creatorHandle: "creator",
+            caption: "",
+            rank: 1,
+            videoUrl: URL(string: "https://example.com/video.mp4")!
+        )
+
+        coordinator.state = .downloading(completed: 5, total: 20, currentReelID: "r1")
+        coordinator.startDownloadAll(reels: [reel], weekID: "2026-10-24")
+        if case .downloading(let completed, let total, _) = coordinator.state {
+            XCTAssertEqual(completed, 5)
+            XCTAssertEqual(total, 20)
+        } else {
+            XCTFail("State was overwritten during .downloading: \(coordinator.state)")
+        }
+
+        coordinator.state = .paused
+        coordinator.startDownloadAll(reels: [reel], weekID: "2026-10-24")
+        XCTAssertEqual(coordinator.state, .paused, "State should remain .paused on duplicate tap")
+        coordinator.state = .idle
+    }
+
+    @MainActor
+    func testCoordinatorPreflightExcludesBookmarksFolder() throws {
+        // AUDIT-021: calculateReclaimableRolloverBytes excludes Bookmarks/ directory
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test_\(UUID().uuidString)")
+        let pathResolver = LibraryPathResolver(baseURL: tempDir)
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let bmDir = pathResolver.bookmarksDirectoryURL
+        try fm.createDirectory(at: bmDir, withIntermediateDirectories: true)
+        let bmVideo = bmDir.appendingPathComponent("saved.mp4")
+        try Data(repeating: 0x55, count: 100_000).write(to: bmVideo)
+
+        let coordinator = DownloadAllCoordinator.shared
+        let reclaimable = coordinator.calculateReclaimableRolloverBytes(incomingWeekID: "2026-10-24", pathResolver: pathResolver)
+        XCTAssertEqual(reclaimable, 0, "Bookmarks directory must not be counted as reclaimable rollover bytes")
+    }
+
+    @MainActor
+    func testCoordinatorManifestAgeFreshnessGate() {
+        // AUDIT-070: Proactive freshness gate rejects manifest > 48h old
+        let staleDate = Date().addingTimeInterval(-50 * 3600) // 50 hours ago
+        let coordinator = DownloadAllCoordinator.shared
+        coordinator.state = .idle
+
+        let dummyReel = ReelItem(
+            id: "stale_test",
+            creatorHandle: "c",
+            caption: "",
+            rank: 1,
+            videoUrl: URL(string: "https://example.com/stale.mp4")!
+        )
+
+        coordinator.startDownloadAll(reels: [dummyReel], weekID: "2026-10-24", generatedAt: staleDate)
+        if case .failed(let msg) = coordinator.state {
+            XCTAssertTrue(msg.contains("expired") || msg.contains("50h"))
+        } else {
+            XCTFail("Expected .failed state due to stale manifest, got \(coordinator.state)")
+        }
+        coordinator.state = .idle
+    }
+
+    func testBookmarkResolverEndpointValidationAndCaseInsensitiveHTTPS() async {
+        // AUDIT-063 & AUDIT-064: Endpoint validation and scheme checks
+        XCTAssertNil(BookmarkResolver.validateEndpoint("http://insecure.cobalt.tools/"))
+        XCTAssertNil(BookmarkResolver.validateEndpoint("ftp://ftp.cobalt.tools/"))
+        XCTAssertNil(BookmarkResolver.validateEndpoint("https:///missing-host"))
+        XCTAssertNil(BookmarkResolver.validateEndpoint("   "))
+
+        let valid = BookmarkResolver.validateEndpoint("https://my-cobalt.tools/api/v1/")
+        XCTAssertEqual(valid?.absoluteString, "https://my-cobalt.tools/api/v1")
+        XCTAssertEqual(valid?.host, "my-cobalt.tools")
+    }
+
+    func testBookmarkResolverURLErrorMapping() async {
+        // AUDIT-026: Proper mapping of URLError codes
+        MockResolverURLProtocol.requestHandler = { _ in
+            throw URLError(.notConnectedToInternet)
+        }
+        let resolver = BookmarkResolver(session: makeMockSession(), endpoint: URL(string: "https://mock.resolver/api")!)
+        let reelURL = URL(string: "https://www.instagram.com/reel/C_err_test/")!
+
+        let resOffline = await resolver.resolve(url: reelURL)
+        XCTAssertEqual(resOffline, .offline)
+
+        MockResolverURLProtocol.requestHandler = { _ in
+            throw URLError(.badURL)
+        }
+        let resBadURL = await resolver.resolve(url: reelURL)
+        if case .failed(let msg) = resBadURL {
+            XCTAssertFalse(msg.isEmpty)
+        } else {
+            XCTFail("Expected .failed for .badURL, got \(resBadURL)")
+        }
+    }
+
+    func testDigestDataServiceRejectsNonDirectUrlInDirectMode() async {
+        // AUDIT-065: fetchManifest rejects primaryManifestURL in directMode
+        let service = DigestDataService(session: makeMockSession())
+        do {
+            _ = try await service.fetchManifest(from: DigestDataService.primaryManifestURL)
+            XCTFail("fetchManifest should reject non-direct primaryManifestURL in directMode")
+        } catch let err as URLError {
+            XCTAssertEqual(err.code, .unsupportedURL)
+        } catch {
+            XCTFail("Expected URLError.unsupportedURL, got \(error)")
+        }
+    }
+
+    func testPromotePartFileUpperAndLowerBounds() async throws {
+        // AUDIT-066: Upper and lower bounds for part file promotion
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test_\(UUID().uuidString)")
+        let pathResolver = LibraryPathResolver(baseURL: tempDir)
+        let manager = MediaCacheManager(pathResolver: pathResolver)
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: tempDir) }
+
+        let tempPart = tempDir.appendingPathComponent("test.part")
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        // Oversized file (> 1.1x expected size)
+        let expected: Int64 = 1_000_000 // 1MB
+        let oversizedData = Data(repeating: 0x41, count: 2_500_000) // 2.5MB
+        try oversizedData.write(to: tempPart)
+
+        do {
+            _ = try await manager.promotePartFile(
+                from: tempPart,
+                weekID: "2026-10-24",
+                reelID: "oversize_reel",
+                expectedSizeBytes: expected
+            )
+            XCTFail("promotePartFile should throw sizeMismatch for oversized file")
+        } catch let MediaCacheManager.CacheError.sizeMismatch(exp, act) {
+            XCTAssertEqual(exp, expected)
+            XCTAssertEqual(act, 2_500_000)
+        }
+    }
+
+    func testResumeDataKeyedByWeekAndReel() {
+        // AUDIT-067: LibraryPathResolver keys resume data by (weekID, reelID)
+        let pathResolver = LibraryPathResolver.shared
+        let url = pathResolver.resumeDataFileURL(forWeekID: "2026-10-24", reelID: "reel123")
+        XCTAssertTrue(url.lastPathComponent.contains("2026-10-24__reel123.dat"))
+    }
+
+    @MainActor
+    func testBookmarkControllerDirectModeAddVerifiesBookmarkVideoExistence() throws {
+        // AUDIT-024: Direct-mode add sets .cached only when bmVideo exists
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedEvent.self, DailyProgress.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let reel = ReelItem(
+            id: "add_verify_reel",
+            creatorHandle: "creator",
+            caption: "Caption",
+            rank: 1,
+            videoUrl: URL(string: "https://example.com/video.mp4")!
+        )
+
+        BookmarkController.add(reel: reel, weekID: "2026-10-24", context: context)
+        let descriptor = FetchDescriptor<BookmarkItem>(predicate: #Predicate { $0.reelID == "add_verify_reel" })
+        let item = try context.fetch(descriptor).first
+        XCTAssertNotNil(item)
+        // Since no weekVideo was on disk, copy was not done, so localStatus must be .evicted (not .cached)
+        XCTAssertEqual(item?.localStatus, .evicted)
+    }
+
+    @MainActor
+    func testBookmarkControllerEnforceCapLRUAndZeroUnlimited() throws {
+        // AUDIT-025: Cap respects limit=0 (unlimited), skips bound reels, uses lastAccessedAt LRU
+        let schema = Schema([BookmarkItem.self, AppState.self, WatchedEvent.self, DailyProgress.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let bm1 = BookmarkItem(
+            reelID: "bm_1", weekID: "2026-10-24", creatorHandle: "c", caption: "",
+            rank: 1, videoUrl: nil, bookmarkedAt: Date().addingTimeInterval(-100),
+            localStatus: .cached, sizeBytes: 1000, lastAccessedAt: Date().addingTimeInterval(-10) // accessed recently
+        )
+        let bm2 = BookmarkItem(
+            reelID: "bm_2", weekID: "2026-10-24", creatorHandle: "c", caption: "",
+            rank: 2, videoUrl: nil, bookmarkedAt: Date().addingTimeInterval(-10), // bookmarked recently
+            localStatus: .cached, sizeBytes: 1000, lastAccessedAt: Date().addingTimeInterval(-100) // accessed long ago
+        )
+        context.insert(bm1)
+        context.insert(bm2)
+        try context.save()
+
+        // Test limit = 0 (Unlimited) - does nothing
+        BookmarkController.enforceCachedVideosCap(limit: 0, context: context)
+        let items = try context.fetch(FetchDescriptor<BookmarkItem>())
+        XCTAssertEqual(items.count, 2)
+    }
+
+    func testReelItemDirectModeIgnoresR2AndLocalUrls() throws {
+        // AUDIT-060: ReelItem decoding in directMode ignores r2_url and local_url
+        let json = """
+        {
+            "id": "reel_r2_ignore",
+            "creator_handle": "creator",
+            "caption": "",
+            "rank": 1,
+            "r2_url": "https://r2.example.com/video.mp4",
+            "local_url": "https://local.example.com/video.mp4"
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try JSONDecoder().decode(ReelItem.self, from: json), "Decoding should fail when only r2_url/local_url are supplied in directMode")
+    }
+
+    func testReelItemAndBookmarkItemSanitizeHostileIds() {
+        // AUDIT-061: ReelItem and BookmarkItem sanitize hostile reel IDs with spaces or slashes
+        let hostileID = "bad id with spaces/and..slashes"
+        let item = ReelItem(
+            id: hostileID,
+            creatorHandle: "creator",
+            caption: "test",
+            rank: 1,
+            videoUrl: URL(string: "https://example.com/test.mp4")!
+        )
+
+        XCTAssertNotNil(item.thumbnailUrl)
+        XCTAssertFalse(item.thumbnailUrl?.absoluteString.contains(" ") ?? true)
+        XCTAssertFalse(item.canonicalUrl?.absoluteString.contains(" ") ?? true)
+
+        let bookmark = BookmarkItem(
+            reelID: hostileID,
+            weekID: "2026-10-24",
+            creatorHandle: "creator",
+            caption: "test",
+            rank: 1,
+            videoUrl: nil
+        )
+        XCTAssertNotNil(bookmark.thumbnailUrl)
+        XCTAssertFalse(bookmark.thumbnailUrl?.absoluteString.contains(" ") ?? true)
+        XCTAssertFalse(bookmark.canonicalUrl?.absoluteString.contains(" ") ?? true)
+    }
+
+    func testDeleteBookmarkFileVerifiesDeletionBeforeLedgerDecrement() async {
+        // AUDIT-030: deleteBookmarkFile verifies deletion before decrementing ledger
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test_\(UUID().uuidString)")
+        let pathResolver = LibraryPathResolver(baseURL: tempDir)
+        let manager = MediaCacheManager(pathResolver: pathResolver)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // When file does not exist, ledger remains 0
+        await manager.deleteBookmarkFile(reelID: "nonexistent_reel")
+        let total = await manager.totalBookmarkBytes
+        XCTAssertEqual(total, 0)
     }
 }

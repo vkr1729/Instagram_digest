@@ -12,9 +12,13 @@ public struct SettingsSheetView: View {
     @Binding public var isGrayscale: Bool
     @Binding public var hideRanks: Bool
     @Binding public var feedSortOrder: String
-    @AppStorage("gh_bookmark_repo") private var ghRepo: String = "vkreddy1729-ops/ig-bookmarks"
-    @AppStorage("gh_bookmark_pat") private var ghPAT: String = ""
-    @AppStorage("max_cached_bookmark_videos") private var maxCachedVideos: Int = 50
+    @AppStorage("gh_bookmark_repo") private var storedGhRepo: String = "vkreddy1729-ops/ig-bookmarks"
+    @AppStorage("gh_bookmark_pat") private var storedGhPAT: String = ""
+    @AppStorage("max_cached_bookmark_videos") private var storedMaxCachedVideos: Int = 50
+
+    @State private var localGhRepo: String = ""
+    @State private var localGhPAT: String = ""
+    @State private var localMaxCachedVideos: Int = 50
 
     public var onTapOffline: () -> Void
     public var onTapManifesto: () -> Void
@@ -93,11 +97,11 @@ public struct SettingsSheetView: View {
 
                 Section(header: Text("GitHub Bookmark Backup").foregroundColor(.white.opacity(0.6)),
                         footer: Text("Syncs bookmarks to bookmarks.json in your GitHub repository.").foregroundColor(.white.opacity(0.4))) {
-                    TextField("Repository (e.g. owner/repo)", text: $ghRepo)
+                    TextField("Repository (e.g. owner/repo)", text: $localGhRepo)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
 
-                    SecureField("Personal Access Token (PAT)", text: $ghPAT)
+                    SecureField("Personal Access Token (PAT)", text: $localGhPAT)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                 }
@@ -105,7 +109,7 @@ public struct SettingsSheetView: View {
 
                 Section(header: Text("Offline Bookmark Video Storage").foregroundColor(.white.opacity(0.6)),
                         footer: Text("Only the latest N bookmarked videos are cached on disk to prevent storage bloat. Older bookmarks retain their details and thumbnails, but free up video storage.").foregroundColor(.white.opacity(0.4))) {
-                    Picker("Keep Offline Videos", selection: $maxCachedVideos) {
+                    Picker("Keep Offline Videos", selection: $localMaxCachedVideos) {
                         Text("Latest 25 videos (~250 MB)").tag(25)
                         Text("Latest 50 videos (~500 MB)").tag(50)
                         Text("Latest 100 videos (~1 GB)").tag(100)
@@ -162,10 +166,18 @@ public struct SettingsSheetView: View {
                     .accessibilityIdentifier("SettingsDoneButton")
                 }
             }
+            .onAppear {
+                localGhRepo = storedGhRepo
+                localGhPAT = storedGhPAT
+                localMaxCachedVideos = storedMaxCachedVideos
+            }
         }
     }
 
     private func saveSettings() {
+        storedGhRepo = localGhRepo
+        storedGhPAT = localGhPAT
+        storedMaxCachedVideos = localMaxCachedVideos
         UserDefaults.standard.set(timeQuotaMinutes, forKey: "ig_digest_quota_minutes")
         UserDefaults.standard.set(enforcementMode, forKey: "ig_digest_enforcement_mode")
         UserDefaults.standard.set(advanceMode, forKey: "ig_digest_advance_mode")
@@ -173,6 +185,6 @@ public struct SettingsSheetView: View {
         UserDefaults.standard.set(isGrayscale, forKey: "ig_digest_grayscale_mode")
         UserDefaults.standard.set(hideRanks, forKey: "ig_digest_hide_ranks_mode")
         UserDefaults.standard.set(feedSortOrder, forKey: "ig_digest_sort_order")
-        BookmarkController.enforceCachedVideosCap(limit: maxCachedVideos, context: modelContext)
+        BookmarkController.enforceCachedVideosCap(limit: localMaxCachedVideos, context: modelContext)
     }
 }

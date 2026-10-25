@@ -15,6 +15,7 @@ public enum DigestDataServiceError: Error, LocalizedError {
 public actor DigestDataService {
     public static let shared = DigestDataService()
 
+    // CONTRACT-PAIR: Must match config.py:direct_pages_manifest_url() (PAGES_BASE_URL + "/data_direct.json") (AUDIT-071)
     public static let directManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data_direct.json")!
     public static let primaryManifestURL = URL(string: "https://instagram-digest-media.kedarvreddy.workers.dev/data.json")!
     public static let fallbackManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data.json")!
@@ -36,6 +37,11 @@ public actor DigestDataService {
 
     /// Fetches manifest from network with fallback to cached manifest on disk
     public func fetchManifest(from url: URL = defaultManifestURL, bypassCache: Bool = false) async throws -> DigestManifest {
+        // AUDIT-065: Direct mode fail-closed gate: reject explicit R2/worker or non-direct URLs
+        if Self.directMode && url != Self.directManifestURL && !url.isFileURL {
+            throw URLError(.unsupportedURL)
+        }
+
         let cacheFilename = (url == Self.directManifestURL) ? Self.directManifestCacheFilename : "manifest_cache.json"
         let cacheFileURL = pathResolver.mediaCacheBaseURL.appendingPathComponent(cacheFilename)
         let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing") || CommandLine.arguments.contains("-ui-testing")
@@ -182,7 +188,7 @@ public actor DigestDataService {
             self.video_url = reel.videoUrl.absoluteString
             self.thumbnail_url = reel.thumbnailUrl?.absoluteString ?? ""
             self.creator_handle = reel.creatorHandle
-            self.caption = reel.caption ?? ""
+            self.caption = reel.caption
             self.category = reel.category ?? ""
         }
     }

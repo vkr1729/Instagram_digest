@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,10 @@ from jinja2 import Environment, FileSystemLoader
 
 import atomic_io
 import config
-import storage_r2
+try:
+    import storage_r2
+except ImportError:
+    storage_r2 = None  # type: ignore[assignment]
 
 logger = logging.getLogger("InstagramDigest.SiteBuilder")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -59,7 +63,10 @@ def _prune_site_assets(current_ids: set[str], keep_week_ids: set[str]) -> None:
 
 
 def is_direct_stream_url(value: Any) -> bool:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if not value:
         return False
     try:
         from urllib.parse import urlparse
@@ -71,6 +78,15 @@ def is_direct_stream_url(value: Any) -> bool:
         )
     except ValueError:
         return False
+
+
+def _pick_playable(reel: dict[str, Any], extra: str = "") -> str:
+    """Return first valid direct stream URL for reel among (extra, video_cdn_url, video_url)."""
+    r2_dom = (getattr(config, "R2_PUBLIC_DOMAIN", "") or "").rstrip("/")
+    for cand in (extra, reel.get("video_cdn_url"), reel.get("video_url")):
+        if isinstance(cand, str) and (not r2_dom or r2_dom not in cand) and is_direct_stream_url(cand):
+            return cand
+    return ""
 
 
 def write_direct_manifest(
@@ -99,18 +115,31 @@ def write_direct_manifest(
 
     for item in items:
         it = dict(item)
-        reel_id = str(it.get("id") or "")
-        candidate = it.get("video_cdn_url") or it.get("video_url") or ""
-        if (r2_dom and r2_dom in candidate) or not is_direct_stream_url(candidate):
-            blanked_ids.append(reel_id or "unknown")
+        raw_id = it.get("id")
+        reel_id = str(raw_id).strip() if raw_id is not None and not isinstance(raw_id, bool) else ""
+        if not reel_id:
+            blanked_ids.append("missing-id")
+            continue
+
+        candidate = _pick_playable(it)
+        if not candidate:
+            logger.debug(
+                "write_direct_manifest: reel %s dropped (unplayable). video_cdn_url=%r, video_url=%r",
+                reel_id,
+                it.get("video_cdn_url"),
+                it.get("video_url"),
+            )
+            blanked_ids.append(reel_id)
             continue
 
         it["video_url"] = candidate
         it.pop("r2_url", None)
-        if reel_id and not it.get("url"):
-            it["url"] = f"https://www.instagram.com/reel/{reel_id}/"
+        it.pop("local_url", None)
+        it.pop("video_cdn_url", None)
 
-        if reel_id and pages_base:
+        it["url"] = f"https://www.instagram.com/reel/{reel_id}/"
+
+        if pages_base:
             thumb_file = thumb_dir / f"{reel_id}.jpg"
             portrait_file = thumb_dir / f"{reel_id}_portrait.jpg"
             # Prioritize vertical 9:16 portrait for mobile app reel cards & grid gallery
@@ -124,9 +153,19 @@ def write_direct_manifest(
                 it["thumbnail"] = f"{pages_base}/apple-touch-icon.png"
                 it["poster"] = it["thumbnail"]
 
-        size_bytes = it.get("size_bytes")
-        if isinstance(size_bytes, int) and not isinstance(size_bytes, bool) and size_bytes > 0:
-            it["size_bytes"] = size_bytes
+        try:
+            raw_sz = it.get("size_bytes")
+            if raw_sz is not None and not isinstance(raw_sz, bool):
+                sb = int(raw_sz)
+                if sb > 0:
+                    it["size_bytes"] = sb
+                else:
+                    it.pop("size_bytes", None)
+            else:
+                it.pop("size_bytes", None)
+        except (TypeError, ValueError):
+            it.pop("size_bytes", None)
+
         direct_items.append(it)
 
     if blanked_ids:
@@ -192,6 +231,7 @@ def build_site(
             digest_data = {"run_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "items": []}
 
     # Work on copies: annotating items with URLs must never mutate the caller's digest.
+    pristine = [dict(i) for i in digest_data.get("items", [])]
     raw_items = [dict(i) for i in digest_data.get("items", [])]
     week_id = digest_data.get("run_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
@@ -220,8 +260,10 @@ def build_site(
         )
         # Prefer the persisted object URL (written at upload time); the derived
         # name is a last resort for legacy digests that predate it.
+        r2_dom = "" if getattr(config, "DIRECT_STREAM_MODE", False) else (getattr(config, "R2_PUBLIC_DOMAIN", "") or "").rstrip("/")
         r2_url = url_map.get(item.get("id")) or item.get("r2_url") or (
-            f"{config.R2_PUBLIC_DOMAIN}/videos/{week_id}/{video_filename}")
+            f"{r2_dom}/videos/{week_id}/{video_filename}" if r2_dom else ""
+        )
         local_url = f"/videos/{week_id}/{video_filename}"
 
         r2_item["video_url"] = r2_url
@@ -244,7 +286,7 @@ def build_site(
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     available_week_ids = set()
-    s3 = None if getattr(config, "DIRECT_STREAM_MODE", False) else storage_r2.get_s3_client()
+    s3 = None if getattr(config, "DIRECT_STREAM_MODE", False) else (storage_r2.get_s3_client() if storage_r2 else None)
     if hasattr(config, "DIGESTS_DIR") and config.DIGESTS_DIR.exists():
         for f in config.DIGESTS_DIR.glob("*.json"):
             wk = f.stem
@@ -413,6 +455,9 @@ def build_site(
         if _view_pin else ""
     )
 
+    bw = "" if getattr(config, "DIRECT_STREAM_MODE", False) else config.BOOKMARK_API_BASE
+    r2d = "" if getattr(config, "DIRECT_STREAM_MODE", False) else config.R2_PUBLIC_DOMAIN
+
     # 1. Render site/index.html (GitHub Pages version)
     rendered_r2 = template.render(
         items=r2_items,
@@ -422,8 +467,8 @@ def build_site(
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
         pages_base_url=config.PAGES_BASE_URL,
         pin_hash=pin_hash, pin_salt=pin_salt, pin_iterations=PIN_PBKDF2_ITERATIONS,
-        bookmark_api_base=config.BOOKMARK_API_BASE,
-        r2_public_domain=config.R2_PUBLIC_DOMAIN,
+        bookmark_api_base=bw,
+        r2_public_domain=r2d,
     )
     r2_index_path = config.SITE_DIR / "index.html"
     atomic_io.durable_write_text(r2_index_path, rendered_r2)
@@ -437,7 +482,7 @@ def build_site(
         default_speed=config.DEFAULT_PLAYBACK_SPEED,
         pages_base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:8080"),
         pin_hash=pin_hash, pin_salt=pin_salt, pin_iterations=PIN_PBKDF2_ITERATIONS,
-        bookmark_api_base=config.BOOKMARK_API_BASE,
+        bookmark_api_base=bw,
         r2_public_domain="",
     )
     local_index_path = config.SITE_DIR / "local_index.html"
@@ -561,7 +606,7 @@ def build_site(
                 if _size:
                     _size_cache[_rid] = _size
         if _size_cache:
-            for _lst in (raw_items, r2_items, local_items):
+            for _lst in (pristine, raw_items, r2_items, local_items):
                 for _it in _lst:
                     _s = _size_cache.get(str(_it.get("id") or ""))
                     if _s:
@@ -571,7 +616,7 @@ def build_site(
     # Write direct manifest (data_direct.json) when in direct stream mode
     if getattr(config, "DIRECT_STREAM_MODE", False):
         extra = {"budget_capped": True} if digest_data and digest_data.get("budget_capped") else None
-        write_direct_manifest(raw_items, week_id=week_id, extra_manifest=extra)
+        write_direct_manifest(pristine, week_id=week_id, extra_manifest=extra)
 
     # In legacy mode (DIRECT_STREAM_MODE=False), update production data.json
     if not getattr(config, "DIRECT_STREAM_MODE", False):
@@ -666,7 +711,8 @@ def _pages_bundle_is_remote(site_dir: Path, direct_mode: bool | None = None) -> 
         return False
     if direct_mode:
         good = sum(1 for i in items if isinstance(i, dict) and is_direct_stream_url(i.get("video_url") or ""))
-        required = min(len(items), max(1, int(0.6 * len(items))))
+        import math
+        required = min(len(items), max(1, math.ceil(0.6 * len(items))))
         logger.info(
             "_pages_bundle_is_remote direct mode: %d/%d valid direct stream URLs (required %d)",
             good, len(items), required
@@ -716,16 +762,50 @@ def _gh_push_command(pat: str) -> tuple[list[str], dict[str, str]]:
     ], env
 
 
-def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.GH_PAGES_REPO) -> bool:
+def _is_served_manifest_valid(live_payload: dict[str, Any], expect_date: str) -> bool:
+    """Validate that served manifest matches expect_date and has >=60% valid direct URLs."""
+    if not isinstance(live_payload, dict):
+        return False
+    if expect_date and live_payload.get("run_date") != expect_date:
+        return False
+    live_items = live_payload.get("items") or []
+    if not isinstance(live_items, list) or len(live_items) < 1:
+        return False
+    good_urls = sum(
+        1 for i in live_items
+        if isinstance(i, dict) and is_direct_stream_url(i.get("video_url") or "")
+    )
+    return (good_urls / len(live_items)) >= 0.6
+
+
+def deploy_direct_to_gh_pages(site_dir: Path | None = None, repo_url: str | None = None) -> bool:
     """Deploy data_direct.json and thumbnails to gh-pages while strictly
 
     preserving the production data.json manifest and legacy assets.
     """
+    site_dir = site_dir or config.SITE_DIR
+    repo_url = repo_url or config.GH_PAGES_REPO
     logger.info("Deploying Direct-Meta Stream Manifest to GitHub Pages (%s)...", repo_url)
 
     direct_manifest = site_dir / "data_direct.json"
     if not direct_manifest.exists():
         logger.error("Cannot deploy: %s does not exist.", direct_manifest)
+        return False
+
+    try:
+        manifest_payload = json.loads(direct_manifest.read_text(encoding="utf-8"))
+        direct_items = manifest_payload.get("items", []) if isinstance(manifest_payload, dict) else []
+    except Exception as exc:
+        logger.error("Cannot deploy: %s unreadable: %s", direct_manifest, exc)
+        return False
+
+    import math
+    min_deploy_floor = math.ceil(0.6 * config.TOP_DIGEST_COUNT)
+    if len(direct_items) < min_deploy_floor:
+        logger.error(
+            "Refusing to deploy: data_direct.json has %d items, which is below the minimum floor of %d (60%% of TOP_DIGEST_COUNT=%d).",
+            len(direct_items), min_deploy_floor, config.TOP_DIGEST_COUNT
+        )
         return False
 
     if not _pages_bundle_is_remote(site_dir, direct_mode=True):
@@ -763,41 +843,20 @@ def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = 
             ]
 
         res = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=120, env=env)
-        is_bootstrap = False
         if res.returncode != 0:
-            err_msg = res.stderr or ""
-            if "Remote branch gh-pages not found" in err_msg or "remote branch gh-pages not found" in err_msg.lower():
-                logger.warning(
-                    "gh-pages branch absent on remote; bootstrapping new gh-pages branch for direct stream mode: %s",
-                    _redact_secret(err_msg, config.GH_PAGES_PAT),
-                )
-                is_bootstrap = True
-                shutil.rmtree(temp_deploy_dir, ignore_errors=True)
-                temp_deploy_dir.mkdir(parents=True, exist_ok=True)
-                subprocess.run(["git", "init", "-b", "gh-pages"], cwd=temp_deploy_dir, check=True, timeout=60)
-                subprocess.run(["git", "remote", "add", "origin", repo_url], cwd=temp_deploy_dir, check=True, timeout=60)
-                push_direct_cmd = [
-                    "git", "push", "-u", "origin", "gh-pages"
-                ] if not config.GH_PAGES_PAT else [
-                    "git", "-c", "credential.helper=",
-                    "-c", f"http.extraheader=Authorization: Basic {basic}",
-                    "push", "-u", "origin", "gh-pages"
-                ]
-            else:
-                logger.error("Failed to clone existing gh-pages branch: %s", _redact_secret(res.stderr, config.GH_PAGES_PAT))
-                return False
+            logger.error(
+                "Failed to clone existing gh-pages branch: %s. "
+                "gh-pages branch missing on remote; restore from backup, refusing to recreate.",
+                _redact_secret(res.stderr, config.GH_PAGES_PAT),
+            )
+            return False
 
-        if not is_bootstrap:
-            # Invariant check: production data.json MUST exist on gh-pages (absence is failure)
-            prod_data_file = temp_deploy_dir / "data.json"
-            if not prod_data_file.exists():
-                logger.error("CRITICAL SAFETY ABORT: Production data.json missing on cloned gh-pages branch!")
-                return False
-            prod_sha_before = hashlib.sha256(prod_data_file.read_bytes()).hexdigest()
-        else:
-            logger.warning("Bootstrap mode: skipping production data.json invariant check as gh-pages branch was freshly created.")
-            prod_data_file = None
-            prod_sha_before = None
+        # Invariant check: production data.json MUST exist on gh-pages (absence is failure)
+        prod_data_file = temp_deploy_dir / "data.json"
+        if not prod_data_file.exists():
+            logger.error("CRITICAL SAFETY ABORT: Production data.json missing on cloned gh-pages branch!")
+            return False
+        prod_sha_before = hashlib.sha256(prod_data_file.read_bytes()).hexdigest()
 
         # Overlay data_direct.json
         shutil.copy2(direct_manifest, temp_deploy_dir / "data_direct.json")
@@ -810,54 +869,68 @@ def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = 
             for t in src_thumbs.glob("*.jpg"):
                 shutil.copy2(t, dst_thumbs / t.name)
 
-        # AUDIT-024: Prune destination thumbnails not in current week direct manifest
+        # AUDIT-012: Fail-closed thumbnail pruning (only prune when BOTH manifests parsed)
         dst_thumbs = temp_deploy_dir / "thumbnails"
         if dst_thumbs.exists():
+            direct_parse_ok = False
+            prod_parse_ok = False
+            m_items = []
+            p_items = []
             try:
                 m_data = json.loads(direct_manifest.read_text(encoding="utf-8"))
                 m_items = m_data.get("items", []) if isinstance(m_data, dict) else []
-            except Exception:
-                m_items = []
-            keep_thumb_names = set()
-            for item in m_items:
-                rid = str(item.get("id") or "")
-                if rid:
-                    keep_thumb_names.add(f"{rid}.jpg")
-                    keep_thumb_names.add(f"{rid}_portrait.jpg")
+                direct_parse_ok = True
+            except Exception as exc:
+                logger.error("Direct manifest unreadable during thumbnail prune check: %s", exc)
+
             if prod_data_file and prod_data_file.exists():
                 try:
                     p_data = json.loads(prod_data_file.read_text(encoding="utf-8"))
                     p_items = p_data.get("items", []) if isinstance(p_data, dict) else []
-                    for item in p_items:
-                        rid = str(item.get("id") or "")
-                        if rid:
-                            keep_thumb_names.add(f"{rid}.jpg")
-                            keep_thumb_names.add(f"{rid}_portrait.jpg")
-                except Exception:
-                    pass
-            pruned_count = 0
-            for f in dst_thumbs.iterdir():
-                if f.is_file():
-                    if f.name.startswith(".tmp-") or f.name.startswith("."):
-                        continue
-                    if f.name not in keep_thumb_names:
-                        f.unlink(missing_ok=True)
-                        pruned_count += 1
-            if pruned_count > 0:
-                logger.info("Direct deploy: pruned %d stale thumbnails from gh-pages/thumbnails", pruned_count)
+                    prod_parse_ok = True
+                except Exception as exc:
+                    logger.error("Production data.json unreadable during thumbnail prune check: %s", exc)
+
+            if direct_parse_ok and prod_parse_ok:
+                keep_thumb_names = set()
+                for item in m_items:
+                    rid = str(item.get("id") or "")
+                    if rid:
+                        keep_thumb_names.add(f"{rid}.jpg")
+                        keep_thumb_names.add(f"{rid}_portrait.jpg")
+                for item in p_items:
+                    rid = str(item.get("id") or "")
+                    if rid:
+                        keep_thumb_names.add(f"{rid}.jpg")
+                        keep_thumb_names.add(f"{rid}_portrait.jpg")
+
+                pruned_count = 0
+                for f in dst_thumbs.iterdir():
+                    if f.is_file():
+                        if f.name.startswith(".tmp-") or f.name.startswith("."):
+                            continue
+                        if f.name not in keep_thumb_names:
+                            f.unlink(missing_ok=True)
+                            pruned_count += 1
+                if pruned_count > 0:
+                    logger.info("Direct deploy: pruned %d stale thumbnails from gh-pages/thumbnails", pruned_count)
+            else:
+                logger.warning(
+                    "Skipping thumbnail prune because manifests could not be verified (direct_ok=%s, prod_ok=%s)",
+                    direct_parse_ok, prod_parse_ok
+                )
 
         # Copy .nojekyll
         atomic_io.durable_write_text(temp_deploy_dir / ".nojekyll", "")
 
-        # CRITICAL VERIFICATION: Ensure production data.json was NOT mutated (skipped only for bootstrap)
-        if not is_bootstrap and prod_data_file is not None:
-            if not prod_data_file.exists():
-                logger.error("CRITICAL SAFETY ABORT: Production data.json disappeared during overlay!")
-                return False
-            prod_sha_after = hashlib.sha256(prod_data_file.read_bytes()).hexdigest()
-            if prod_sha_after != prod_sha_before:
-                logger.error("CRITICAL SAFETY ABORT: Production data.json hash changed from %s to %s!", prod_sha_before, prod_sha_after)
-                return False
+        # CRITICAL VERIFICATION: Ensure production data.json was NOT mutated
+        if not prod_data_file.exists():
+            logger.error("CRITICAL SAFETY ABORT: Production data.json disappeared during overlay!")
+            return False
+        prod_sha_after = hashlib.sha256(prod_data_file.read_bytes()).hexdigest()
+        if prod_sha_after != prod_sha_before:
+            logger.error("CRITICAL SAFETY ABORT: Production data.json hash changed from %s to %s!", prod_sha_before, prod_sha_after)
+            return False
 
         subprocess.run(["git", "config", "user.name", "InstagramDigest Bot"], cwd=temp_deploy_dir, check=True, timeout=60)
         subprocess.run(["git", "config", "user.email", "digest@bot.local"], cwd=temp_deploy_dir, check=True, timeout=60)
@@ -866,23 +939,58 @@ def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = 
         diff_check = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=temp_deploy_dir)
         if diff_check.returncode == 0:
             logger.info("GitHub Pages direct channel is already up-to-date (no changes to commit).")
-            return True
+            # AUDIT-044: Bounded verification of served manifest before writing marker
+            target_url = getattr(config, "DIRECT_PAGES_MANIFEST_URL", None)
+            if target_url is None and callable(getattr(config, "direct_pages_manifest_url", None)):
+                target_url = config.direct_pages_manifest_url()
+            target_url = target_url or ""
+            if target_url:
+                try:
+                    import urllib.request as _urlreq
+                    expect_date = json.loads(direct_manifest.read_text(encoding="utf-8")).get("run_date") or ""
+                    req = _urlreq.Request(
+                        f"{target_url}?cb={int(time.time())}",
+                        headers={"User-Agent": "InstagramDigest-direct-check/1.0"}
+                    )
+                    with _urlreq.urlopen(req, timeout=30) as resp:
+                        live = json.loads(resp.read().decode("utf-8", "replace"))
+                    if _is_served_manifest_valid(live, expect_date):
+                        try:
+                            atomic_io.durable_write_json(config.direct_deployed_week_file(), {"run_date": expect_date})
+                        except Exception as exc:
+                            logger.warning("Could not record deployed direct week: %s", exc)
+                        return True
+                    else:
+                        logger.warning("No-change path: remote manifest at %s not valid yet; falling through to poll loop", target_url)
+                except Exception as get_err:
+                    logger.warning("No-change path: GET %s failed (%s); falling through to poll loop", target_url, get_err)
+            else:
+                try:
+                    expect_date = json.loads(direct_manifest.read_text(encoding="utf-8")).get("run_date") or ""
+                    atomic_io.durable_write_json(config.direct_deployed_week_file(), {"run_date": expect_date})
+                except Exception as exc:
+                    logger.warning("Could not record deployed direct week: %s", exc)
+                return True
+        else:
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            subprocess.run(
+                ["git", "commit", "-m", f"Direct stream manifest update: {now_str}"],
+                cwd=temp_deploy_dir, check=True, stdout=subprocess.DEVNULL, timeout=60
+            )
 
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        subprocess.run(
-            ["git", "commit", "-m", f"Direct stream manifest update: {now_str}"],
-            cwd=temp_deploy_dir, check=True, stdout=subprocess.DEVNULL, timeout=60
-        )
+            push_res = subprocess.run(push_direct_cmd, cwd=temp_deploy_dir, capture_output=True, text=True, timeout=180, env=env)
+            if push_res.returncode != 0:
+                logger.warning("Failed pushing direct manifest to gh-pages: %s", _redact_secret(push_res.stderr, config.GH_PAGES_PAT))
+                return False
 
-        push_res = subprocess.run(push_direct_cmd, cwd=temp_deploy_dir, capture_output=True, text=True, timeout=180, env=env)
-        if push_res.returncode != 0:
-            logger.warning("Failed pushing direct manifest to gh-pages: %s", _redact_secret(push_res.stderr, config.GH_PAGES_PAT))
-            return False
+            logger.info("Successfully pushed data_direct.json to GitHub Pages!")
 
-        logger.info("Successfully pushed data_direct.json to GitHub Pages!")
-
-        # Poll DIRECT_PAGES_MANIFEST_URL to verify serving
-        if getattr(config, "DIRECT_PAGES_MANIFEST_URL", ""):
+        # Poll direct_pages_manifest_url to verify serving (AUDIT-043)
+        target_url = getattr(config, "DIRECT_PAGES_MANIFEST_URL", None)
+        if target_url is None and callable(getattr(config, "direct_pages_manifest_url", None)):
+            target_url = config.direct_pages_manifest_url()
+        target_url = target_url or ""
+        if target_url:
             try:
                 import time as _time
                 import urllib.request as _urlreq
@@ -894,19 +1002,21 @@ def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = 
                     poll_count += 1
                     try:
                         req = _urlreq.Request(
-                            f"{config.DIRECT_PAGES_MANIFEST_URL}?cb={int(_time.time())}",
+                            f"{target_url}?cb={int(_time.time())}",
                             headers={"User-Agent": "InstagramDigest-direct-check/1.0"}
                         )
                         with _urlreq.urlopen(req, timeout=30) as resp:
                             live = json.loads(resp.read().decode("utf-8", "replace"))
-                        if not expect_date or live.get("run_date") == expect_date:
+                        if _is_served_manifest_valid(live, expect_date):
                             served_ok = True
                             break
+                        else:
+                            logger.info("Pages direct poll %d: served manifest not valid yet", poll_count)
                     except Exception as poll_err:
                         logger.info("Pages direct poll %d: not serving %s yet (%s)", poll_count, expect_date, poll_err)
                     _time.sleep(30)
                 if not served_ok:
-                    logger.error("Pages direct manifest not serving %s after 10 min; treating deploy as failed.", expect_date)
+                    logger.error("Pages direct manifest not serving valid manifest for %s after 10 min; treating deploy as failed.", expect_date)
                     return False
             except Exception as poll_exc:
                 logger.error("Pages direct serve check errored; treating deploy as failed: %s", poll_exc)
@@ -927,13 +1037,15 @@ def deploy_direct_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = 
         shutil.rmtree(temp_deploy_dir, ignore_errors=True)
 
 
-def deploy_to_gh_pages(site_dir: Path = config.SITE_DIR, repo_url: str = config.GH_PAGES_REPO) -> bool:
+def deploy_to_gh_pages(site_dir: Path | None = None, repo_url: str | None = None) -> bool:
     """Deploy site_dir contents to orphan gh-pages branch with force push.
 
     Refuses when the rendered data.json carries local /videos/ URLs with R2
     unconfigured: those 404 on Pages (PY-P1-9). Local preview stays available
     via local_index.html served by the dashboard.
     """
+    site_dir = site_dir or config.SITE_DIR
+    repo_url = repo_url or config.GH_PAGES_REPO
     if getattr(config, "DIRECT_STREAM_MODE", False):
         return deploy_direct_to_gh_pages(site_dir=site_dir, repo_url=repo_url)
 

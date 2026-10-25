@@ -29,7 +29,10 @@ import extractor
 import local_server
 import ranker
 import site_builder
-import storage_r2
+try:
+    import storage_r2
+except ImportError:
+    storage_r2 = None  # type: ignore[assignment]
 
 logger = logging.getLogger("InstagramDigest.Main")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -37,6 +40,26 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 MIN_CANDIDATE_RATIO = 0.5      # fraction of the expected candidate count
 MAX_EMPTY_CREATOR_RATIO = 0.6  # fraction of creators that returned 0 reels
 MIN_DEPLOY_ITEMS = int(config.TOP_DIGEST_COUNT * 0.6)
+
+
+def _filter_direct_playable(reels: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Filter reels for direct stream mode using site_builder._pick_playable.
+
+    Returns (playable_reels, dead_reels).
+    """
+    playable: list[dict[str, Any]] = []
+    dead: list[dict[str, Any]] = []
+    for reel in reels:
+        cand = site_builder._pick_playable(reel)
+        if cand:
+            playable.append(reel)
+        else:
+            logger.debug(
+                "_filter_direct_playable: reel %s unplayable. video_cdn_url=%r, video_url=%r",
+                reel.get("id"), reel.get("video_cdn_url"), reel.get("video_url")
+            )
+            dead.append(reel)
+    return (playable, dead)
 
 
 def _quarantine_corrupt(path: Path, exc: Exception) -> None:
@@ -582,6 +605,22 @@ def _run_reconcile(week_id: str | None = None, deploy: bool = False) -> int:
                     check_week,
                 )
                 return 1
+        else:
+            # AUDIT-057: Digest unreadable; scan for any stranded upload_outbox_*.json
+            for box_path in sorted(config.DATA_DIR.glob("upload_outbox_*.json")):
+                try:
+                    box_data = json.loads(box_path.read_text(encoding="utf-8"))
+                    stranded = [r for r in (box_data.get("reels") or []) if isinstance(r, dict) and r.get("id")]
+                    if stranded:
+                        logger.warning(
+                            "Direct mode: %d legacy-parked reels stranded in upload outbox %s. "
+                            "Reconcile cannot run in direct stream mode; switch to legacy mode to reconcile.",
+                            len(stranded),
+                            box_path.name,
+                        )
+                        return 1
+                except Exception:
+                    pass
         logger.info("Direct stream mode active: reconcile not required (R2 is bypassed).")
         return 0
 
@@ -2143,21 +2182,27 @@ def _run_full_sync(
             if not local_video_path.exists():
                 logger.info("Downloading reel [%s] #%02d @%s: %s", reel_id, rank, handle, reel["url"])
                 try:
-                    success = extractor.download_reel_video(
+                    res = extractor.download_reel_video(
                         reel["url"],
                         local_video_path,
                         video_cdn_url=reel.get("video_cdn_url"),
                         use_cookies=not cookie_free,
                     )
                 except TypeError:
-                    success = extractor.download_reel_video(
+                    res = extractor.download_reel_video(
                         reel["url"],
                         local_video_path,
                         video_cdn_url=reel.get("video_cdn_url"),
                     )
+                if isinstance(res, tuple):
+                    success, discovered = res[0], res[1]
+                else:
+                    success, discovered = bool(res), ""
                 if not success:
                     logger.warning("Skipping upload for failed download %s", reel_id)
                     return (reel_id, None)
+                if discovered and not reel.get("video_cdn_url"):
+                    reel["video_cdn_url"] = discovered
 
             return (reel_id, local_video_path)
 
@@ -2257,20 +2302,16 @@ def _run_full_sync(
         # reintroduce keep_weeks / post-deploy deferral.
         if getattr(config, "DIRECT_STREAM_MODE", False):
             logger.info("DIRECT_STREAM_MODE active: skipping R2 JIT purge and R2 upload pool.")
-            from site_builder import is_direct_stream_url
-            playable = []
-            dead = []
-            for reel in ranked_reels:
-                cand = reel.get("video_cdn_url") or reel.get("video_url") or ""
-                if cand and is_direct_stream_url(cand):
-                    uploaded_url_map[reel["id"]] = cand
-                    playable.append(reel)
-                else:
-                    dead.append(reel.get("id"))
+            pre_filter = list(ranked_reels)
+            publish_set = pre_filter
+            playable, dead_reels = _filter_direct_playable(ranked_reels)
+            for r in playable:
+                cand = site_builder._pick_playable(r)
+                uploaded_url_map[r["id"]] = cand
+            dead = [r.get("id") for r in dead_reels]
             if dead:
                 logger.warning("Direct mode: dropping %d reels with no valid Meta CDN URL: %s", len(dead), dead[:10])
             ranked_reels = playable
-            publish_set = list(playable)
             dropped = dead
         else:
             if config.R2_ACCOUNT_ID:
@@ -2391,34 +2432,72 @@ def _run_full_sync(
         # write the pre-drop list with stage "publishing" so the resume
         # reuses the downloads and retries the uploads instead of re-scraping.
         if not ranked_reels:
-            logger.error(
-                "Zero playable reels after upload phase (previous digest: %d items); "
-                "preserving live digest, outbox holds %d for --reconcile.",
-                _digest_item_count(), len(dropped),
-            )
-            publish_set = [r for r in (publish_set or ranked_reels)]
-            _write_sync_progress("publishing", {
-                "ranked": publish_set,
-                "recommended_creators": recommended_creators,
-                "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
-                "uploaded_url_map": uploaded_url_map,
-                "deficit": config.TOP_DIGEST_COUNT,
-            })
-            _alert_sync_abort(
-                "zero playable reels",
-                f"all {len(dropped)} uploads failed - outbox preserved for reconcile",
-            )
-            return 2
-        # P1-5: gate BEFORE persisting — a saved-then-refused digest makes
-        # the next JIT purge treat an unserved week as live. The last
-        # "publishing" checkpoint still holds the full list for the resume.
-        if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
-            logger.error(
-                "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
-                len(ranked_reels), MIN_DEPLOY_ITEMS)
-            _alert_sync_abort("deploy refused",
-                              f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS})")
-            return 2
+            if getattr(config, "DIRECT_STREAM_MODE", False):
+                logger.error(
+                    "Zero playable reels after direct filter (previous digest: %d items); "
+                    "no valid Meta CDN URLs; outbox not used in direct mode -- re-run sync to re-scrape.",
+                    _digest_item_count(),
+                )
+                publish_set = [r for r in (publish_set or ranked_reels)]
+                _write_sync_progress("publishing", {
+                    "ranked": publish_set,
+                    "recommended_creators": recommended_creators,
+                    "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                    "uploaded_url_map": uploaded_url_map,
+                    "deficit": config.TOP_DIGEST_COUNT,
+                })
+                _alert_sync_abort(
+                    "zero playable reels",
+                    "no valid Meta CDN URLs; outbox not used in direct mode -- re-run sync to re-scrape",
+                )
+                return 2
+            else:
+                logger.error(
+                    "Zero playable reels after upload phase (previous digest: %d items); "
+                    "preserving live digest, outbox holds %d for --reconcile.",
+                    _digest_item_count(), len(dropped),
+                )
+                publish_set = [r for r in (publish_set or ranked_reels)]
+                _write_sync_progress("publishing", {
+                    "ranked": publish_set,
+                    "recommended_creators": recommended_creators,
+                    "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                    "uploaded_url_map": uploaded_url_map,
+                    "deficit": config.TOP_DIGEST_COUNT,
+                })
+                _alert_sync_abort(
+                    "zero playable reels",
+                    f"all {len(dropped)} uploads failed - outbox preserved for reconcile",
+                )
+                return 2
+
+        if getattr(config, "DIRECT_STREAM_MODE", False):
+            if len(ranked_reels) < MIN_DEPLOY_ITEMS:
+                logger.error(
+                    "Direct mode: only %d playable reels (minimum %d required); "
+                    "refusing to save or deploy over previous digest.",
+                    len(ranked_reels), MIN_DEPLOY_ITEMS,
+                )
+                _write_sync_progress("shortfall_paused", {
+                    "ranked": publish_set,
+                    "recommended_creators": recommended_creators,
+                    "downloaded_paths": {rid: str(p) for rid, p in downloaded_paths.items() if p.exists()},
+                    "uploaded_url_map": uploaded_url_map,
+                    "deficit": config.TOP_DIGEST_COUNT - len(ranked_reels),
+                })
+                _alert_sync_abort(
+                    "direct mode shortfall",
+                    f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS}) - checkpoint preserved for resume",
+                )
+                return 2
+        else:
+            if deploy and len(ranked_reels) < MIN_DEPLOY_ITEMS:
+                logger.error(
+                    "Only %d playable reels (minimum %d required); refusing to deploy over previous digest.",
+                    len(ranked_reels), MIN_DEPLOY_ITEMS)
+                _alert_sync_abort("deploy refused",
+                                  f"only {len(ranked_reels)} playable reels (minimum {MIN_DEPLOY_ITEMS})")
+                return 2
         extra_manifest = {"budget_capped": True} if budget_capped else None
         ranker.save_digest_batch(ranked_reels, run_date=week_id, extra_manifest=extra_manifest)
 
@@ -2865,16 +2944,20 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     uploaded_url_map: dict[str, str] = {}
     from urllib.parse import quote as _urlquote
     if getattr(config, "DIRECT_STREAM_MODE", False):
-        from site_builder import is_direct_stream_url
         carried_over_count = 0
         for item in existing_items:
             rid = item.get("id")
             if not rid:
                 continue
-            cand = item.get("video_cdn_url") or item.get("video_url") or ""
-            if cand and is_direct_stream_url(cand):
+            cand = site_builder._pick_playable(item)
+            if cand:
                 uploaded_url_map[rid] = cand
                 carried_over_count += 1
+            else:
+                logger.debug(
+                    "Direct mode expand carryover: existing item %s unplayable. video_cdn_url=%r, video_url=%r",
+                    rid, item.get("video_cdn_url"), item.get("video_url")
+                )
         logger.warning(
             "Direct mode expand: carried over %d validated CDN URLs for existing items. "
             "Note: Expand cannot refresh expired Meta CDN URLs without re-scraping; run a full sync if URLs are expired.",
@@ -2904,14 +2987,20 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
     def download_new_reel(reel: dict[str, Any]) -> dict[str, Any] | None:
         tmp_path = _pending_path(reel)
         if not (tmp_path.exists() and tmp_path.stat().st_size > 0):
-            success = extractor.download_reel_video(
+            res = extractor.download_reel_video(
                 reel["url"],
                 tmp_path,
                 video_cdn_url=reel.get("video_cdn_url"),
             )
+            if isinstance(res, tuple):
+                success, discovered = res[0], res[1]
+            else:
+                success, discovered = bool(res), ""
             if not success:
                 logger.warning("Skipping failed download for expanded reel %s", reel["id"])
                 return None
+            if discovered and not reel.get("video_cdn_url"):
+                reel["video_cdn_url"] = discovered
         return reel
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -2966,9 +3055,8 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
 
     def upload_new_reel(reel: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
         if getattr(config, "DIRECT_STREAM_MODE", False):
-            cand = reel.get("video_cdn_url") or reel.get("video_url") or ""
-            from site_builder import is_direct_stream_url
-            if cand and is_direct_stream_url(cand):
+            cand = site_builder._pick_playable(reel)
+            if cand:
                 return (reel["id"], cand, reel)
             return (reel["id"], "", reel)
         filename = _final_name(reel, reel["rank"])
@@ -3013,34 +3101,76 @@ def _run_expand(target_count: int = 100, deploy: bool = False) -> int:
             _write_expand_progress("uploading", upload_done, max(1, len(downloadable)))
 
     new_ranked.sort(key=lambda r: r.get("rank", 9999))
-    combined_items = existing_items + new_ranked
+    new_ids = {r["id"] for r in new_ranked if r.get("id")}
 
     if getattr(config, "DIRECT_STREAM_MODE", False):
-        from site_builder import is_direct_stream_url
-        playable = []
-        dead = []
-        for reel in combined_items:
-            cand = uploaded_url_map.get(reel.get("id") or "") or reel.get("video_cdn_url") or reel.get("video_url") or ""
-            if cand and is_direct_stream_url(cand):
+        playable_existing = []
+        dropped_existing = []
+        for reel in existing_items:
+            cand = site_builder._pick_playable(reel, extra=uploaded_url_map.get(reel.get("id") or ""))
+            if cand:
                 reel["video_url"] = cand
                 reel.pop("r2_url", None)
-                playable.append(reel)
+                reel["playable"] = True
+                playable_existing.append(reel)
             else:
-                dead.append(reel.get("id"))
-        if dead:
-            logger.warning("Direct mode expand: dropping %d unplayable reels with invalid Meta CDN URL: %s", len(dead), dead[:10])
-        combined_items = playable
+                # AUDIT-009: preserve expired existing items as metadata (playable: False) instead of deleting
+                reel["playable"] = False
+                dropped_existing.append(reel.get("id"))
+                playable_existing.append(reel)
 
-    logger.info("Expansion successfully integrated: %d existing + %d new = %d total reels.",
-                len(existing_items), len(new_ranked), len(combined_items))
+        if dropped_existing:
+            logger.warning(
+                "Direct mode expand: marked %d expired existing reels as unplayable (preserved in digest): %s",
+                len(dropped_existing), dropped_existing[:10]
+            )
+
+        playable_new = []
+        dropped_new = []
+        for reel in new_ranked:
+            cand = site_builder._pick_playable(reel, extra=uploaded_url_map.get(reel.get("id") or ""))
+            if cand:
+                reel["video_url"] = cand
+                reel.pop("r2_url", None)
+                reel["playable"] = True
+                playable_new.append(reel)
+            else:
+                dropped_new.append(reel.get("id"))
+
+        if dropped_new:
+            logger.warning(
+                "Direct mode expand: dropping %d unplayable new reels with invalid Meta CDN URL: %s",
+                len(dropped_new), dropped_new[:10]
+            )
+
+        combined_items = playable_existing + playable_new
+
+        # AUDIT-009: Pre-save count check against MIN_DEPLOY_ITEMS
+        if len(combined_items) < MIN_DEPLOY_ITEMS:
+            _write_checkpoint(new_ranked)
+            logger.error(
+                "Refusing to clobber digest: combined items %d < minimum required %d.",
+                len(combined_items), MIN_DEPLOY_ITEMS
+            )
+            return 2
+
+        # AUDIT-054: Accurate post-filter log arithmetic
+        logger.info(
+            "Expansion successfully integrated: %d existing (%d expired marked unplayable) + %d new = %d total reels.",
+            len(playable_existing), len(dropped_existing), len(playable_new), len(combined_items)
+        )
+    else:
+        combined_items = existing_items + new_ranked
+        logger.info(
+            "Expansion successfully integrated: %d existing + %d new = %d total reels.",
+            len(existing_items), len(new_ranked), len(combined_items)
+        )
 
     # 3. Save combined digest payload
     ranker.save_digest_batch(combined_items, run_date=week_id)
 
-    # Checkpoint fulfilled for reels that reached the digest. Anything discovered
-    # but not integrated (failed downloads/uploads, e.g. an internet drop
-    # mid-phase) stays checkpointed so the next +100 retries it.
-    integrated_ids = {r["id"] for r in new_ranked if r.get("id")}
+    # AUDIT-054: Checkpoint leftover derived from POST-filter combined items intersected with new_ids
+    integrated_ids = {r["id"] for r in combined_items if r.get("id") and r.get("id") in new_ids and r.get("playable", True)}
     leftover = [r for r in external_reels if r.get("id") not in integrated_ids]
     if leftover:
         _write_checkpoint(leftover)
@@ -3121,12 +3251,30 @@ def _build_only(deploy: bool = False) -> int:
 
 def _deploy_only() -> int:
     """Deploy the compiled site to GitHub Pages and Cloudflare R2 (lock must be held)."""
-    if _digest_item_count() < MIN_DEPLOY_ITEMS:
-        logger.error(
-            "Digest has fewer than %d items; refusing to deploy over the previous digest.",
-            MIN_DEPLOY_ITEMS,
-        )
-        return 2
+    if getattr(config, "DIRECT_STREAM_MODE", False):
+        count = 0
+        try:
+            m_path = config.direct_manifest_file()
+            if m_path.exists():
+                payload = json.loads(m_path.read_text(encoding="utf-8"))
+                items = payload.get("items", []) if isinstance(payload, dict) else []
+                count = len(items)
+        except Exception as exc:
+            logger.error("Failed reading direct manifest for deploy check: %s", exc)
+            return 2
+        if count < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Direct manifest has %d items (< minimum %d required); refusing to deploy over previous digest.",
+                count, MIN_DEPLOY_ITEMS,
+            )
+            return 2
+    else:
+        if _digest_item_count() < MIN_DEPLOY_ITEMS:
+            logger.error(
+                "Digest has fewer than %d items; refusing to deploy over the previous digest.",
+                MIN_DEPLOY_ITEMS,
+            )
+            return 2
     return 0 if _publish_digest() else 1
 
 
@@ -3210,6 +3358,7 @@ def _main_inner() -> int:
         cookie_free = bool(config.COOKIE_FREE_MODE)
         mode_source = f"config.COOKIE_FREE_MODE (default={config.COOKIE_FREE_MODE})"
     logger.info("Pipeline mode: %s (source: %s)", "cookie-free" if cookie_free else "cookie-based", mode_source)
+    logger.info("DIRECT_STREAM_MODE=%s (env %s)", config.DIRECT_STREAM_MODE, os.getenv("DIRECT_STREAM_MODE", "<unset; branch default>"))
 
     # Additive interactive following onboarding import
     if args.import_following is not None:

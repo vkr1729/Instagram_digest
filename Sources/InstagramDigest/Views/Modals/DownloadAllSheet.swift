@@ -3,9 +3,10 @@ import SwiftData
 
 /// Dismissible bulk download manager sheet with device storage preflight and adaptive concurrency status.
 public struct DownloadAllSheet: View {
-    @ObservedObject var coordinator = DownloadAllCoordinator.shared
+    @StateObject private var coordinator = DownloadAllCoordinator.shared
     public let reels: [ReelItem]
     public let weekID: String
+    public let generatedAt: Date?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
@@ -13,9 +14,10 @@ public struct DownloadAllSheet: View {
     @State private var unwatchedOnly: Bool = true
     @State private var watchedIDs: Set<String> = []
 
-    public init(reels: [ReelItem], weekID: String) {
+    public init(reels: [ReelItem], weekID: String, generatedAt: Date? = nil) {
         self.reels = reels
         self.weekID = weekID
+        self.generatedAt = generatedAt
     }
 
     public var body: some View {
@@ -124,6 +126,11 @@ public struct DownloadAllSheet: View {
                                     Text("Downloaded \(completed) of \(total)")
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundColor(.white)
+                                    if coordinator.failedInBatch > 0 {
+                                        Text("(\(coordinator.failedInBatch) failed)")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundColor(.orange)
+                                    }
                                     Spacer()
                                     Text("\(Int(coordinator.overallProgress * 100))%")
                                         .font(.system(size: 13, weight: .bold, design: .monospaced))
@@ -186,9 +193,11 @@ public struct DownloadAllSheet: View {
                         switch coordinator.state {
                         case .idle:
                             Button {
+                                coordinator.resetIfFinished()
                                 coordinator.startDownloadAll(
                                     reels: effectiveReels, weekID: weekID,
-                                    excludeWatchedIDs: unwatchedOnly ? watchedIDs : [])
+                                    excludeWatchedIDs: unwatchedOnly ? watchedIDs : [],
+                                    generatedAt: generatedAt)
                             } label: {
                                 Text("Start Download")
                                     .font(.system(size: 16, weight: .bold))
@@ -322,7 +331,8 @@ public struct DownloadAllSheet: View {
                                 Button {
                                     coordinator.startDownloadAll(
                                         reels: effectiveReels, weekID: weekID,
-                                        excludeWatchedIDs: unwatchedOnly ? watchedIDs : [])
+                                        excludeWatchedIDs: unwatchedOnly ? watchedIDs : [],
+                                        generatedAt: generatedAt)
                                 } label: {
                                     Text("Retry")
                                         .font(.system(size: 16, weight: .bold))
@@ -366,7 +376,6 @@ public struct DownloadAllSheet: View {
                 }
             }
             .onAppear {
-                coordinator.resetIfFinished()
                 if let list = try? modelContext.fetch(FetchDescriptor<WatchedEvent>()) {
                     watchedIDs = Set(list.filter { $0.weekID == weekID }.map { $0.reelID })
                 }

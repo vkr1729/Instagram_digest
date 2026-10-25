@@ -46,12 +46,13 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         self.rank = rank
         self.rankDisplay = rankDisplay ?? String(format: "#%02d", rank)
         self.videoUrl = videoUrl
+        let safeID = LibraryPathResolver.sanitizeComponent(id)
         if let thumb = thumbnailUrl, thumb.host?.contains("fbcdn.net") != true {
             self.thumbnailUrl = thumb
         } else {
-            self.thumbnailUrl = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(id)_portrait.jpg")
+            self.thumbnailUrl = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(safeID)_portrait.jpg")
         }
-        self.canonicalUrl = canonicalUrl ?? URL(string: "https://www.instagram.com/reel/\(id)/")
+        self.canonicalUrl = canonicalUrl ?? URL(string: "https://www.instagram.com/reel/\(safeID)/")
         self.category = category
         self.viewCount = viewCount
         self.likeCount = likeCount
@@ -127,11 +128,14 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .altVideoUrl) {
             resolvedVideoURL = httpURL(from: str)
         }
-        if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .r2Url) {
-            resolvedVideoURL = httpURL(from: str)
-        }
-        if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .localUrl) {
-            resolvedVideoURL = httpURL(from: str)
+        // AUDIT-060: In directMode, never fall back to r2_url or local_url (zero-R2 leak prevention)
+        if !DigestDataService.directMode {
+            if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .r2Url) {
+                resolvedVideoURL = httpURL(from: str)
+            }
+            if resolvedVideoURL == nil, let str = try? container.decode(String.self, forKey: .localUrl) {
+                resolvedVideoURL = httpURL(from: str)
+            }
         }
 
         guard let validVideoURL = resolvedVideoURL else {
@@ -144,6 +148,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
         self.videoUrl = validVideoURL
 
         // Resolve thumbnail URL, preferring vertical portrait poster over horizontal landscape
+        let safeID = LibraryPathResolver.sanitizeComponent(self.id)
         var resolvedThumb: URL? = nil
         for key in [CodingKeys.poster, CodingKeys.thumbnailUrl, .altThumbnailUrl, .camelThumbnailUrl] {
             if let str = try? container.decode(String.self, forKey: key),
@@ -155,7 +160,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
             }
         }
         if resolvedThumb == nil {
-            resolvedThumb = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(self.id)_portrait.jpg")
+            resolvedThumb = URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(safeID)_portrait.jpg")
         }
         self.thumbnailUrl = resolvedThumb
 
@@ -168,7 +173,7 @@ public struct ReelItem: Identifiable, Sendable, Hashable, Codable {
                 break
             }
         }
-        self.canonicalUrl = resolvedCanonical ?? URL(string: "https://www.instagram.com/reel/\(self.id)/")
+        self.canonicalUrl = resolvedCanonical ?? URL(string: "https://www.instagram.com/reel/\(safeID)/")
 
         self.category = try? container.decode(String.self, forKey: .category)
         self.viewCount = (try? container.decode(Int.self, forKey: .viewCount))

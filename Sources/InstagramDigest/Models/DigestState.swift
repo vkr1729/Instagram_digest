@@ -106,7 +106,8 @@ public final class BookmarkItem {
                 return u
             }
         }
-        return URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(reelID)_portrait.jpg")
+        let safe = LibraryPathResolver.sanitizeComponent(reelID, fallback: "unknown")
+        return URL(string: "https://vkr1729.github.io/Instagram_digest/thumbnails/\(safe)_portrait.jpg")
     }
 }
 

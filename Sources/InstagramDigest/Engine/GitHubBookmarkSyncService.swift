@@ -65,10 +65,10 @@ public final class GitHubBookmarkSyncService {
     }()
 
     private func parseDate(_ str: String?) -> Date {
-        guard let str, !str.isEmpty else { return Date() }
+        guard let str, !str.isEmpty else { return Date.distantPast }
         if let d = isoFormatter.date(from: str) { return d }
         if let d = fallbackIsoFormatter.date(from: str) { return d }
-        return Date()
+        return Date.distantPast
     }
 
     /// Export bookmarks to a temporary JSON file for sharing via UIActivityViewController
@@ -89,7 +89,7 @@ public final class GitHubBookmarkSyncService {
                 thumbnail_url: bm.thumbnailUrl?.absoluteString,
                 thumbnail_base64: base64Thumb,
                 canonical_url: bm.canonicalUrl?.absoluteString,
-                video_asset_name: "\(bm.reelID).mp4",
+                video_asset_name: nil,
                 size_bytes: bm.sizeBytes,
                 bookmarked_at: isoFormatter.string(from: bm.bookmarkedAt)
             )
@@ -171,7 +171,8 @@ public final class GitHubBookmarkSyncService {
         repo: String,
         pat: String,
         localBookmarks: [BookmarkItem],
-        context: ModelContext
+        context: ModelContext,
+        onProgress: (@Sendable (_ current: Int, _ total: Int) -> Void)? = nil
     ) async throws -> BookmarkSyncResult {
         let trimmedRepo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPAT = pat.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -179,12 +180,18 @@ public final class GitHubBookmarkSyncService {
         guard !trimmedRepo.isEmpty else {
             throw NSError(domain: "GitHubSync", code: 400, userInfo: [NSLocalizedDescriptionKey: "GitHub repository not specified (e.g. vkreddy1729-ops/ig-bookmarks-2026)."])
         }
+        let repoParts = trimmedRepo.split(separator: "/")
+        guard repoParts.count == 2, !repoParts[0].isEmpty, !repoParts[1].isEmpty, !trimmedRepo.contains(" ") else {
+            throw NSError(domain: "GitHubSync", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid GitHub repository format (expected owner/repo)."])
+        }
         guard !trimmedPAT.isEmpty else {
             throw NSError(domain: "GitHubSync", code: 401, userInfo: [NSLocalizedDescriptionKey: "Personal Access Token (PAT) required."])
         }
 
         // 1. Fetch remote bookmarks.json from repository
-        let apiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/bookmarks.json")!
+        guard let apiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/bookmarks.json") else {
+            throw NSError(domain: "GitHubSync", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid GitHub repository URL."])
+        }
         var request = URLRequest(url: apiURL)
         request.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
@@ -217,7 +224,8 @@ public final class GitHubBookmarkSyncService {
         // 2. Merge remote into local SwiftData
         var importedCount = 0
         var allMergedDTOs: [String: BookmarkSyncDTO] = [:]
-        for dto in remoteDTOs {
+        onProgress?(0, max(remoteDTOs.count, 1))
+        for (index, dto) in remoteDTOs.enumerated() {
             allMergedDTOs[dto.id] = dto
             let id = dto.id
             let descriptor = FetchDescriptor<BookmarkItem>(predicate: #Predicate { $0.reelID == id })
@@ -246,11 +254,11 @@ public final class GitHubBookmarkSyncService {
             }
 
             // Cache thumbnail locally so new device displays covers offline
-            let thumbDest = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: dto.id)
+            let safeID = LibraryPathResolver.sanitizeComponent(dto.id)
+            let thumbDest = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: safeID)
             if !FileManager.default.fileExists(atPath: thumbDest.path) {
-                Task.detached {
-                    try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
-                    let thumbApiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(dto.id)_portrait.jpg")!
+                try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                if let thumbApiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(safeID)_portrait.jpg") {
                     var thumbReq = URLRequest(url: thumbApiURL)
                     thumbReq.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
                     thumbReq.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
@@ -270,27 +278,46 @@ public final class GitHubBookmarkSyncService {
                     }
                 }
             }
+            onProgress?(index + 1, max(remoteDTOs.count, 1))
         }
 
         // 3. Merge local bookmarks that are missing remotely
+        // Note: Deletes are local-only; re-sync from remote preserves existing remote entries.
         var newlyAddedLocal = 0
         for local in localBookmarks {
             if allMergedDTOs[local.reelID] == nil {
+                let safeID = LibraryPathResolver.sanitizeComponent(local.reelID)
                 // If local thumbnail exists, upload to repository thumbnails/ directory
                 let thumbLocal = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: local.reelID)
-                if let thumbData = try? Data(contentsOf: thumbLocal) {
+                if let thumbData = try? Data(contentsOf: thumbLocal),
+                   let thumbPutURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(safeID)_portrait.jpg") {
                     Task.detached {
-                        let thumbPutURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(local.reelID)_portrait.jpg")!
+                        // AUDIT-031: GET existing thumbnail first to retrieve SHA if present (prevents 422 on re-upload)
+                        var existingThumbSHA: String? = nil
+                        var getReq = URLRequest(url: thumbPutURL)
+                        getReq.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
+                        getReq.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+                        getReq.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
+                        if let (getData, getRes) = try? await URLSession.shared.data(for: getReq),
+                           let httpGet = getRes as? HTTPURLResponse, httpGet.statusCode == 200,
+                           let json = try? JSONSerialization.jsonObject(with: getData) as? [String: Any],
+                           let sha = json["sha"] as? String {
+                            existingThumbSHA = sha
+                        }
+
                         var thumbPut = URLRequest(url: thumbPutURL)
                         thumbPut.httpMethod = "PUT"
                         thumbPut.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
                         thumbPut.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
                         thumbPut.setValue("application/json", forHTTPHeaderField: "Content-Type")
                         thumbPut.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
-                        let body: [String: Any] = [
-                            "message": "Add thumbnail for \(local.reelID)",
+                        var body: [String: Any] = [
+                            "message": "Add thumbnail for \(safeID)",
                             "content": thumbData.base64EncodedString()
                         ]
+                        if let sha = existingThumbSHA {
+                            body["sha"] = sha
+                        }
                         thumbPut.httpBody = try? JSONSerialization.data(withJSONObject: body)
                         _ = try? await URLSession.shared.data(for: thumbPut)
                     }
@@ -301,10 +328,10 @@ public final class GitHubBookmarkSyncService {
                     creator_handle: local.creatorHandle,
                     caption: local.caption,
                     category: nil,
-                    thumbnail_url: "thumbnails/\(local.reelID)_portrait.jpg",
+                    thumbnail_url: "thumbnails/\(safeID)_portrait.jpg",
                     thumbnail_base64: nil,
                     canonical_url: local.canonicalUrl?.absoluteString,
-                    video_asset_name: "\(local.reelID).mp4",
+                    video_asset_name: nil,
                     size_bytes: local.sizeBytes,
                     bookmarked_at: isoFormatter.string(from: local.bookmarkedAt)
                 )

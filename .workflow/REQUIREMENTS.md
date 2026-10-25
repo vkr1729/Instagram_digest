@@ -51,3 +51,24 @@
 | Active week reel, uncached / download pending | Shows 'Download required' / retry | Streams from fresh Meta CDN URL or downloads |
 | Older bookmarked reel (previous week purged) | Shows 'Online required for this older bookmark' | Dynamically resolves via Cobalt API & streams |
 | Reel metadata / caption / thumbnail | Instant from local cache / GitHub Pages | Instant from local cache / GitHub Pages |
+
+## 5. Refinements & User Feedback Addendum (Oct 24–25, 2026)
+- **UI & Presentation Hardening:**
+  - Remove feed banner ("All 250 Reels Cached Offline") and header pill ("Offline · 250 downloaded") from production main feed.
+  - Fix squished thumbnails: enforce crisp 9:16 vertical portrait covers across GridView and BookmarksSheet.
+  - Feed Chronological Sort ("Chronological (Newest)") immediately reorders the live feed pager and persists across launches.
+  - Grayscale Detox Mode applies across both feed and BookmarksSheet.
+  - Zero Cloudflare prompts: completely excise "Cloudflare Owner Key" dialogs and remote worker calls.
+- **Bookmarks Storage Architecture (Single Repo + GitHub Sync):**
+  - Target single repository: `vkreddy1729-ops/ig-bookmarks` (or custom user-configured repo).
+  - Git history contains lightweight `bookmarks.json` and permanent portrait thumbnails in `thumbnails/{id}_portrait.jpg`.
+  - Binary video release asset uploads are deferred; video playback is local-first from device cache and dynamically resolved via Cobalt API upon demand.
+  - Automatic background sync on BookmarksSheet open + manual "Sync Bookmarks Now" button.
+- **Offline Bookmarking Storage Cap & LRU Pruning:**
+  - Configurable in Settings: Keep latest 25, 50 (default), 100, or Unlimited offline bookmark videos.
+  - Pruning evicts older `.mp4` video files beyond the cap while preserving all SwiftData metadata and the local `.thumb.jpg` portrait thumbnail.
+- **Self-Contained JSON Export & Import:**
+  - Export embeds local portrait thumbnail JPEG as base64 string (`thumbnail_base64`).
+  - Import parses JSON, restores database records, and writes thumbnails to disk for 100% offline display without internet.
+- **New Device Restore Contract:**
+  - Entering repo and PAT on a new device pulls `bookmarks.json` and downloads all thumbnails from the repo's `thumbnails/` folder into local cache automatically.

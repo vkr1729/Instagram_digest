@@ -85,7 +85,44 @@ PAGES_URL=$($PY -c "import sys; sys.path.insert(0,'.'); import config; print(con
 if [ -z "$PAGES_URL" ]; then
   fail "PAGES_BASE_URL unreadable (config import failed); refusing to skip Pages check"
 fi
-if [ -n "$PAGES_URL" ]; then
+DIRECT_MODE=$($PY -c "import sys; sys.path.insert(0,'.'); import config; print(str(getattr(config, 'DIRECT_STREAM_MODE', False)).lower())" 2>/dev/null)
+
+if [ "$DIRECT_MODE" = "true" ]; then
+  $PY - "$PAGES_URL/data_direct.json" <<'EOF' || fail "Pages data_direct.json invalid, unreachable, or stale"
+import sys, json, urllib.request
+from datetime import datetime, timezone
+url = sys.argv[1]
+try:
+    req = urllib.request.Request(url, headers={"User-Agent": "InstagramDigest-healthcheck/1.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+except Exception as e:
+    print(f"fetch error for {url}: {e}", file=sys.stderr)
+    sys.exit(1)
+if data.get("channel") != "direct":
+    print(f"data_direct.json channel is not 'direct': {data.get('channel')}", file=sys.stderr)
+    sys.exit(1)
+run_date = data.get("run_date")
+if not run_date:
+    print("data_direct.json missing run_date", file=sys.stderr)
+    sys.exit(1)
+items = data.get("items") or []
+if not items:
+    print("data_direct.json has empty items list", file=sys.stderr)
+    sys.exit(1)
+try:
+    dt = datetime.strptime(run_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+    if age_days > 10:
+        print(f"data_direct.json run_date {run_date} is older than 10 days ({age_days:.1f}d)", file=sys.stderr)
+        sys.exit(1)
+except ValueError as e:
+    print(f"invalid run_date format in data_direct.json: {e}", file=sys.stderr)
+    sys.exit(1)
+print(f"ok: Pages direct manifest live ({len(items)} items, run_date {run_date}, age {age_days:.1f}d)")
+EOF
+  ok "Pages direct channel live at $PAGES_URL/data_direct.json"
+else
   CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "$PAGES_URL/" || echo "000")
   [ "$CODE" = "200" ] || fail "Pages $PAGES_URL returned HTTP $CODE"
   ok "Pages live at $PAGES_URL (HTTP 200)"

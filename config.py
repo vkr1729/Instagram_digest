@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 APP_VERSION = "5.1.0"  # Single source of truth for the release version.
 
@@ -43,7 +44,7 @@ def check_env_file_permissions(path: Path | None = None) -> bool:
 
 
 USER_ENV_FILE = Path.home() / ".env"
-for env_path in (USER_ENV_FILE, ENV_FILE):
+for env_path in (ENV_FILE, USER_ENV_FILE):
     if env_path.exists():
         if env_path == ENV_FILE and not check_env_file_permissions():
             import warnings
@@ -127,8 +128,20 @@ COOKIE_FREE_MODE = _env_bool("COOKIE_FREE_MODE", True)
 DIRECT_STREAM_MODE = _env_bool("DIRECT_STREAM_MODE", True)
 
 # Zero-Cloud / Direct-Meta Stream Configuration
-DIRECT_PAGES_MANIFEST_URL = f"{PAGES_BASE_URL}/data_direct.json"
-COBALT_RESOLVER_API_URL = os.getenv("COBALT_RESOLVER_API_URL", "https://api.cobalt.tools/").rstrip("/")
+# CONTRACT-PAIR: Must match DigestDataService.swift:directManifestURL (".../data_direct.json") (AUDIT-071)
+def direct_pages_manifest_url() -> str:
+    """Dynamic manifest URL derived at call time from PAGES_BASE_URL."""
+    base = PAGES_BASE_URL.rstrip("/")
+    return f"{base}/data_direct.json"
+
+
+_raw_cobalt = os.getenv("COBALT_RESOLVER_API_URL", "https://api.cobalt.tools/").strip()
+if not _raw_cobalt.startswith("https://"):
+    import warnings
+    warnings.warn(f"Invalid COBALT_RESOLVER_API_URL={_raw_cobalt!r}, defaulting to https://api.cobalt.tools/", RuntimeWarning)
+    COBALT_RESOLVER_API_URL = "https://api.cobalt.tools/"
+else:
+    COBALT_RESOLVER_API_URL = _raw_cobalt
 
 
 def direct_manifest_file() -> Path:
@@ -210,4 +223,9 @@ WEEKLY_ARCHIVE_FILE = DATA_DIR / "archive_history.json"
 WATCHED_FILE = DATA_DIR / "watched.json"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 LAST_RUN_FILE = DATA_DIR / "last_run.json"
-DIRECT_DEPLOYED_WEEK_FILE = DATA_DIR / "deployed_direct_week.json"
+
+
+def __getattr__(name: str) -> Any:
+    if name == "DIRECT_PAGES_MANIFEST_URL":
+        return direct_pages_manifest_url()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

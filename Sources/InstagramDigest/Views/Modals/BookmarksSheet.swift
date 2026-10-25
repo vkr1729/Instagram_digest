@@ -16,6 +16,7 @@ public struct BookmarksSheet: View {
         appStates.first?.currentWeekID ?? ""
     }
 
+    @ObservedObject private var downloadCoordinator = DownloadAllCoordinator.shared
     @State private var totalBytes: Int64 = 0
     @State private var isPurgingStorage: Bool = false
     @State private var errorMessage: String?
@@ -25,8 +26,9 @@ public struct BookmarksSheet: View {
     @AppStorage("gh_bookmark_pat") private var ghPAT: String = ""
     @State private var showGitHubSyncSheet: Bool = false
     @State private var showFileImporter: Bool = false
-    @State private var exportShareURL: URL? = nil
+    @State private var exportShareItem: IdentifiableShareURL? = nil
     @State private var syncStatusMessage: String? = nil
+    @State private var locallyPresentReelIDs: Set<String> = []
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -112,7 +114,10 @@ public struct BookmarksSheet: View {
                                 Menu {
                                     Button {
                                         if let url = GitHubBookmarkSyncService.shared.exportBookmarksJSON(bookmarks: bookmarks) {
-                                            exportShareURL = url
+                                            exportShareItem = IdentifiableShareURL(url: url)
+                                        } else {
+                                            errorMessage = "Export failed — could not write backup file."
+                                            syncStatusMessage = nil
                                         }
                                     } label: {
                                         Label("Export Bookmarks (JSON)", systemImage: "square.and.arrow.up")
@@ -156,18 +161,29 @@ public struct BookmarksSheet: View {
 
                     // Error Alert Banner
                     if let err = errorMessage {
-                        Text(err)
-                            .font(.system(size: 12))
-                            .foregroundColor(.red)
+                        Button {
+                            errorMessage = nil
+                        } label: {
+                            HStack {
+                                Text(err)
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.red)
+                                    .multilineTextAlignment(.leading)
+                                Spacer()
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.red.opacity(0.8))
+                            }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 6)
                             .frame(maxWidth: .infinity)
                             .background(Color.red.opacity(0.1))
+                        }
                     }
 
                     // Bookmarks Grid (3-column layout matching All Reels Grid)
                     if bookmarks.isEmpty {
-                        VStack(spacing: 12) {
+                        VStack(spacing: 16) {
                             Spacer()
                             Image(systemName: "bookmark")
                                 .font(.system(size: 44))
@@ -176,74 +192,110 @@ public struct BookmarksSheet: View {
                                 .font(.system(size: 16, weight: .medium))
                                 .foregroundColor(.white.opacity(0.6))
                                 .accessibilityIdentifier("BookmarksEmptyStateText")
+
+                            if DigestDataService.directMode {
+                                VStack(spacing: 10) {
+                                    Button {
+                                        showGitHubSyncSheet = true
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "arrow.triangle.2.circlepath")
+                                            Text("Restore from GitHub")
+                                        }
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.cyan)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 8)
+                                        .background(Color.white.opacity(0.08))
+                                        .cornerRadius(8)
+                                    }
+                                    .accessibilityIdentifier("EmptyStateGitHubSyncButton")
+
+                                    Button {
+                                        showFileImporter = true
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "square.and.arrow.down")
+                                            Text("Import Bookmarks JSON")
+                                        }
+                                        .font(.system(size: 12, weight: .regular))
+                                        .foregroundColor(.white.opacity(0.7))
+                                    }
+                                    .accessibilityIdentifier("EmptyStateImportButton")
+                                }
+                                .padding(.top, 4)
+                            }
                             Spacer()
                         }
                     } else {
-                        let pendingIDs = MediaCacheManager.pendingRemoteBookmarks
+                        let pendingIDs = DigestDataService.directMode ? [] : MediaCacheManager.pendingRemoteBookmarks
                         ScrollView {
                             LazyVGrid(columns: columns, spacing: 2) {
                                 ForEach(Array(bookmarks.enumerated()), id: \.element.reelID) { index, bookmark in
-                                    let isPending = pendingIDs.contains(bookmark.reelID)
-                                    let isCached = bookmark.localStatus == .cached
-                                    let isLocallyPresent = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) != nil
+                                    let isPending = !DigestDataService.directMode && pendingIDs.contains(bookmark.reelID)
+                                    let isCached = !DigestDataService.directMode && bookmark.localStatus == .cached
+                                    let isLocallyPresent = locallyPresentReelIDs.contains(bookmark.reelID)
                                     Button {
                                         activePlaybackIndex = index
                                     } label: {
-                                        ZStack(alignment: .bottomLeading) {
-                                            AsyncThumbnailView(url: bookmark.thumbnailUrl, reelID: bookmark.reelID, weekID: bookmark.weekID)
-                                                .aspectRatio(9/16, contentMode: .fill)
-                                                .frame(maxWidth: .infinity)
-                                                .frame(height: 215)
-                                                .clipped()
+                                        Color.clear
+                                            .aspectRatio(9/16, contentMode: .fit)
+                                            .overlay(
+                                                ZStack(alignment: .bottomLeading) {
+                                                    AsyncThumbnailView(url: bookmark.thumbnailUrl, reelID: bookmark.reelID, weekID: bookmark.weekID)
+                                                        .aspectRatio(9/16, contentMode: .fill)
+                                                        .clipped()
 
-                                            LinearGradient(
-                                                colors: [Color.clear, Color.black.opacity(0.8)],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
+                                                    LinearGradient(
+                                                        colors: [Color.clear, Color.black.opacity(0.8)],
+                                                        startPoint: .top,
+                                                        endPoint: .bottom
+                                                    )
 
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                HStack {
-                                                    Spacer()
+                                                    VStack(alignment: .leading, spacing: 2) {
+                                                        HStack {
+                                                            Spacer()
 
-                                                    if DigestDataService.directMode {
-                                                        if isLocallyPresent {
-                                                            Image(systemName: "checkmark.circle.fill")
-                                                                .font(.system(size: 12))
-                                                                .foregroundColor(.green)
-                                                                .accessibilityIdentifier("BookmarkBadge_\(index)_cached")
-                                                        } else if !currentActiveWeekID.isEmpty && bookmark.weekID == currentActiveWeekID {
-                                                            Image(systemName: "arrow.down.circle")
-                                                                .font(.system(size: 12))
-                                                                .foregroundColor(.orange)
-                                                                .accessibilityIdentifier("BookmarkBadge_\(index)_downloadRequired")
-                                                        } else {
-                                                            Image(systemName: "globe")
-                                                                .font(.system(size: 12))
-                                                                .foregroundColor(.blue.opacity(0.8))
-                                                                .accessibilityIdentifier("BookmarkBadge_\(index)_resolver")
+                                                            if DigestDataService.directMode {
+                                                                if isLocallyPresent {
+                                                                    Image(systemName: "checkmark.circle.fill")
+                                                                        .font(.system(size: 12))
+                                                                        .foregroundColor(.green)
+                                                                        .accessibilityIdentifier("BookmarkBadge_\(index)_cached")
+                                                                } else if !currentActiveWeekID.isEmpty && bookmark.weekID == currentActiveWeekID {
+                                                                    Image(systemName: "arrow.down.circle")
+                                                                        .font(.system(size: 12))
+                                                                        .foregroundColor(.orange)
+                                                                        .accessibilityIdentifier("BookmarkBadge_\(index)_downloadRequired")
+                                                                } else {
+                                                                    Image(systemName: "globe")
+                                                                        .font(.system(size: 12))
+                                                                        .foregroundColor(.blue.opacity(0.8))
+                                                                        .accessibilityIdentifier("BookmarkBadge_\(index)_resolver")
+                                                                }
+                                                            } else if isPending {
+                                                                Image(systemName: "icloud.slash")
+                                                                    .font(.system(size: 12))
+                                                                    .foregroundColor(.orange)
+                                                                    .accessibilityIdentifier("BookmarkPendingBadge_\(index)")
+                                                            } else if isCached {
+                                                                Image(systemName: "checkmark.circle.fill")
+                                                                    .font(.system(size: 12))
+                                                                    .foregroundColor(.green)
+                                                            }
                                                         }
-                                                    } else if isPending {
-                                                        Image(systemName: "icloud.slash")
-                                                            .font(.system(size: 12))
-                                                            .foregroundColor(.orange)
-                                                            .accessibilityIdentifier("BookmarkPendingBadge_\(index)")
-                                                    } else if isCached {
-                                                        Image(systemName: "checkmark.circle.fill")
-                                                            .font(.system(size: 12))
-                                                            .foregroundColor(.green)
+
+                                                        Spacer()
+
+                                                        Text("@\(bookmark.creatorHandle)")
+                                                            .font(.system(size: 11, weight: .semibold))
+                                                            .foregroundColor(.white)
+                                                            .lineLimit(1)
                                                     }
+                                                    .padding(6)
                                                 }
-
-                                                Spacer()
-
-                                                Text("@\(bookmark.creatorHandle)")
-                                                    .font(.system(size: 11, weight: .semibold))
-                                                    .foregroundColor(.white)
-                                                    .lineLimit(1)
-                                            }
-                                            .padding(6)
-                                        }
+                                            )
+                                            .clipped()
                                     }
                                     .accessibilityIdentifier("BookmarkGridItem_\(index)")
                                 }
@@ -326,11 +378,10 @@ public struct BookmarksSheet: View {
                     }
                 )
             }
-            .sheet(item: Binding<IdentifiableShareURL?>(
-                get: { exportShareURL.map { IdentifiableShareURL(url: $0) } },
-                set: { exportShareURL = $0?.url }
-            )) { identifiable in
-                ActivityView(activityItems: [identifiable.url])
+            .sheet(item: $exportShareItem) { identifiable in
+                ActivityView(activityItems: [identifiable.url]) {
+                    try? FileManager.default.removeItem(at: identifiable.url)
+                }
             }
             .fileImporter(
                 isPresented: $showFileImporter,
@@ -341,11 +392,25 @@ public struct BookmarksSheet: View {
                     do {
                         let count = try GitHubBookmarkSyncService.shared.importBookmarks(from: url, context: modelContext)
                         syncStatusMessage = "Successfully imported \(count) bookmarks!"
+                        errorMessage = nil
                     } catch {
                         errorMessage = "Import failed: \(error.localizedDescription)"
+                        syncStatusMessage = nil
                     }
                 case .failure(let error):
                     errorMessage = "File selection cancelled: \(error.localizedDescription)"
+                    syncStatusMessage = nil
+                }
+            }
+            .task(id: "\(downloadCoordinator.state)-\(bookmarks.count)") {
+                let currentBookmarks = bookmarks
+                let ids = await Task.detached(priority: .userInitiated) { () -> Set<String> in
+                    Set(currentBookmarks.compactMap { bm in
+                        LibraryPathResolver.shared.resolvedLocalFileURL(for: bm.weekID, reelID: bm.reelID) != nil ? bm.reelID : nil
+                    })
+                }.value
+                await MainActor.run {
+                    self.locallyPresentReelIDs = ids
                 }
             }
             .grayscaleIf(isGrayscale)
@@ -447,6 +512,9 @@ public struct BookmarkPlayerOverlay: View {
     @State private var bookmarkCurrentTime: Double = 0
     @State private var hideChromeWorkItem: DispatchWorkItem?
     @State private var endObserverToken: NSObjectProtocol?
+    @State private var failObserverToken: NSObjectProtocol?
+    @State private var statusObserver: NSKeyValueObservation?
+    @State private var shareDownloadTask: Task<Void, Never>?
     @State private var isResolving: Bool = false
     @State private var resolutionError: String? = nil
     @State private var resolutionErrorIcon: String = "wifi.slash"
@@ -890,6 +958,12 @@ public struct BookmarkPlayerOverlay: View {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil
         }
+        if let token = failObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            failObserverToken = nil
+        }
+        statusObserver?.invalidate()
+        statusObserver = nil
         resolutionTask?.cancel()
         resolutionTask = nil
         player?.pause()
@@ -900,18 +974,22 @@ public struct BookmarkPlayerOverlay: View {
 
         if let localFile = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) {
             isResolving = false
-            playMedia(url: localFile, isLocal: true)
+            playMedia(url: localFile, isLocal: true, for: bookmark, isStoredURL: false)
             return
         }
 
-        // Play directly if a video stream URL is already stored (Meta CDN, Cloudflare R2, or remote backup)
-        if let directURL = bookmark.videoUrl {
+        // Stored URL branch: gate on network reachability so MRT tunnel / offline falls to resolver / offline badge
+        if let directURL = bookmark.videoUrl, Reachability.isConnectedToNetwork() {
             isResolving = false
-            playMedia(url: directURL, isLocal: false)
+            playMedia(url: directURL, isLocal: false, for: bookmark, isStoredURL: true)
             return
         }
 
         // Fallback: resolve via Cobalt API
+        playViaResolver(for: bookmark)
+    }
+
+    private func playViaResolver(for bookmark: BookmarkItem) {
         guard let canonical = bookmark.canonicalUrl else {
             isResolving = false
             resolutionError = "No playable stream URL available"
@@ -919,6 +997,7 @@ public struct BookmarkPlayerOverlay: View {
             return
         }
         isResolving = true
+        resolutionTask?.cancel()
         resolutionTask = Task { @MainActor in
             let result = await BookmarkResolver.shared.resolve(url: canonical)
             guard !Task.isCancelled else { return }
@@ -927,7 +1006,7 @@ public struct BookmarkPlayerOverlay: View {
             case .success(let streamURL):
                 self.resolutionError = nil
                 self.isCurrentWeekDownloadRequired = false
-                self.playMedia(url: streamURL, isLocal: false)
+                self.playMedia(url: streamURL, isLocal: false, for: bookmark, isStoredURL: false)
             case .offline:
                 let isCurrentWeek = !self.currentActiveWeekID.isEmpty && bookmark.weekID == self.currentActiveWeekID
                 self.isCurrentWeekDownloadRequired = isCurrentWeek
@@ -958,11 +1037,17 @@ public struct BookmarkPlayerOverlay: View {
         }
     }
 
-    private func playMedia(url mediaURL: URL, isLocal: Bool) {
+    private func playMedia(url mediaURL: URL, isLocal: Bool, for bookmark: BookmarkItem, isStoredURL: Bool) {
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil
         }
+        if let token = failObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            failObserverToken = nil
+        }
+        statusObserver?.invalidate()
+        statusObserver = nil
         player?.pause()
 
         let asset = AVURLAsset(url: mediaURL)
@@ -990,6 +1075,26 @@ public struct BookmarkPlayerOverlay: View {
         ) { [weak avPlayer] _ in
             guard avPlayer != nil else { return }
             handleVideoEnded()
+        }
+
+        if isStoredURL {
+            failObserverToken = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemFailedToPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak self, weak avPlayer] _ in
+                guard let self = self, avPlayer != nil else { return }
+                self.playViaResolver(for: bookmark)
+            }
+
+            statusObserver = item.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if observedItem.status == .failed {
+                        self.playViaResolver(for: bookmark)
+                    }
+                }
+            }
         }
 
         scheduleChromeAutoHide()
@@ -1061,7 +1166,8 @@ public struct BookmarkPlayerOverlay: View {
         }
 
         guard let videoURL = bookmark.videoUrl else { return }
-        Task {
+        shareDownloadTask?.cancel()
+        shareDownloadTask = Task {
             do {
                 let (downloadedURL, resp) = try await URLSession.shared.download(from: videoURL)
                 guard resp.isHTTPSuccess else { throw URLError(.badServerResponse) }
@@ -1083,11 +1189,19 @@ public struct BookmarkPlayerOverlay: View {
     private func teardownPlayer() {
         resolutionTask?.cancel()
         resolutionTask = nil
+        shareDownloadTask?.cancel()
+        shareDownloadTask = nil
         isResolving = false
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil
         }
+        if let token = failObserverToken {
+            NotificationCenter.default.removeObserver(token)
+            failObserverToken = nil
+        }
+        statusObserver?.invalidate()
+        statusObserver = nil
         // No AVPlayer time-observer removal here by design: the overlay no
         // longer registers one (clock is a view Timer). Just pause and drop
         // the player — this can never throw, even mid-callback.

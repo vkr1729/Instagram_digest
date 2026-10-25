@@ -128,13 +128,13 @@
   - In direct mode:
     - Bypass Cloudflare Worker/D1 sync and Telegram forward.
     - Save bookmark as metadata row with `canonicalUrl`, `reelID`, `weekID`, `caption`, `creatorHandle`, `thumbnailUrl`.
-    - Stop creating isolated permanent `Bookmarks/{id}.mp4` copies.
+    - Direct mode persists `Bookmarks/{id}.mp4` under count-LRU (protecting up to `max_cached_bookmark_videos`); resolver is fallback for evicted/purged items.
   - In `BookmarkPlayerOverlay.loadVideo()`:
-    - Check if active week's local file exists in `videos/{bookmark.weekID}/{id}.mp4`. If yes, play local file immediately (offline MRT ready!).
-    - If local file missing (prior week purged):
+    - Check if active week's local file or isolated bookmark file exists in `Bookmarks/{id}.mp4` or `videos/{bookmark.weekID}/{id}.mp4`. If yes, play local file immediately (offline MRT ready!).
+    - If local file missing (prior week purged and bookmark evicted):
       - If network offline: show "Online required for this older bookmark" without spinning player.
       - If network online: invoke `BookmarkResolver.shared.resolve(url:)`, receive fresh MP4 URL, and stream directly in AVPlayer.
-  - One-time migration: purge legacy isolated `Bookmarks/` MP4 files to reclaim device storage.
+  - One-time migration: enforce count-cap LRU on `Bookmarks/` MP4 files to respect device storage limits.
 
 ---
 

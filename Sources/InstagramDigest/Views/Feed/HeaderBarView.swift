@@ -6,35 +6,23 @@ import SwiftUI
 /// The Jump-to-N pill was retired in favor of grid selection + last-reel resume.
 /// Strictly excludes any desktop daily target badge.
 public struct HeaderBarView: View {
-    public let currentIndex: Int
-    public let totalCount: Int
     public let bookmarkCount: Int
     public let watchHoursText: String
     public var onTapGrid: () -> Void
-    public var onTapOffline: () -> Void
     public var onTapBookmarks: () -> Void
-    public var onTapManifesto: () -> Void
     public var onTapSettings: () -> Void
 
     public init(
-        currentIndex: Int,
-        totalCount: Int,
         bookmarkCount: Int,
         watchHoursText: String = "0.0 hrs",
         onTapGrid: @escaping () -> Void = {},
-        onTapOffline: @escaping () -> Void = {},
         onTapBookmarks: @escaping () -> Void = {},
-        onTapManifesto: @escaping () -> Void = {},
         onTapSettings: @escaping () -> Void = {}
     ) {
-        self.currentIndex = currentIndex
-        self.totalCount = totalCount
         self.bookmarkCount = bookmarkCount
         self.watchHoursText = watchHoursText
         self.onTapGrid = onTapGrid
-        self.onTapOffline = onTapOffline
         self.onTapBookmarks = onTapBookmarks
-        self.onTapManifesto = onTapManifesto
         self.onTapSettings = onTapSettings
     }
 

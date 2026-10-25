@@ -98,7 +98,14 @@ public struct LibraryPathResolver: Sendable {
         fileExistsAndNonEmpty(at: thumbnailFileURL(for: weekID, reelID: reelID))
     }
 
-    /// Local storage URL for persisting resumeData: MediaCache/ResumeData/{reel_id}.dat
+    /// Local storage URL for persisting resumeData: MediaCache/ResumeData/{week_id}__{reel_id}.dat (AUDIT-067)
+    public func resumeDataFileURL(forWeekID weekID: String, reelID: String) -> URL {
+        let safeWeek = Self.sanitizeComponent(weekID, fallback: "week")
+        let safeReel = Self.sanitizeComponent(reelID, fallback: "reel")
+        return resumeDataDirectoryURL.appendingPathComponent("\(safeWeek)__\(safeReel).dat", isDirectory: false)
+    }
+
+    /// Backwards-compatible overload for legacy callers: MediaCache/ResumeData/{reel_id}.dat
     public func resumeDataFileURL(for reelID: String) -> URL {
         let safeReel = Self.sanitizeComponent(reelID, fallback: "reel")
         return resumeDataDirectoryURL.appendingPathComponent("\(safeReel).dat", isDirectory: false)

@@ -208,12 +208,6 @@ public actor MediaCacheManager {
     public func executeRolloverPurge(forNewWeek incomingWeekID: String, protectedReelIDs: Set<String> = []) async {
         isPurging = true
         await downloadSuspensionHandler?(true)
-        defer {
-            isPurging = false
-            Task { [weak self] in
-                await self?.downloadSuspensionHandler?(false)
-            }
-        }
 
         let fm = FileManager.default
         let safeIncoming = LibraryPathResolver.sanitizeComponent(incomingWeekID)
@@ -274,9 +268,10 @@ public actor MediaCacheManager {
         }
 
         // 2. Clear legacy isolated Bookmarks directory MP4s to enforce ~3 GB cap (respecting protectedStems)
+        // AUDIT-004: Restrict strictly to .mp4 files; never delete preserved bookmark thumbnails (.thumb.jpg)
         let bookmarksDir = pathResolver.bookmarksDirectoryURL
         if let bmFiles = try? fm.contentsOfDirectory(at: bookmarksDir, includingPropertiesForKeys: nil) {
-            for f in bmFiles {
+            for f in bmFiles where f.pathExtension == "mp4" {
                 let baseName = f.deletingPathExtension().lastPathComponent
                 if !protectedStems.contains(baseName) {
                     try? fm.removeItem(at: f)
@@ -288,10 +283,23 @@ public actor MediaCacheManager {
         let resumeDir = pathResolver.resumeDataDirectoryURL
         if let resumeFiles = try? fm.contentsOfDirectory(at: resumeDir, includingPropertiesForKeys: nil) {
             for f in resumeFiles {
-                let stem = f.deletingPathExtension().lastPathComponent
-                if !protectedStems.contains(stem) {
-                    try? fm.removeItem(at: f)
+                let filename = f.deletingPathExtension().lastPathComponent
+                // Handle {week}__{reel} or legacy {reel} format
+                let reelStem: String
+                if filename.contains("__") {
+                    let parts = filename.components(separatedBy: "__")
+                    let weekPart = parts[0]
+                    reelStem = parts[1]
+                    if weekPart == safeIncoming || protectedStems.contains(reelStem) {
+                        continue
+                    }
+                } else {
+                    reelStem = filename
+                    if protectedStems.contains(reelStem) {
+                        continue
+                    }
                 }
+                try? fm.removeItem(at: f)
             }
         }
 
@@ -314,6 +322,8 @@ public actor MediaCacheManager {
         }
 
         await reconcileBookmarkStorageLedger()
+        isPurging = false
+        await downloadSuspensionHandler?(false)
     }
 
     /// Purges an older week's cache directory during weekly rollover, strictly protecting the LivePinSet.
@@ -687,10 +697,14 @@ public actor MediaCacheManager {
             // Never unlink a file the pool is streaming right now.
             pendingDeletions.insert(reelID)
         } else if fm.fileExists(atPath: bookmarkDestURL.path) {
-            if let size = Self.diskFileSize(atPath: bookmarkDestURL.path) {
-                self.totalBookmarkBytes = max(0, self.totalBookmarkBytes - size)
-            }
+            let size = Self.diskFileSize(atPath: bookmarkDestURL.path) ?? 0
             try? fm.removeItem(at: bookmarkDestURL)
+            if !fm.fileExists(atPath: bookmarkDestURL.path) {
+                self.totalBookmarkBytes = max(0, self.totalBookmarkBytes - size)
+            } else {
+                // AUDIT-030: Deletion failed; keep counted and preserve row as .cached
+                return
+            }
         }
         // IOS-P1-5: sync the DB row so the UI stops showing "Saved offline"
         // and computeLivePinSet stops pinning a deleted file.
@@ -805,11 +819,12 @@ public actor MediaCacheManager {
         }
 
         if let expected = expectedSizeBytes, expected > 0 {
-            // IOS-P1-3: manifest sizeBytes is often an estimate, so require
+            // IOS-P1-3 & AUDIT-066: manifest sizeBytes is often an estimate, so require
             // the file to be within 10% (or 1 MB) instead of exact equality.
-            // Strict equality discarded valid downloads and retried 3x.
+            // Strict equality discarded valid downloads; absence of upper bound accepted corrupt oversize errors.
             let lowerBound = min(Int64(Double(expected) * 0.9), expected - 1_000_000)
-            if actualSize < max(1, lowerBound) {
+            let upperBound = max(Int64(Double(expected) * 1.1), expected + 1_000_000)
+            if actualSize < max(1, lowerBound) || actualSize > upperBound {
                 try? fm.removeItem(at: temporaryURL)
                 throw CacheError.sizeMismatch(expected: expected, actual: actualSize)
             }

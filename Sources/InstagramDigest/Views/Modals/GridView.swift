@@ -10,6 +10,8 @@ public struct GridView: View {
     /// Rec 2 freshness caption, e.g. "Week of Sep 26 · updated 2 h ago".
     public var freshnessCaption: String = ""
     public var hideRanks: Bool = false
+    public var title: String = "All Reels"
+    @AppStorage("ig_digest_grayscale_mode") private var isGrayscale: Bool = false
     @Environment(\.dismiss) private var dismiss
 
     private let columns = [
@@ -39,6 +41,7 @@ public struct GridView: View {
         freshnessCaption: String = "",
         hideRanks: Bool = false,
         sortOrder: String = "rank",
+        title: String = "All Reels",
         onSelectReel: @escaping (Int) -> Void
     ) {
         self.reels = reels
@@ -48,6 +51,7 @@ public struct GridView: View {
         self.freshnessCaption = freshnessCaption
         self.hideRanks = hideRanks
         self.sortOrder = sortOrder
+        self.title = title
         self.onSelectReel = onSelectReel
     }
 
@@ -66,57 +70,60 @@ public struct GridView: View {
                                 onSelectReel(index)
                                 dismiss()
                             } label: {
-                                ZStack(alignment: .bottomLeading) {
-                                    // Thumbnail (prefers offline cache from Download All)
-                                    AsyncThumbnailView(url: reel.thumbnailUrl, reelID: reel.id, weekID: weekID)
-                                        .aspectRatio(9/16, contentMode: .fill)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 215)
-                                        .clipped()
-                                        .opacity(isWatched ? 0.6 : 1.0)
+                                Color.clear
+                                    .aspectRatio(9/16, contentMode: .fit)
+                                    .overlay(
+                                        ZStack(alignment: .bottomLeading) {
+                                            // Thumbnail (prefers offline cache from Download All)
+                                            AsyncThumbnailView(url: reel.thumbnailUrl, reelID: reel.id, weekID: weekID)
+                                                .aspectRatio(9/16, contentMode: .fill)
+                                                .clipped()
+                                                .opacity(isWatched ? 0.6 : 1.0)
 
-                                    // Gradient overlay
-                                    LinearGradient(
-                                        colors: [Color.clear, Color.black.opacity(0.8)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
+                                            // Gradient overlay
+                                            LinearGradient(
+                                                colors: [Color.clear, Color.black.opacity(0.8)],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
 
-                                    // Content overlays
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack {
-                                            if !hideRanks {
-                                                Text(reel.rankDisplay)
-                                                    .font(.system(size: 11, weight: .bold))
+                                            // Content overlays
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                HStack {
+                                                    if !hideRanks {
+                                                        Text(reel.rankDisplay)
+                                                            .font(.system(size: 11, weight: .bold))
+                                                            .foregroundColor(.white)
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 2)
+                                                            .background(isCurrent ? Color.cyan : Color.black.opacity(0.6))
+                                                            .clipShape(Capsule())
+                                                    }
+
+                                                    Spacer()
+
+                                                    if isWatched {
+                                                        Image(systemName: "checkmark.circle.fill")
+                                                            .font(.system(size: 12))
+                                                            .foregroundColor(.green)
+                                                    }
+                                                }
+
+                                                Spacer()
+
+                                                Text("@\(reel.creatorHandle)")
+                                                    .font(.system(size: 11, weight: .semibold))
                                                     .foregroundColor(.white)
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 2)
-                                                    .background(isCurrent ? Color.cyan : Color.black.opacity(0.6))
-                                                    .clipShape(Capsule())
+                                                    .lineLimit(1)
                                             }
-
-                                            Spacer()
-
-                                            if isWatched {
-                                                Image(systemName: "checkmark.circle.fill")
-                                                    .font(.system(size: 12))
-                                                    .foregroundColor(.green)
-                                            }
+                                            .padding(6)
                                         }
-
-                                        Spacer()
-
-                                        Text("@\(reel.creatorHandle)")
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundColor(.white)
-                                            .lineLimit(1)
-                                    }
-                                    .padding(6)
-                                }
-                                .overlay(
-                                    Rectangle()
-                                        .stroke(isCurrent ? Color.cyan : Color.clear, lineWidth: 2)
-                                )
+                                    )
+                                    .clipped()
+                                    .overlay(
+                                        Rectangle()
+                                            .stroke(isCurrent ? Color.cyan : Color.clear, lineWidth: 2)
+                                    )
                             }
                             .accessibilityIdentifier("GridReelItem_\(index)")
                         }
@@ -124,7 +131,8 @@ public struct GridView: View {
                     .padding(.vertical, 2)
                 }
             }
-            .navigationTitle("All Reels (\(reels.count))")
+            .grayscaleIf(isGrayscale)
+            .navigationTitle("\(title) (\(reels.count))")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
