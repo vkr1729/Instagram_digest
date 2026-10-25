@@ -364,7 +364,6 @@ public final class GitHubBookmarkSyncService {
             if let data = (try? Data(contentsOf: bmThumb)) ?? (try? Data(contentsOf: weekThumb)) {
                 base64Thumb = data.base64EncodedString()
             }
-            let safeID = LibraryPathResolver.sanitizeComponent(bm.reelID)
             return BookmarkSyncDTO(
                 id: bm.reelID,
                 creator_handle: bm.creatorHandle,
@@ -442,8 +441,8 @@ public final class GitHubBookmarkSyncService {
             // Restore embedded thumbnail if present
             if let b64 = dto.thumbnail_base64, let thumbData = Data(base64Encoded: b64) {
                 let dest = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: dto.id)
-                try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
-                try? thumbData.write(to: dest, options: .atomic)
+                _ = try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                _ = try? thumbData.write(to: dest, options: .atomic)
             }
         }
 
@@ -561,7 +560,7 @@ public final class GitHubBookmarkSyncService {
             let safeID = LibraryPathResolver.sanitizeComponent(dto.id)
             let thumbDest = LibraryPathResolver.shared.bookmarkThumbnailFileURL(for: safeID)
             if !FileManager.default.fileExists(atPath: thumbDest.path) {
-                try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                _ = try? LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
                 if let thumbApiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/contents/thumbnails/\(safeID)_portrait.jpg") {
                     var thumbReq = URLRequest(url: thumbApiURL)
                     thumbReq.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
@@ -591,7 +590,6 @@ public final class GitHubBookmarkSyncService {
         if canUploadVideos {
             var bookmarksByTag: [String: [BookmarkItem]] = [:]
             for local in localBookmarks {
-                let safeID = LibraryPathResolver.sanitizeComponent(local.reelID)
                 let remoteHasAsset = (allMergedDTOs[local.reelID]?.video_asset_name != nil)
 
                 if !remoteHasAsset,

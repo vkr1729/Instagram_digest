@@ -395,7 +395,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.reattachPlayerToVisibleCells()
+                MainActor.assumeIsolated {
+                    self?.reattachPlayerToVisibleCells()
+                }
             }
         )
 
@@ -405,7 +407,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.reattachPlayerToVisibleCells()
+                MainActor.assumeIsolated {
+                    self?.reattachPlayerToVisibleCells()
+                }
             }
         )
     }
