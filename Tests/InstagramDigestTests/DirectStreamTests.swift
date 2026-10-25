@@ -300,9 +300,9 @@ final class DirectStreamTests: XCTestCase {
         defer { try? fm.removeItem(at: tempDir) }
 
         let weekID = "2026-10-24"
-        let reel1 = ReelItem(id: "r1", rank: 1, creatorHandle: "c1", caption: "", videoUrl: URL(string: "https://meta.com/1.mp4")!, thumbnailUrl: nil, canonicalUrl: nil, sizeBytes: 100)
-        let reel2 = ReelItem(id: "r2", rank: 2, creatorHandle: "c2", caption: "", videoUrl: URL(string: "https://meta.com/2.mp4")!, thumbnailUrl: nil, canonicalUrl: nil, sizeBytes: 200)
-        let reel3 = ReelItem(id: "r3", rank: 3, creatorHandle: "c3", caption: "", videoUrl: URL(string: "https://meta.com/3.mp4")!, thumbnailUrl: nil, canonicalUrl: nil, sizeBytes: 300)
+        let reel1 = ReelItem(id: "r1", creatorHandle: "c1", caption: "", rank: 1, videoUrl: URL(string: "https://meta.com/1.mp4")!, thumbnailUrl: nil, canonicalUrl: nil, sizeBytes: 100)
+        let reel2 = ReelItem(id: "r2", creatorHandle: "c2", caption: "", rank: 2, videoUrl: URL(string: "https://meta.com/2.mp4")!, thumbnailUrl: nil, canonicalUrl: nil, sizeBytes: 200)
+        let reel3 = ReelItem(id: "r3", creatorHandle: "c3", caption: "", rank: 3, videoUrl: URL(string: "https://meta.com/3.mp4")!, thumbnailUrl: nil, canonicalUrl: nil, sizeBytes: 300)
 
         // 1. Empty directory
         let emptyCensus = resolver.cacheCensus(reels: [reel1, reel2, reel3], weekID: weekID)
@@ -1019,11 +1019,11 @@ final class DirectStreamTests: XCTestCase {
             videoUrl: URL(string: "https://example.com/video.mp4")!,
             thumbnailUrl: URL(string: "https://example.com/thumb.jpg"),
             canonicalUrl: URL(string: "https://www.instagram.com/reel/unuploaded_reel/"),
+            videoAssetName: nil, // unconfirmed upload
+            releaseTag: nil,
             bookmarkedAt: Date(),
             localStatus: .cached,
-            sizeBytes: 100,
-            videoAssetName: nil, // unconfirmed upload
-            releaseTag: nil
+            sizeBytes: 100
         )
 
         let service = GitHubBookmarkSyncService.shared

@@ -101,7 +101,7 @@ public final class GitHubBookmarkSyncService {
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
-    public static func releaseTag(for date: Date) -> String {
+    public nonisolated static func releaseTag(for date: Date) -> String {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
         let year = cal.component(.year, from: date)
@@ -180,7 +180,7 @@ public final class GitHubBookmarkSyncService {
     }
 
     /// AUDIT-009: Extract "next" page URL from GitHub API Link header
-    public static func extractNextPageURL(from linkHeader: String?) -> URL? {
+    public nonisolated static func extractNextPageURL(from linkHeader: String?) -> URL? {
         guard let linkHeader else { return nil }
         let parts = linkHeader.components(separatedBy: ",")
         for part in parts {
