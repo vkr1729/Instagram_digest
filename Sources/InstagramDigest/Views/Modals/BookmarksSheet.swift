@@ -267,11 +267,16 @@ public struct BookmarksSheet: View {
                                                                         .font(.system(size: 12))
                                                                         .foregroundColor(.orange)
                                                                         .accessibilityIdentifier("BookmarkBadge_\(index)_downloadRequired")
+                                                                } else if bookmark.videoAssetName != nil {
+                                                                    Image(systemName: "cloud.fill")
+                                                                        .font(.system(size: 12))
+                                                                        .foregroundColor(.cyan)
+                                                                        .accessibilityIdentifier("BookmarkBadge_\(index)_github")
                                                                 } else {
-                                                                    Image(systemName: "globe")
+                                                                    Image(systemName: "safari")
                                                                         .font(.system(size: 12))
                                                                         .foregroundColor(.blue.opacity(0.8))
-                                                                        .accessibilityIdentifier("BookmarkBadge_\(index)_resolver")
+                                                                        .accessibilityIdentifier("BookmarkBadge_\(index)_web")
                                                                 }
                                                             } else if isPending {
                                                                 Image(systemName: "icloud.slash")
@@ -358,13 +363,8 @@ public struct BookmarksSheet: View {
             .task {
                 await refreshLedger()
                 await retryPendingRemoteBookmarks()
-                if DigestDataService.directMode && !ghRepo.isEmpty && !ghPAT.isEmpty {
-                    _ = try? await GitHubBookmarkSyncService.shared.syncWithGitHub(
-                        repo: ghRepo,
-                        pat: ghPAT,
-                        localBookmarks: bookmarks,
-                        context: modelContext
-                    )
+                if DigestDataService.directMode {
+                    await GitHubBookmarkSyncService.shared.syncIfNeeded(context: modelContext)
                 }
             }
             .sheet(isPresented: $showGitHubSyncSheet) {
@@ -403,10 +403,10 @@ public struct BookmarksSheet: View {
                 }
             }
             .task(id: "\(downloadCoordinator.state)-\(bookmarks.count)") {
-                let currentBookmarks = bookmarks
+                let pairs = bookmarks.map { ($0.weekID, $0.reelID) }
                 let ids = await Task.detached(priority: .userInitiated) { () -> Set<String> in
-                    Set(currentBookmarks.compactMap { bm in
-                        LibraryPathResolver.shared.resolvedLocalFileURL(for: bm.weekID, reelID: bm.reelID) != nil ? bm.reelID : nil
+                    Set(pairs.compactMap { w, r in
+                        LibraryPathResolver.shared.resolvedLocalFileURL(for: w, reelID: r) != nil ? r : nil
                     })
                 }.value
                 await MainActor.run {
@@ -515,11 +515,10 @@ public struct BookmarkPlayerOverlay: View {
     @State private var failObserverToken: NSObjectProtocol?
     @State private var statusObserver: NSKeyValueObservation?
     @State private var shareDownloadTask: Task<Void, Never>?
-    @State private var isResolving: Bool = false
-    @State private var resolutionError: String? = nil
-    @State private var resolutionErrorIcon: String = "wifi.slash"
-    @State private var isCurrentWeekDownloadRequired: Bool = false
-    @State private var resolutionTask: Task<Void, Never>? = nil
+    @State private var isLoadingVideo: Bool = false
+    @State private var isOfflineUnavailable: Bool = false
+    @State private var hasAttemptedTier1_5Fallback: Bool = false
+    @State private var streamTask: Task<Void, Never>? = nil
 
     // Stored (not built in `body`): same lesson as FeedMainView.watchTimer —
     // an inline Timer.publish would be recreated and resubscribed on every
@@ -608,13 +607,13 @@ public struct BookmarkPlayerOverlay: View {
             }
             }
 
-            // Stream Resolution Spinner & Error States
-            if isResolving {
+            // Video Streaming & Fallback States
+            if isLoadingVideo {
                 VStack(spacing: 12) {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                         .scaleEffect(1.3)
-                    Text("Resolving video stream...")
+                    Text("Loading video...")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.white.opacity(0.85))
                 }
@@ -622,71 +621,31 @@ public struct BookmarkPlayerOverlay: View {
                 .background(Color.black.opacity(0.65))
                 .cornerRadius(12)
                 .accessibilityIdentifier("BookmarkPlayerResolvingIndicator")
-            } else if let error = resolutionError {
+            } else if isOfflineUnavailable {
                 VStack(spacing: 14) {
-                    Image(systemName: resolutionErrorIcon)
+                    Image(systemName: "wifi.slash")
                         .font(.system(size: 36))
-                        .foregroundColor(.orange)
-                    Text(error)
+                        .foregroundColor(.white.opacity(0.7))
+                    Text("You're offline — this bookmark isn't downloaded")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
 
-                    if isCurrentWeekDownloadRequired {
-                        Button {
-                            if let onTriggerDownload = onTriggerDownload {
-                                onTriggerDownload()
-                            } else {
-                                NotificationCenter.default.post(name: Notification.Name("TriggerDownloadAllNotification"), object: nil)
-                            }
-                        } label: {
+                    if let igUrl = currentBookmark?.canonicalUrl {
+                        Link(destination: igUrl) {
                             HStack(spacing: 6) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                Text("Download Week")
+                                Image(systemName: "safari")
+                                Text("Open on Instagram")
                             }
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(.black)
+                            .foregroundColor(.white.opacity(0.4))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
-                            .background(Color.cyan)
+                            .background(Color.white.opacity(0.1))
                             .cornerRadius(8)
                         }
-                        .padding(.top, 4)
-                        .accessibilityIdentifier("BookmarkPlayerDownloadWeekButton")
-                    }
-
-                    if let bm = currentBookmark {
-                        Button {
-                            loadVideo(for: bm)
-                        } label: {
-                            Text("Retry")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.black)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(Color.white)
-                                .cornerRadius(8)
-                        }
-                        .padding(.top, 4)
-                        .accessibilityIdentifier("BookmarkPlayerRetryButton")
-
-                        if let igUrl = bm.canonicalUrl {
-                            Link(destination: igUrl) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "safari")
-                                    Text("Open on Instagram")
-                                }
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(Color.white.opacity(0.18))
-                                .cornerRadius(8)
-                            }
-                            .padding(.top, 4)
-                            .accessibilityIdentifier("BookmarkPlayerOpenInstagramButton")
-                        }
+                        .disabled(true)
                     }
                 }
                 .padding(24)
@@ -694,6 +653,29 @@ public struct BookmarkPlayerOverlay: View {
                 .cornerRadius(16)
                 .padding(.horizontal, 32)
                 .accessibilityIdentifier("BookmarkPlayerResolutionError")
+            } else if player == nil, let bm = currentBookmark {
+                // Tier 3: Clean Open on Instagram
+                VStack(spacing: 14) {
+                    if let igUrl = bm.canonicalUrl {
+                        Link(destination: igUrl) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "safari")
+                                Text("Open on Instagram")
+                            }
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.2))
+                            .clipShape(Capsule())
+                        }
+                        .accessibilityIdentifier("BookmarkPlayerOpenInstagramButton")
+                    }
+                }
+                .padding(24)
+                .background(Color.black.opacity(0.75))
+                .cornerRadius(16)
+                .padding(.horizontal, 32)
             }
 
             // Natural background scrim for chrome readability
@@ -964,75 +946,72 @@ public struct BookmarkPlayerOverlay: View {
         }
         statusObserver?.invalidate()
         statusObserver = nil
-        resolutionTask?.cancel()
-        resolutionTask = nil
+        streamTask?.cancel()
+        streamTask = nil
         player?.pause()
         player = nil
         isPlaying = false
-        resolutionError = nil
-        isCurrentWeekDownloadRequired = false
+        isLoadingVideo = false
+        isOfflineUnavailable = false
+        hasAttemptedTier1_5Fallback = false
 
+        // Tier 1: Local Disk Vault
         if let localFile = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) {
-            isResolving = false
             playMedia(url: localFile, isLocal: true, for: bookmark, isStoredURL: false)
             return
         }
 
-        // Stored URL branch: gate on network reachability so MRT tunnel / offline falls to resolver / offline badge
-        if let directURL = bookmark.videoUrl, Reachability.isConnectedToNetwork() {
-            isResolving = false
+        // Tier 1.5: Active-Week Stored URL Fast Path
+        let isCurrentWeek = !self.currentActiveWeekID.isEmpty && bookmark.weekID == self.currentActiveWeekID
+        if isCurrentWeek, let directURL = bookmark.videoUrl, Reachability.isConnectedToNetwork() {
             playMedia(url: directURL, isLocal: false, for: bookmark, isStoredURL: true)
             return
         }
 
-        // Fallback: resolve via Cobalt API
-        playViaResolver(for: bookmark)
+        // Tier 2: GitHub Release Streaming (or Tier 3 Web Fallback)
+        playViaGitHubRelease(for: bookmark)
     }
 
-    private func playViaResolver(for bookmark: BookmarkItem) {
-        guard let canonical = bookmark.canonicalUrl else {
-            isResolving = false
-            resolutionError = "No playable stream URL available"
-            resolutionErrorIcon = "exclamationmark.triangle"
+    private func playViaGitHubRelease(for bookmark: BookmarkItem) {
+        player?.pause()
+        player = nil
+
+        guard Reachability.isConnectedToNetwork() else {
+            isLoadingVideo = false
+            isOfflineUnavailable = true
             return
         }
-        isResolving = true
-        resolutionTask?.cancel()
-        resolutionTask = Task { @MainActor in
-            let result = await BookmarkResolver.shared.resolve(url: canonical)
+
+        let repo = UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks"
+        let pat = UserDefaults.standard.string(forKey: "gh_bookmark_pat") ?? ""
+
+        guard !repo.isEmpty, !pat.isEmpty else {
+            // No GitHub configured -> Tier 3 Web Fallback
+            isLoadingVideo = false
+            return
+        }
+
+        isLoadingVideo = true
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let year = cal.component(.year, from: bookmark.bookmarkedAt)
+
+        streamTask?.cancel()
+        streamTask = Task { @MainActor in
+            let s3URL = await GitHubBookmarkSyncService.shared.resolveReleaseStreamURL(
+                reelID: bookmark.reelID,
+                year: year,
+                repo: repo,
+                pat: pat
+            )
             guard !Task.isCancelled else { return }
-            self.isResolving = false
-            switch result {
-            case .success(let streamURL):
-                self.resolutionError = nil
-                self.isCurrentWeekDownloadRequired = false
-                self.playMedia(url: streamURL, isLocal: false, for: bookmark, isStoredURL: false)
-            case .offline:
-                let isCurrentWeek = !self.currentActiveWeekID.isEmpty && bookmark.weekID == self.currentActiveWeekID
-                self.isCurrentWeekDownloadRequired = isCurrentWeek
-                if isCurrentWeek {
-                    self.resolutionError = "Download required — get this week for offline"
-                    self.resolutionErrorIcon = "arrow.down.circle"
-                } else {
-                    self.resolutionError = "Online connection required for older bookmarks"
-                    self.resolutionErrorIcon = "wifi.slash"
-                }
-            case .rateLimited:
-                self.isCurrentWeekDownloadRequired = false
-                self.resolutionError = "Resolver rate limited. Please try again shortly."
-                self.resolutionErrorIcon = "hourglass"
-            case .authOrChallengeRequired:
-                self.isCurrentWeekDownloadRequired = false
-                self.resolutionError = "Authentication or captcha required by resolver."
-                self.resolutionErrorIcon = "lock.shield"
-            case .unsupportedFormat:
-                self.isCurrentWeekDownloadRequired = false
-                self.resolutionError = "Media format not supported by resolver."
-                self.resolutionErrorIcon = "film.badge.exclamationmark"
-            case .failed(let msg):
-                self.isCurrentWeekDownloadRequired = false
-                self.resolutionError = msg
-                self.resolutionErrorIcon = "exclamationmark.triangle.fill"
+            self.isLoadingVideo = false
+            if let s3URL = s3URL {
+                self.playMedia(url: s3URL, isLocal: false, for: bookmark, isStoredURL: false)
+            } else {
+                // S3 URL resolution failed -> Tier 3 Web Fallback
+                self.player?.pause()
+                self.player = nil
             }
         }
     }
@@ -1084,13 +1063,36 @@ public struct BookmarkPlayerOverlay: View {
                 queue: .main
             ) { [weak avPlayer] _ in
                 guard avPlayer != nil else { return }
-                playViaResolver(for: bookmark)
+                if !self.hasAttemptedTier1_5Fallback {
+                    self.hasAttemptedTier1_5Fallback = true
+                    self.playViaGitHubRelease(for: bookmark)
+                }
+            }
+
+            statusObserver = item.observe(\.status, options: [.new]) { observedItem, _ in
+                DispatchQueue.main.async {
+                    if observedItem.status == .failed && !self.hasAttemptedTier1_5Fallback {
+                        self.hasAttemptedTier1_5Fallback = true
+                        self.playViaGitHubRelease(for: bookmark)
+                    }
+                }
+            }
+        } else if !isLocal {
+            failObserverToken = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemFailedToPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak avPlayer] _ in
+                guard avPlayer != nil else { return }
+                self.player?.pause()
+                self.player = nil
             }
 
             statusObserver = item.observe(\.status, options: [.new]) { observedItem, _ in
                 DispatchQueue.main.async {
                     if observedItem.status == .failed {
-                        playViaResolver(for: bookmark)
+                        self.player?.pause()
+                        self.player = nil
                     }
                 }
             }
@@ -1186,11 +1188,11 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func teardownPlayer() {
-        resolutionTask?.cancel()
-        resolutionTask = nil
+        streamTask?.cancel()
+        streamTask = nil
         shareDownloadTask?.cancel()
         shareDownloadTask = nil
-        isResolving = false
+        isLoadingVideo = false
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)
             endObserverToken = nil

@@ -13,11 +13,14 @@ public struct DownloadAllSheet: View {
     @State private var preflightResult: (isSufficient: Bool, requiredBytes: Int64, availableBytes: Int64)?
     @State private var unwatchedOnly: Bool = true
     @State private var watchedIDs: Set<String> = []
+    @State private var census: (cached: Int, total: Int)? = nil
+    @State private var cachedPendingIDs: Set<String> = []
 
     public init(reels: [ReelItem], weekID: String, generatedAt: Date? = nil) {
         self.reels = reels
         self.weekID = weekID
         self.generatedAt = generatedAt
+        self._cachedPendingIDs = State(initialValue: Set(reels.map { $0.id }))
     }
 
     public var body: some View {
@@ -92,19 +95,28 @@ public struct DownloadAllSheet: View {
                         .tint(.cyan)
                         .padding(.horizontal, 20)
                         .accessibilityIdentifier("UnwatchedOnlyToggle")
-                        .onChange(of: unwatchedOnly) { _, _ in
-                            preflightResult = coordinator.preflightStorage(reels: effectiveReels, weekID: weekID)
-                        }
                     }
                     VStack(spacing: 12) {
                         switch coordinator.state {
                         case .idle:
-                            if effectiveReels.isEmpty {
-                                Text("All reels already downloaded or watched")
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.8))
+                            if isAllDownloaded {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("All reels downloaded and ready offline!")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundColor(.white)
+                                }
+                            } else if pendingReels.isEmpty {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "line.3.horizontal.decrease.circle")
+                                        .foregroundColor(.cyan)
+                                    Text("Nothing pending under current filter (\(census?.cached ?? 0)/\(census?.total ?? 0) cached on disk)")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.85))
+                                }
                             } else {
-                                Text("\(effectiveReels.count) reels ready to download")
+                                Text("\(pendingReels.count) reels ready to download (\(census?.cached ?? (reels.count - pendingReels.count)) already cached)")
                                     .font(.system(size: 15, weight: .medium))
                                     .foregroundColor(.white.opacity(0.8))
                             }
@@ -192,23 +204,38 @@ public struct DownloadAllSheet: View {
                     VStack(spacing: 12) {
                         switch coordinator.state {
                         case .idle:
-                            Button {
-                                coordinator.resetIfFinished()
-                                coordinator.startDownloadAll(
-                                    reels: effectiveReels, weekID: weekID,
-                                    excludeWatchedIDs: unwatchedOnly ? watchedIDs : [],
-                                    generatedAt: generatedAt)
-                            } label: {
-                                Text("Start Download")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 16)
-                                    .background(effectiveReels.isEmpty ? Color.white.opacity(0.3) : Color.white)
-                                    .foregroundColor(effectiveReels.isEmpty ? Color.black.opacity(0.5) : Color.black)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                            if isAllDownloaded || pendingReels.isEmpty {
+                                Button {
+                                    dismiss()
+                                } label: {
+                                    Text("Done")
+                                        .font(.system(size: 16, weight: .bold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 16)
+                                        .background(Color.white)
+                                        .foregroundColor(.black)
+                                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                                }
+                                .accessibilityIdentifier("DownloadDoneButton")
+                            } else {
+                                Button {
+                                    coordinator.resetIfFinished()
+                                    coordinator.startDownloadAll(
+                                        reels: pendingReels, weekID: weekID,
+                                        excludeWatchedIDs: unwatchedOnly ? watchedIDs : [],
+                                        generatedAt: generatedAt)
+                                } label: {
+                                    Text("Start Download")
+                                        .font(.system(size: 16, weight: .bold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 16)
+                                        .background(Color.white)
+                                        .foregroundColor(Color.black)
+                                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                                }
+                                .disabled(pendingReels.isEmpty)
+                                .accessibilityIdentifier("StartDownloadButton")
                             }
-                            .disabled(effectiveReels.isEmpty)
-                            .accessibilityIdentifier("StartDownloadButton")
 
                         case .preparing:
                             Button {} label: {
@@ -379,8 +406,57 @@ public struct DownloadAllSheet: View {
                 if let list = try? modelContext.fetch(FetchDescriptor<WatchedEvent>()) {
                     watchedIDs = Set(list.filter { $0.weekID == weekID }.map { $0.reelID })
                 }
-                preflightResult = coordinator.preflightStorage(reels: effectiveReels, weekID: weekID)
             }
+            .task {
+                await refreshCensusAndPending()
+            }
+            .onChange(of: unwatchedOnly) { _, _ in
+                preflightResult = coordinator.preflightStorage(reels: pendingReels, weekID: weekID)
+                Task {
+                    await refreshCensusAndPending()
+                }
+            }
+            .onChange(of: coordinator.state) { _, newState in
+                if isTerminalState(newState) {
+                    Task {
+                        await refreshCensusAndPending()
+                    }
+                }
+            }
+        }
+    }
+
+    private func isTerminalState(_ state: DownloadAllCoordinator.CoordinatorState) -> Bool {
+        switch state {
+        case .idle, .completed, .completedWithFailures, .failed:
+            return true
+        case .preparing, .downloading, .paused:
+            return false
+        }
+    }
+
+    private func refreshCensusAndPending() async {
+        let snapshotReels = reels
+        let currentWeekID = weekID
+        guard !snapshotReels.isEmpty && !currentWeekID.isEmpty else {
+            census = (0, 0)
+            cachedPendingIDs = []
+            preflightResult = (true, 0, 0)
+            return
+        }
+
+        let (newCensus, pendingIDs) = await Task.detached(priority: .userInitiated) { () -> ((cached: Int, total: Int), Set<String>) in
+            let c = LibraryPathResolver.shared.cacheCensus(reels: snapshotReels, weekID: currentWeekID)
+            let pending = Set(snapshotReels.compactMap { r in
+                LibraryPathResolver.shared.isLocalFileAvailable(for: currentWeekID, reelID: r.id) ? nil : r.id
+            })
+            return (c, pending)
+        }.value
+
+        await MainActor.run {
+            self.census = newCensus
+            self.cachedPendingIDs = pendingIDs
+            self.preflightResult = coordinator.preflightStorage(reels: self.pendingReels, weekID: self.weekID)
         }
     }
 
@@ -388,7 +464,16 @@ public struct DownloadAllSheet: View {
         String(format: "%.1f MB", Double(bytes) / 1_000_000)
     }
 
+    private var isAllDownloaded: Bool {
+        guard let c = census, c.total > 0 else { return false }
+        return c.cached == c.total
+    }
+
     private var effectiveReels: [ReelItem] {
         unwatchedOnly ? WatchedRules.unwatchedItems(items: reels, alreadyWatched: watchedIDs) : reels
+    }
+
+    private var pendingReels: [ReelItem] {
+        effectiveReels.filter { cachedPendingIDs.contains($0.id) }
     }
 }

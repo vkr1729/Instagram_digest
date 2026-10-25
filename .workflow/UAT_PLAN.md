@@ -1,117 +1,221 @@
-# UAT Plan — Direct-Meta Stream (Stage 4e, Independent)
+# UAT Plan — §6 Final Refactor, Stage 4e (Branch `arch/direct-meta-stream`)
 
-Date: 2026-10-25 (UTC) · Branch: `arch/direct-meta-stream` · Scope: `.workflow/REQUIREMENTS.md` (§2 scope matrix, §3 decisions Q1–Q9, §4 offline matrix, §5 addendum) + `.workflow/AUDIT_AND_REMEDIATION_REPORT.md` (Stage 4d, 88 findings: gates (a)–(g))
-Scale anchor: single-person personal use (Kedarnath Reddy) on iPhone, iOS 17+. No multi-user, no enterprise gates, no live-Instagram-gated CI.
+- **Target user:** single user (Kedarnath Reddy), personal consumption on iPhone (iOS 17+)
+- **Artifact under test:** `InstagramDigestDirect.ipa` built by `.github/workflows/build-ipa.yml`
+  from the pushed `arch/direct-meta-stream` tip, plus the workstation pipeline (`main.py`,
+  `site/data_direct.json`)
+- **Requirements trace:** `.workflow/REQUIREMENTS.md` §1–§6; architecture per
+  `.workflow/IMPLEMENTATION_PLAN.md` Phase A–F; audit per
+  `.workflow/AUDIT_AND_REMEDIATION_REPORT.md` (Stage 4d: conditional pass, 98/100)
 
-Supersedes: the 2026-10-24 UAT plan previously in this file (preserved in git history). This revision adds: Stage 4d gate-entry criteria, the AUDIT-027 storage-architecture decision fork, stale-manifest (070) and sync-progress (079) acceptance cases, and a concurrency soak for the inspection-only thread-safety residual.
+---
 
-## 1. Independence principles & safety rails
+## 1. Core Automated Test Commands
 
-- Black-box first: verify via observable surfaces — served `data_direct.json`, built `site/`, CLI exit codes + stdout, on-device playback behavior, badges, storage used. Assert on internals only where the contract names them (`DIRECT_STREAM_MODE`, `MIN_DEPLOY_ITEMS`, `data_direct.json`, `BookmarkBadge_<i>_<state>`).
-- Never run bare `python main.py` or `python main.py --sync` (full production sync: real downloads, R2 quota, Pages deploy, durable state). Allowed pipeline probes only:
-  - `.venv/bin/python main.py --dry-run --limit-per-creator 1 --days-back 1`
-  - `.venv/bin/python main.py --build-only`
-  - `.venv/bin/python main.py --expand 3 --dry-run`
-- After any interrupted run: `rm -f data/sync_progress_*.json data/expand_checkpoint_*.json data/expand_progress_*.json`. Tripwire: no new files under `data/` and no `data.json` byte change after any UAT probe (compare `sha256sum data/seen_reel_ids.json data/last_run.json` before/after where applicable).
-- Secrets: never inspect `.env`; use `.env.example` + `config.py` for schema. No PAT or token paste leaves the device (GitHub PAT is entered only in-app, never in chat/logs).
-- Network mocking: pytest and CI stub the network. Only §6 (on-device) uses live network, and only the user's own phone on their own data/Wi‑Fi.
-- Any red automated suite is a P0 regardless of matrix results. UAT may not start until Stage 4d gates (a)–(g) are green (see §2).
+Run in this order. All must be green before the manual iPhone pass begins.
 
-## 2. Entry criteria / environment
+### 1.1 Local Python suites (workstation, no network writes)
 
-- Workstation: repo on `arch/direct-meta-stream`, `.venv` Python 3.12, Chrome session cookies present for discovery probes (extraction itself is not UAT-gated).
-- iPhone: iOS 17+, app built from this branch (CI unsigned IPA or local Xcode run), native Instagram app NOT installed (per REQUIREMENTS §2).
-- GitHub: private bookmarks repo available (`vkreddy1729-ops/ig-bookmarks` or custom) + a fine-grained PAT with contents read/write for sync/restore cases.
-- Stage 4d gates (a)–(g) green: 032 test target compiles, 044 no-change regression test passes, 041 Xcode gate enforced, 027/070/071 fixed, 079 progress wired, `build-ipa.yml` green, pytest ≥211 green with clean `data/` tripwire.
-- The AUDIT-027 fork must be resolved before §6 cases M-09/M-10: either (A) Release-Asset upload implemented, or (B) REQUIREMENTS amended to "resolver-only video restore; Release Assets deferred". UAT asserts whichever the branch implements — it must not assert the deferred path.
+```bash
+# Direct-stream pipeline contract + migration regression (31 tests)
+.venv/bin/python -m pytest tests/test_direct_stream_mode.py tests/test_migrate_r2_bookmarks_to_gh.py -q
+```
 
-## 3. Automated test matrix
+Expected: `31 passed`. Covers `DIRECT_STREAM_MODE` manifest shape, `video_cdn_url`
+freshness fields, `size_bytes`, and AUDIT-014 migration cells (asset fields
+present/absent × timestamp present/empty/null/missing).
 
-Run on the workstation (exact commands). All must be green; any failure blocks §6 and fails UAT.
+### 1.2 Swift syntax check (workstation, Linux-safe)
 
-| ID | Command | Covers (REQ / audit) | Pass bar |
-|---|---|---|---|
-| A-01 | `.venv/bin/python -m pytest tests/test_direct_stream_mode.py -q` | §2 pipeline toggle, manifest shape, MIN floor, byte preservation | 29 passed |
-| A-02 | `.venv/bin/python -m pytest tests/test_direct_stream_mode.py tests/test_architectural_fixes.py tests/test_notifier.py tests/test_site_builder.py tests/test_cookie_free_uat.py -q` | §2 + §5 addendum regressions | 95 passed |
-| A-03 | `.venv/bin/python -m pytest tests/test_upload_ordering.py tests/test_sync_resume.py tests/test_expand_resume.py tests/test_durability.py tests/test_teardown_final.py tests/test_fable_audit_fixes.py tests/test_stalled_job_safeguards.py -q` | Queue/resume/durability/teardown | 116 passed |
-| A-04 | `.venv/bin/python main.py --build-only` | Static site compiles, no network, no deploy | Exit 0; `site/data_direct.json` valid JSON |
-| A-05 | `.venv/bin/python main.py --dry-run --limit-per-creator 1 --days-back 1` | Discovery/ranking simulation | Exit 0; tripwire clean |
-| A-06 | CI `build-ipa.yml`: `python-tests` job | Same as A-01 on runner | Green on branch |
-| A-07 | CI `build-ipa.yml`: `xcodebuild test -only-testing:InstagramDigestTests` | Swift unit suite incl. 032 hermetic cases | Green; zero failures/skips |
-| A-08 | CI `build-ipa.yml`: UI-test + release gates | Simulator boot, packaging fail-fast (088), Xcode pin gate (041) | Green; `Xcode 16` gate enforced |
-| A-09 | `sha256sum` production `data.json` before vs after A-01–A-05 | INV-1 byte preservation | Identical hashes |
-| A-10 | `grep -q 'Instagram_digest/data_direct.json' Sources/InstagramDigest/Engine/DigestDataService.swift` | Manifest-URL contract (071) | Exit 0 (runs in CI too) |
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+swiftc -parse $(find Sources Tests -name '*.swift')
+```
 
-Swift-side notes: A-07 is the authoritative close-out for every Swift compile/concurrency verdict that was inspection+probe-only on Linux (022/025/034, all P0 Swift legs). If CI cannot run (runner outage), UAT is BLOCKED — local `swiftc` probes are not a substitute for the `xcodebuild` gate.
+Expected: exit 0, zero diagnostics. Note: `-parse` validates syntax only; full
+type-check + strict-concurrency + warnings-as-errors enforcement happens in §1.4.
 
-## 4. Requirements traceability matrix
+### 1.3 Workstation pipeline dry checks (scoped — never bare `main.py`)
 
-| REQ source | Requirement | Automated | Manual (§5/§6) | Ship-critical |
+Per `AGENTS.md`, bare `python main.py` / `--sync` triggers a full production sync.
+Use only these scoped forms:
+
+```bash
+# Dry simulation of discovery & ranking
+.venv/bin/python main.py --dry-run
+# Fast scoped test (few creators / short window)
+.venv/bin/python main.py --dry-run --limit-per-creator 1 --days-back 1
+# Static site compile without network or deploy
+.venv/bin/python main.py --build-only
+# Safe feed-expansion check
+.venv/bin/python main.py --expand 3 --dry-run
+```
+
+Expected: each exits 0; `--build-only` regenerates `site/data_direct.json` with
+fresh `video_cdn_url` entries while production `data.json` is byte-identical
+(`git diff --stat` shows no `data.json` change). After any interrupted run,
+clear transient checkpoints:
+
+```bash
+rm -f data/sync_progress_*.json data/expand_checkpoint_*.json data/expand_progress_*.json
+```
+
+### 1.4 GitHub Actions CI (macOS — the binding gate)
+
+Trigger: push the §6 tree to `arch/direct-meta-stream` (Stage 5); workflow
+`.github/workflows/build-ipa.yml` runs automatically. Alternatively,
+`gh workflow run build-ipa.yml --ref arch/direct-meta-stream`, then:
+
+```bash
+gh run watch --exit-status
+```
+
+Expected: green run at the pushed tip SHA covering (a) `xcodebuild test` for
+`InstagramDigestTests` (incl. all `testAudit*` cases) and `InstagramDigestUITests`
+with `SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` + `GCC_TREAT_WARNINGS_AS_ERRORS=YES`
+(any warning fails the build); (b) packaged `build_artifacts/InstagramDigestDirect.ipa`
+attached to the run. Download it for §3:
+
+```bash
+gh run download --name InstagramDigestDirect-ipa --dir build_artifacts
+```
+
+CI green at the tip SHA is a **ship-blocker** (§4): no freeze without it.
+
+---
+
+## 2. Requirements Traceability Matrix (§1–§6)
+
+| # | Requirement (§) | What is verified | Automated | Manual (§3) |
 |---|---|---|---|---|
-| §2 pipeline | Top-250 discovery/ranking; local download for validation; R2 bypass toggle | A-01, A-05 | — | Yes (toggle) |
-| §2 pipeline | `data_direct.json`: fresh `video_cdn_url` + Pages thumbs + `size_bytes` | A-01, A-04 | M-01 | Yes |
-| §2 pipeline | Pages host `…/Instagram_digest/data_direct.json`; production `data.json` untouched | A-04, A-09 | M-01 | Yes |
-| §2 iOS | Auto-prompt / 1-tap "Download Week", live progress | A-07 | M-02, M-03 | Yes |
-| §2 iOS | ~3 GB purge-before-download (no overlap) | A-07 | M-04 | Yes |
-| §2 iOS | 48h fresh window; atomic `.tmp` promotion; `(week_id,reel_id)` keys; ready/failed queue | A-07 | M-03, M-05 | Yes |
-| §2 iOS | Local-first playback, zero buffering offline | A-07 | M-06 | Yes |
-| §2 bookmarks | Reference-only bookmarks; active-week local play | A-07 | M-07 | Yes |
-| §2 bookmarks | Cobalt resolver for expired; honest offline badge | A-07 | M-08, M-09 | Yes |
-| Q1–Q9 decisions | Pre-cache batch; dynamic scrape; Cobalt; wipe-on-new-week; bypass (no delete); 1-tap; side-by-side manifest; immediate purge; Cobalt+offline badge | A-01–A-08 | M-02–M-09 | Yes |
-| §4 matrix | 4 item-states × offline/online behavior | — | M-06–M-09 | Yes |
-| §5 UI hardening | No banner/pill copy; 9:16 thumbs; persisted sort; detox; zero Cloudflare prompts | A-07 | M-10, M-11 | Yes (prompts = P0) |
-| §5 bookmarks store | Single repo; `bookmarks.json` + `thumbnails/`; Release Assets OR resolver-only (§2 fork) | A-07 | M-09, M-12 | Yes |
-| §5 LRU cap | 25/50/100/Unlimited; video-only eviction, thumb+metadata kept | A-07 | M-13 | No (default 50 suffices) |
-| §5 export/import | Base64 thumbs; offline restore | A-07 | M-12 | No |
-| §5 new-device restore | Repo+PAT pulls manifest + thumbs automatically | — | M-12 | Yes |
-| 070/079 fixes | Stale-manifest gate; sync progress | A-07 | M-05, M-12 | Yes |
+| 1 | §1 Zero-cloud, single-user | No R2/Telegram code paths active in direct mode; infra files preserved untouched | §1.1, §1.3 | — |
+| 2 | §1 Isolated benchmark channel | `data_direct.json` deployed; production `data.json` untouched | §1.3 | — |
+| 3 | §2 Weekly Top-250 discovery/rank | Dry-run curation succeeds; manifest embeds `video_cdn_url` + `size_bytes` + GitHub Pages thumbnails | §1.1, §1.3 | — |
+| 4 | §2 1-tap bulk caching + ~3 GB purge-first | Prompt appears on new week; old week purged before download; atomic `.tmp` promotion; ready/failed counts | Unit (coordinator) via §1.4 | M1 |
+| 5 | §2 Offline MRT playback | Cached reels play with zero buffering in airplane mode | — | M2 |
+| 6 | §2/§6 Bookmark tiers 1→1.5→2→3 | Vault → active-week URL (silent fall-through) → GitHub S3 stream → web fallback; offline badge | Unit via §1.4 (tiers 2/3 resolve) | M3 |
+| 7 | §3 Decision log (9 rows) | Pre-cache ≤48 h, ref-only bookmarks, wipe-on-new-week, auto-prompt, dedicated manifest | §1.1, §1.3 | M1, M2 |
+| 8 | §4 Offline/online matrix | Cached=offline OK; uncached=download-required; old bookmark offline=honest badge; metadata instant | — | M2, M3 |
+| 9 | §5 No feed banner/pill; 9:16 covers; sort persists; grayscale; zero Cloudflare prompts | Visual + persistence checks | UI tests via §1.4 | M6 |
+| 10 | §5 Single-repo GitHub sync (`bookmarks.json` + `thumbnails/` + Release assets) | Sync round-trip; release auto-create; presence-check skip | Unit via §1.4 | M4 |
+| 11 | §5/§6 LRU cap (25/50/100/unlimited, default 50) | Uploaded-first eviction; bound-slot protection; thumbnails + metadata preserved | `testAudit013…Prioritization` via §1.4 | M5 |
+| 12 | §5 JSON export/import + new-device restore | Base64 thumbnails round-trip; repo+PAT entry restores JSON + thumbnails | — | M4 |
+| 13 | §6 Silent background sync (add/remove, foreground, sheet-open) | Coalescing; cellular gate (metadata yes, video no) | `…Coalescing`, `…CellularGate` via §1.4 | M4 |
+| 14 | §6 Honest completed states | Census-derived "All reels…" + filter-empty branch in both sheets | `testAudit003…` via §1.4 | M1 |
+| 15 | §6 60 FPS feed swiping | Zero main-thread disk decode on scroll path | Static: 0 `contentsOfFile` in Feed | M6 |
+| 16 | §6 Dead-code cleanup + zero warnings | No Resolver/Banner/Cobalt; clean strict-concurrency build | §1.2, §1.4 (errors on warning) | — |
 
-## 5. Workstation manual probes (M-01)
+---
 
-- **M-01 served-manifest check (after any real weekly deploy, not during UAT itself):** fetch `https://vkr1729.github.io/Instagram_digest/data_direct.json` and confirm: HTTP 200, `run_date` matches the deployed week, `items` length ≥ MIN floor (150 at TOP=250), every item has a Meta-CDN `video_cdn_url` (no `r2.dev`/worker/local URLs), thumbs resolve under `/thumbnails/`. Separately fetch production `data.json` and confirm byte-identical to pre-deploy hash (INV-1). FAIL = any R2 URL in the direct manifest, count below floor, or production bytes changed.
+## 3. Manual Acceptance Checklist (physical iPhone via compiled IPA)
 
-## 6. On-device manual checklist (M-02–M-14)
+Setup: install the CI-built `InstagramDigestDirect.ipa` (Apple Configurator /
+TestFlight / direct install per local signing), launch with Wi-Fi on, and
+confirm the active week loads from `data_direct.json`. Each item is PASS/FAIL —
+no partial credit.
 
-Setup: fresh week available on Pages (or staging manifest), phone on Wi‑Fi, storage noted (Settings → General → iPhone Storage → app). Cases run in order; each states setup → action → expected → FAIL trigger.
+### M1 — 1-tap bulk download + honest completed states (Req. 4, 7, 14)
 
-- **M-02 new-week auto-prompt + 1-tap banner.** Setup: new `week_id` on Pages, week not downloaded. Action: launch app to feed. Expected: "New week available" alert with "Download Week (~3 GB)" / "Later"; prominent 1-tap banner under the category bar; tapping banner pauses the pool and opens the download sheet. FAIL = no prompt, no banner, or banner dead.
-- **M-03 bulk download with live progress.** Action: start "Download Week". Expected: live progress (downloaded/total + bytes), per-item failures counted live (`failed` tally, not silent), resumable after app backgrounding; completion shows green ready state, not a re-download prompt. Interrupt once (kill app mid-queue, relaunch, resume) and confirm no duplicate rows and partial progress kept. FAIL = spinner with no numbers, lost progress on relaunch, or crash.
-- **M-04 ~3 GB purge discipline.** Setup: note app storage before M-03. Expected: old week purged at download start (storage drops before it climbs); steady-state footprint ≈ one week (~2.5–3.5 GB), never two overlapping batches. FAIL = overlap ≥5 GB peak or old-week files lingering after new-week start.
-- **M-05 stale-manifest gate (070).** Setup: point the app at a manifest with `generatedAt` >48h old (staging or device-clock advance, then revert clock). Action: start "Download Week". Expected: "Week links likely expired — re-sync from workstation" instead of queue start. FAIL = queue starts against expired links.
-- **M-06 MRT airplane-mode playback (the commute case).** Setup: week fully downloaded; enable Airplane Mode. Action: pager through ≥20 reels incl. seeking; open grid; read captions. Expected: instant playback from local files, zero buffering/spinners, metadata instant; no "online required" for cached items; airplane toggle mid-playback never black-screens a cached reel. FAIL = any spinner, stall, or remote fetch attempt on a cached reel.
-- **M-07 3-state bookmark badges (live-update).** Setup: online; bookmarks in all three states (cached / downloadable / online-only). Action: toggle states (download a bookmark video, purge, go offline) while BookmarksSheet is open. Expected: badges flip live with no sheet reopen (`BookmarkBadge_<i>_<state>`), and match reality (cached badge ⇒ plays in airplane mode). FAIL = stale badge or badge/reality mismatch.
-- **M-08 older-bookmark resolver playback (online).** Setup: online; bookmark from a purged week (original CDN URL expired). Action: play it. Expected: Cobalt resolution → fresh MP4 plays in-app (no Instagram app installed); a genuinely unresolvable reel shows an honest error, never an infinite spinner. Repeat 3× for flake check. FAIL = black screen, fake ticking clock, hang, or external-app bounce.
-- **M-09 older bookmark offline (MRT tunnel).** Setup: airplane mode; same purged-week bookmark. Expected: honest "Online required for older bookmarks" badge immediately; zero hang. If fork (A) from §2 (Release Assets implemented): asset-backed video still plays offline. FAIL = spinner, hang, or silent no-op.
-- **M-10 feed presentation (addendum).** Expected: no "All N Reels Cached Offline" banner or "Offline · N downloaded" pill anywhere; grid + bookmark thumbs crisp 9:16 (no squish); Chronological (Newest) reorders instantly and persists across relaunch; Detox grayscale covers feed AND bookmarks; zero Cloudflare/Owner-Key prompts or worker calls in any flow. FAIL = any banned copy, prompt, or squished thumb.
-- **M-11 player robustness.** Rapid-scroll 50+ reels; background/foreground mid-play; lock/unlock; Silent-switch on/off. Expected: no crash, no stuck audio, no stale N+1 auto-advance, queue position sane. FAIL = crash, leaked audio, or lost position.
-- **M-12 GitHub sync + progress + restore (079/080/081).** Setup: PAT unset, then set. Expected: sync disabled on empty PAT; malformed repo (`bad repo`, `owner/`, `/name`) shows inline hint and never crashes; valid sync shows determinate per-thumbnail progress (downloaded/total, not just a spinner); cancel/dismiss mid-sync is clean; empty bookmarks state offers a GitHub-restore CTA; entering repo+PAT on a fresh install pulls `bookmarks.json` + all `thumbnails/` automatically. FAIL = crash, throw-less hang, indeterminate-only progress, or missing thumbs after restore.
-- **M-13 LRU cap spot-check (default 50).** Set cap to 25, cache aggressively, confirm eviction removes only `.mp4` beyond cap while metadata + `.thumb.jpg` survive and the playing video is never evicted; set Unlimited, confirm no coercion to 50. FAIL = thumb/metadata loss or playing-video kill.
-- **M-14 share/export hygiene.** Share a feed reel and a bookmarked reel (incl. cancel mid-download); export bookmarks, delete app data, re-import. Expected: structured, cancellable downloads; iPad-style popover safe (no crash on large screens if available); export embeds base64 thumbs and re-import restores offline display with zero network. FAIL = temp-file growth, silent export failure, or thumbs missing after import.
+1. [ ] New-week prompt: with a fresh week present, the home screen shows the
+   prominent "Download Week for Offline" action.
+2. [ ] Tap it: previous week's videos are purged first (device storage drops
+   before it climbs — check Settings → Storage or the app's byte readout),
+   then the batch downloads with live progress, concurrency badge (1x/3x), and
+   ready/failed counts.
+3. [ ] Partial batch: with some reels cached, `DownloadAllSheet` reads "N reels
+   ready to download (M already cached)" and `Start Download` fetches only pending.
+4. [ ] Full batch: with all cached, sheet shows "All reels downloaded and ready
+   offline!", `Start Download` hidden, single prominent `Done`.
+5. [ ] Filter-empty honesty: watch every reel (or enable "unwatched only" with
+   all watched) while nothing is cached → sheet shows "Nothing pending under
+   current filter (0/N cached on disk)", `Start` hidden, `Done` shown — and
+   NEVER the "All reels downloaded" string.
+6. [ ] Settings row mirrors census: "All Reels Downloaded (N/N)" green when
+   complete, "(M pending)" otherwise; tapping opens `DownloadAllSheet`.
 
-## 7. Concurrency soak (covers the inspection-only residual)
+### M2 — MRT commute offline playback (Req. 5, 7, 8)
 
-Stage 4d verified 022/025/034 by reasoning only. On device, run each 3× and log anomalies (attach screen recording on failure):
+1. [ ] After M1 completes, enable airplane mode (or ride underground): every
+   cached reel in the feed plays instantly, zero buffering, seekable.
+2. [ ] An uncached reel shows "Download required"/retry affordance — no spinner
+   of death, no crash.
+3. [ ] Metadata/captions/thumbnails render instantly offline.
 
-- **S-1 403-storm:** start bulk download on an aging manifest so refreshes fire; rapidly pause/resume; sticky user pause must survive refresh completions (no auto-resume after user pause).
-- **S-2 badge race:** spam Retry on `loadManifest` while toggling airplane mode; feed must never show duplicate rows, blank spinners, or stuck badges.
-- **S-3 double-start:** double-tap "Start Download" during `.preparing` and `.downloading`; second tap must be ignored (no restarted batch, no duplicate queue).
-- **S-4 background kill:** kill the app at ~50% bulk progress twice; relaunch must resume from ledger with counts consistent (`ready + failed + pending = total`).
+### M3 — Bookmarks playback across all 4 tiers (Req. 6, 8)
 
-## 8. Pass/Fail criteria for shipping
+Prepare one bookmark per tier: (a) cached locally, (b) active-week uncached,
+(c) evicted but uploaded to GitHub Release, (d) web-only (no local, no asset).
 
-- **SHIP (GO):** A-01–A-10 all green + M-01–M-14 all pass + S-1–S-4 clean (or anomalies triaged as non-ship-blocking with a filed follow-up) + `data/` tripwire clean + no new crash/hang observed. The user signs §9.
-- **NO-SHIP (BLOCKED):** any red automated suite; any FAIL in M-02–M-09 or M-12 (core loop: prompt → download → purge → offline play → badges → resolver → sync); any Cloudflare prompt (M-10); any data.json byte change (A-09); any un-triaged crash. Exceptions: none — all P0/P1-linked cases are hard gates.
-- **Accepted limitations (shipable with notes):** M-13 non-default caps beyond 25/50/Unlimited spot-checks; cosmetic-only M-10/M-14 nits; single-flake resolver failures in M-08 that pass on immediate retry with an honest error shown (log the flake).
+1. [ ] Tier 1: bookmark (a) plays instantly offline; grid badge is green
+   checkmark (`…_cached`).
+2. [ ] Tier 1.5: bookmark (b) online plays via stored Meta URL (orange download
+   badge); with an expired/stale URL it silently falls through to Tier 2 with
+   no error dialog, no captcha, no hang.
+3. [ ] Tier 2: bookmark (c) online streams from the GitHub Release S3 redirect
+   (cyan cloud badge `…_github`); second play starts faster (memory cache).
+4. [ ] Tier 3: bookmark (d) online shows clean "Open on Instagram" (safari badge
+   `…_web`); offline it shows "You're offline — this bookmark isn't downloaded".
+5. [ ] No Cobalt/captcha/resolver UI appears anywhere during M3.
 
-## 9. Sign-off
+### M4 — Silent GitHub sync + restore (Req. 10, 12, 13)
 
-| Gate | Result | Evidence | Date/sign |
-|---|---|---|---|
-| Stage 4d (a)–(g) (code + CI + pytest) | ☐ GO / ☐ BLOCKED | CI run URL + pytest transcript | |
-| Automated A-01–A-10 | ☐ GO / ☐ BLOCKED | Command transcripts | |
-| On-device M-01–M-14 | ☐ GO / ☐ BLOCKED | Checklist notes + recordings | |
-| Soak S-1–S-4 | ☐ GO / ☐ BLOCKED | Anomaly log | |
-| Final ship decision | ☐ SHIP / ☐ NO-SHIP | Owner: Kedarnath Reddy | |
+1. [ ] Enter repo + PAT (with stray whitespace pasted around the PAT — must
+   still work per AUDIT-008) → manual "Sync Bookmarks Now" succeeds; missing
+   `v{year}` release is auto-created; uncached-but-local videos upload; already
+   present assets are skipped, not duplicated.
+2. [ ] Silent triggers (no modal, no spinner blocking UI): add a bookmark →
+   background sync; remove a bookmark → tombstoned and removed from
+   `bookmarks.json` on next sync (never resurrects = zombie check);
+   foreground the app → sync; open `BookmarksSheet` → sync.
+3. [ ] Cellular gate: on cellular data (or forced expensive network), metadata
+   sync proceeds but video uploads defer; on Wi-Fi the deferred uploads complete
+   without duplicates or phantom `video_asset_name` entries in `bookmarks.json`.
+4. [ ] Export → JSON contains `thumbnail_base64`; delete + import restores rows
+   with offline thumbnails. New-device restore: fresh install + repo/PAT pulls
+   `bookmarks.json` and all `thumbnails/` covers automatically.
 
-— Independent QA Lead, Stage 4e, 2026-10-25.
+### M5 — 50-reel local vault eviction (Req. 11)
 
+1. [ ] Settings default is "Latest 50 videos"; switching to 25/100/Keep-All
+   takes effect on next add/save.
+2. [ ] With >cap cached videos, the oldest GitHub-backed videos evict first;
+   never-uploaded videos survive ahead of uploaded ones; the currently playing
+   reel is never evicted mid-playback.
+3. [ ] Evicted rows keep metadata + portrait thumbnail + grid presence; only the
+   `.mp4` is gone, and Tier 2 still plays them online.
+
+### M6 — 60 FPS swiping + presentation hardening (Req. 9, 15)
+
+1. [ ] Rapid vertical swiping through the full feed is butter-smooth with no
+   hitches, stale-frame flashes, or black-screen stalls (cold slots render clean
+   black).
+2. [ ] No feed banner ("All 250 Reels Cached Offline"), no header pill.
+3. [ ] All covers are crisp 9:16 portraits in grid and bookmarks; Chronological
+   (Newest) sort reorders live and persists across relaunch; Grayscale Detox
+   applies to feed and bookmarks; no Cloudflare/owner-key prompt appears anywhere.
+
+---
+
+## 4. Pass/Fail Shipping Criteria
+
+**SHIP (declare permanent freeze) iff ALL hold:**
+
+1. §1.1 pytest: 31/31 green on the tip commit.
+2. §1.2 `swiftc -parse`: exit 0 on the tip commit.
+3. §1.3 scoped pipeline checks green; production `data.json` untouched.
+4. §1.4 CI green at the exact pushed tip SHA (unit + UI tests, warnings-as-errors,
+   `InstagramDigestDirect.ipa` attached). Any warning or test failure revokes approval.
+5. §3 manual checklist: every box in M1–M6 PASS on the CI-built IPA on physical
+   iPhone hardware (no simulator-only sign-off for M2/M3/M6).
+6. Zero new crashes, hangs, or data-loss events observed during §3 (bookmark
+   metadata, thumbnails, and `bookmarks.json` round-trip intact).
+
+**FAIL (block freeze, return to Maker as Stage 5 defect — no new audit cycle):**
+any single criterion above unmet, any phantom `video_asset_name` in pushed
+`bookmarks.json`, any zombie bookmark resurrection after unsave, any Cobalt/
+captcha/resolver UI, any "All reels downloaded" string shown when census is
+partial, or any main-thread scroll hitch attributable to disk decode.
+
+---
+
+*Stage 4e UAT plan complete. Audit certification: `.workflow/AUDIT_AND_REMEDIATION_REPORT.md`.*

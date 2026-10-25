@@ -9,13 +9,15 @@ Migrate bookmarks from Cloudflare R2 into private GitHub repository:
 
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import logging
 import os
+from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from typing import Any, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -39,32 +41,34 @@ def run_gh_cmd(cmd: list[str], **kwargs):
     return subprocess.run(cmd, env=env, **kwargs)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Migrate bookmarks from Cloudflare R2 to private GitHub repository.")
-    parser.add_argument("--repo", default=DEFAULT_REPO, help=f"Target GitHub repo (default: {DEFAULT_REPO})")
-    parser.add_argument("--tag", default=DEFAULT_RELEASE_TAG, help=f"Target GitHub release tag (default: {DEFAULT_RELEASE_TAG})")
-    args = parser.parse_args()
+def migrate_bookmarks(
+    repo: str = DEFAULT_REPO,
+    release_tag: str = DEFAULT_RELEASE_TAG,
+    s3: Any = None,
+    items: Optional[list[dict[str, Any]]] = None,
+    output_path: Optional[Path] = None,
+    push_to_gh: bool = True,
+) -> int:
+    """Migrate bookmarks from Cloudflare R2 to GitHub Releases + repo."""
+    if items is None:
+        if s3 is None:
+            s3 = storage_r2.get_s3_client()
+        if not s3:
+            logger.error("Failed to initialize R2 client")
+            return 1
 
-    repo = args.repo
-    release_tag = args.tag
+        logger.info("Fetching bookmarks/manifest.json from Cloudflare R2...")
+        try:
+            obj = s3.get_object(Bucket=config.R2_BUCKET_NAME, Key="bookmarks/manifest.json")
+            items = json.loads(obj["Body"].read().decode("utf-8"))
+        except Exception as exc:
+            logger.error("Failed reading bookmarks manifest: %s", exc)
+            return 1
 
-    s3 = storage_r2.get_s3_client()
-    if not s3:
-        logger.error("Failed to initialize R2 client")
-        return 1
-
-    logger.info("Fetching bookmarks/manifest.json from Cloudflare R2...")
-    try:
-        obj = s3.get_object(Bucket=config.R2_BUCKET_NAME, Key="bookmarks/manifest.json")
-        items = json.loads(obj["Body"].read().decode("utf-8"))
-    except Exception as exc:
-        logger.error("Failed reading bookmarks manifest: %s", exc)
-        return 1
-
-    logger.info("Found %d bookmarks in Cloudflare R2", len(items))
+    logger.info("Found %d bookmarks to process", len(items))
 
     # Check existing release assets
-    existing_assets = set()
+    existing_assets: set[str] = set()
     try:
         res = run_gh_cmd(
             ["gh", "release", "view", release_tag, "--repo", repo, "--json", "assets"],
@@ -80,8 +84,8 @@ def main():
 
     logger.info("Found %d existing assets in release %s", len(existing_assets), release_tag)
 
-    migrated_bookmarks = []
-    failed_reels = []
+    migrated_bookmarks: list[dict[str, Any]] = []
+    failed_reels: list[str] = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -100,24 +104,27 @@ def main():
             if mp4_filename not in existing_assets:
                 local_file = tmp_path / mp4_filename
                 try:
+                    if s3 is None:
+                        s3 = storage_r2.get_s3_client()
+                    if not s3:
+                        raise RuntimeError("S3 client unavailable")
                     s3.download_file(config.R2_BUCKET_NAME, r2_mp4_key, str(local_file))
                     sz = local_file.stat().st_size
                     if sz <= 0 or (item.get("size_bytes") and sz != item["size_bytes"]):
                         logger.error("  Invalid size for %s: %d bytes (expected %s)", mp4_filename, sz, item.get("size_bytes"))
                         failed_reels.append(reel_id)
-                        continue
-                    logger.info("  Downloaded %s (%.2f MB)", mp4_filename, sz / (1024 * 1024))
-                    run_gh_cmd(
-                        ["gh", "release", "upload", release_tag, str(local_file), "--repo", repo, "--clobber"],
-                        check=True,
-                        capture_output=True,
-                    )
-                    logger.info("  Uploaded to release %s", release_tag)
-                    existing_assets.add(mp4_filename)
+                    else:
+                        logger.info("  Downloaded %s (%.2f MB)", mp4_filename, sz / (1024 * 1024))
+                        run_gh_cmd(
+                            ["gh", "release", "upload", release_tag, str(local_file), "--repo", repo, "--clobber"],
+                            check=True,
+                            capture_output=True,
+                        )
+                        logger.info("  Uploaded to release %s", release_tag)
+                        existing_assets.add(mp4_filename)
                 except Exception as exc:
                     logger.error("  Failed migrating asset %s: %s", mp4_filename, exc)
                     failed_reels.append(reel_id)
-                    continue
             else:
                 logger.info("  Already present in release %s", release_tag)
 
@@ -157,16 +164,27 @@ def main():
                 logger.warning("  Local thumbnail absent for %s", reel_id)
                 thumbnail_missing = True
 
-            # Build standardized bookmark record (AUDIT-027: binary video release assets deferred)
-            bm = {
+            # Resolve bookmarked_at timestamp (AUDIT-014)
+            bookmarked_at = item.get("bookmarked_at") or item.get("last_modified") or item.get("updated_at")
+            if not bookmarked_at or not str(bookmarked_at).strip():
+                bookmarked_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                bookmarked_at = str(bookmarked_at).strip()
+
+            # Build standardized bookmark record (AUDIT-014, AUDIT-027)
+            bm: dict[str, Any] = {
                 "id": reel_id,
                 "creator_handle": item.get("creator_handle", ""),
                 "caption": item.get("caption", ""),
                 "category": item.get("category", "general"),
                 "size_bytes": item.get("size_bytes", 0),
-                "bookmarked_at": item.get("bookmarked_at", ""),
+                "bookmarked_at": bookmarked_at,
                 "canonical_url": f"https://www.instagram.com/reel/{reel_id}/",
             }
+            if reel_id not in failed_reels:
+                bm["video_asset_name"] = f"{reel_id}.mp4"
+                bm["release_tag"] = release_tag
+
             if thumbnail_missing:
                 bm["thumbnail_missing"] = True
             else:
@@ -178,39 +196,49 @@ def main():
 
     # Save to local file & commit to GitHub repo (AUDIT-051)
     bookmarks_json = json.dumps(migrated_bookmarks, indent=2)
-    bookmarks_file = REPO_ROOT / "data" / "bookmarks_migrated_2026.json"
+    bookmarks_file = output_path or (REPO_ROOT / "data" / "bookmarks_migrated_2026.json")
     bookmarks_file.parent.mkdir(parents=True, exist_ok=True)
     bookmarks_file.write_text(bookmarks_json, encoding="utf-8")
     logger.info("Saved %d bookmarks to %s", len(migrated_bookmarks), bookmarks_file)
 
     # Commit bookmarks.json to repo root
-    try:
-        encoded = base64.b64encode(bookmarks_json.encode("utf-8")).decode("utf-8")
-        get_res = run_gh_cmd(
-            ["gh", "api", f"/repos/{repo}/contents/bookmarks.json"],
-            capture_output=True,
-            text=True,
-        )
-        params = [
-            "gh", "api", "-X", "PUT", f"/repos/{repo}/contents/bookmarks.json",
-            "-f", f"message=Update bookmarks.json ({len(migrated_bookmarks)} bookmarks)",
-            "-f", f"content={encoded}",
-        ]
-        if get_res.returncode == 0:
-            existing_file = json.loads(get_res.stdout)
-            params.extend(["-f", f"sha={existing_file['sha']}"])
+    if push_to_gh:
+        try:
+            encoded = base64.b64encode(bookmarks_json.encode("utf-8")).decode("utf-8")
+            get_res = run_gh_cmd(
+                ["gh", "api", f"/repos/{repo}/contents/bookmarks.json"],
+                capture_output=True,
+                text=True,
+            )
+            params = [
+                "gh", "api", "-X", "PUT", f"/repos/{repo}/contents/bookmarks.json",
+                "-f", f"message=Update bookmarks.json ({len(migrated_bookmarks)} bookmarks)",
+                "-f", f"content={encoded}",
+            ]
+            if get_res.returncode == 0:
+                existing_file = json.loads(get_res.stdout)
+                params.extend(["-f", f"sha={existing_file['sha']}"])
 
-        run_gh_cmd(params, check=True, capture_output=True)
-        logger.info("Successfully pushed bookmarks.json to %s (main branch)!", repo)
-    except Exception as exc:
-        logger.error("Failed pushing bookmarks.json: %s", exc)
-        return 1
+            run_gh_cmd(params, check=True, capture_output=True)
+            logger.info("Successfully pushed bookmarks.json to %s (main branch)!", repo)
+        except Exception as exc:
+            logger.error("Failed pushing bookmarks.json: %s", exc)
+            return 1
 
     logger.info("Migration complete: %d bookmarks backed up to %s!", len(migrated_bookmarks), repo)
     if failed_reels:
         logger.error("Migration finished with %d failures: %s", len(failed_reels), failed_reels)
         return 1
     return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Migrate bookmarks from Cloudflare R2 to private GitHub repository.")
+    parser.add_argument("--repo", default=DEFAULT_REPO, help=f"Target GitHub repo (default: {DEFAULT_REPO})")
+    parser.add_argument("--tag", default=DEFAULT_RELEASE_TAG, help=f"Target GitHub release tag (default: {DEFAULT_RELEASE_TAG})")
+    args = parser.parse_args()
+
+    return migrate_bookmarks(repo=args.repo, release_tag=args.tag)
 
 
 if __name__ == "__main__":

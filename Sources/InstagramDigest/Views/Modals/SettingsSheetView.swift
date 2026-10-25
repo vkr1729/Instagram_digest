@@ -19,7 +19,10 @@ public struct SettingsSheetView: View {
     @State private var localGhRepo: String = ""
     @State private var localGhPAT: String = ""
     @State private var localMaxCachedVideos: Int = 50
+    @State private var census: (cached: Int, total: Int)? = nil
 
+    public let reels: [ReelItem]
+    public let weekID: String
     public var onTapOffline: () -> Void
     public var onTapManifesto: () -> Void
 
@@ -31,6 +34,8 @@ public struct SettingsSheetView: View {
         isGrayscale: Binding<Bool>,
         hideRanks: Binding<Bool>,
         feedSortOrder: Binding<String>,
+        reels: [ReelItem] = [],
+        weekID: String = "",
         onTapOffline: @escaping () -> Void = {},
         onTapManifesto: @escaping () -> Void = {}
     ) {
@@ -41,6 +46,8 @@ public struct SettingsSheetView: View {
         self._isGrayscale = isGrayscale
         self._hideRanks = hideRanks
         self._feedSortOrder = feedSortOrder
+        self.reels = reels
+        self.weekID = weekID
         self.onTapOffline = onTapOffline
         self.onTapManifesto = onTapManifesto
     }
@@ -125,8 +132,16 @@ public struct SettingsSheetView: View {
                         onTapOffline()
                     } label: {
                         HStack {
-                            Label("Download All for Offline", systemImage: "arrow.down.circle")
-                                .foregroundColor(.white)
+                            if let c = census, c.total > 0, c.cached == c.total {
+                                Label("All Reels Downloaded (\(c.cached)/\(c.total))", systemImage: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                            } else if let c = census, c.total > 0 {
+                                Label("Download All for Offline (\(c.total - c.cached) pending)", systemImage: "arrow.down.circle")
+                                    .foregroundColor(.white)
+                            } else {
+                                Label("Download All for Offline", systemImage: "arrow.down.circle")
+                                    .foregroundColor(.white)
+                            }
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 13, weight: .semibold))
@@ -171,12 +186,29 @@ public struct SettingsSheetView: View {
                 localGhPAT = storedGhPAT
                 localMaxCachedVideos = storedMaxCachedVideos
             }
+            .task {
+                guard !reels.isEmpty && !weekID.isEmpty else { return }
+                let reelIDs = reels.map { $0.id }
+                let targetWeek = weekID
+                let computed = await Task.detached(priority: .userInitiated) { () -> (cached: Int, total: Int) in
+                    var count = 0
+                    for rID in reelIDs {
+                        if LibraryPathResolver.shared.isLocalFileAvailable(for: targetWeek, reelID: rID) {
+                            count += 1
+                        }
+                    }
+                    return (count, reelIDs.count)
+                }.value
+                await MainActor.run {
+                    self.census = computed
+                }
+            }
         }
     }
 
     private func saveSettings() {
-        storedGhRepo = localGhRepo
-        storedGhPAT = localGhPAT
+        storedGhRepo = localGhRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        storedGhPAT = localGhPAT.trimmingCharacters(in: .whitespacesAndNewlines)
         storedMaxCachedVideos = localMaxCachedVideos
         UserDefaults.standard.set(timeQuotaMinutes, forKey: "ig_digest_quota_minutes")
         UserDefaults.standard.set(enforcementMode, forKey: "ig_digest_enforcement_mode")

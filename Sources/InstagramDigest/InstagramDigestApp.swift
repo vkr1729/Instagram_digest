@@ -34,6 +34,13 @@ struct InstagramDigestApp: App {
 
             // Wire container to MediaCacheManager actor
             Task {
+                if !UserDefaults.standard.bool(forKey: "hasPurgedCobaltKeys_v1") {
+                    UserDefaults.standard.removeObject(forKey: "cobalt_api_url")
+                    UserDefaults.standard.removeObject(forKey: "cobalt_api_key")
+                    UserDefaults.standard.removeObject(forKey: "cobalt_api_token")
+                    UserDefaults.standard.set(true, forKey: "hasPurgedCobaltKeys_v1")
+                }
+
                 await MediaCacheManager.shared.setModelContainer(container)
                 await MediaCacheManager.shared.migrateLegacyDirectBookmarksIfNeeded()
                 await MediaCacheManager.shared.reconcileBookmarkStorageLedger()
@@ -345,18 +352,6 @@ struct FeedMainView: View {
                                 }
                             }
                         )
-
-                        if DigestDataService.directMode, let m = manifest {
-                            if DownloadAllCoordinator.shared.state != .completed &&
-                               (DownloadAllCoordinator.shared.state != .idle || DownloadAllCoordinator.shared.hasUndownloadedItems(reels: m.items, weekID: m.weekId)) {
-                                OfflineCacheBanner(reels: m.items, weekID: m.weekId) {
-                                    wasPlayingBeforeSheet = pool.isPlaying
-                                    pool.pause()
-                                    showDownloadSheet = true
-                                }
-                                .padding(.top, 4)
-                            }
-                        }
                     }
                     .background(
                         LinearGradient(
@@ -470,6 +465,8 @@ struct FeedMainView: View {
                 isGrayscale: $isGrayscale,
                 hideRanks: $hideRanks,
                 feedSortOrder: $feedSortOrder,
+                reels: allReels,
+                weekID: manifest?.weekId ?? "",
                 onTapOffline: {
                     pendingSheet = .download
                     showSettingsSheet = false
@@ -527,6 +524,11 @@ struct FeedMainView: View {
             // Rec 2: quiet foreground refresh — the new week appears without
             // a force-quit; an unchanged week never disturbs playback.
             guard phase == .active else { return }
+            if DigestDataService.directMode {
+                Task {
+                    await GitHubBookmarkSyncService.shared.syncIfNeeded(context: modelContext)
+                }
+            }
             guard WatchedRules.shouldRefresh(lastFetch: lastManifestFetch, now: Date()) else { return }
             Task {
                 do {
@@ -1134,19 +1136,41 @@ public final class Reachability: @unchecked Sendable {
     private let queue = DispatchQueue(label: "ReachabilityQueue")
     private let lock = NSLock()
     private var _isConnected: Bool
+    private var _isExpensive: Bool
+    private var _isExpensiveOverride: Bool?
     public var isConnected: Bool {
         lock.lock()
         defer { lock.unlock() }
         return _isConnected
     }
+    public var isExpensive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let override = _isExpensiveOverride { return override }
+        return _isExpensive
+    }
+    public var isExpensiveOverride: Bool? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _isExpensiveOverride
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _isExpensiveOverride = newValue
+        }
+    }
 
     private init() {
         self._isConnected = (monitor.currentPath.status == .satisfied)
+        self._isExpensive = monitor.currentPath.isExpensive
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self = self else { return }
             self.lock.lock()
             let changed = (self._isConnected != (path.status == .satisfied))
             self._isConnected = (path.status == .satisfied)
+            self._isExpensive = path.isExpensive
             self.lock.unlock()
             if changed {
                 DispatchQueue.main.async {

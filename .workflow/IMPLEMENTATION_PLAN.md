@@ -1,179 +1,184 @@
-# Implementation Plan: Zero-Cloud / Direct-Meta Stream Architecture (Hardened)
+# Implementation Plan: Final Refactor & Permanent Repository Lockdown (§6) — Hardened
 
-## Phase 0: Feasibility Gates & Baseline Configuration
-
-### Step 0.1: Configuration Flags & Non-Destructive Mode
-- **Files:** `config.py`, `.env.example`
-- **Changes:**
-  - Add `DIRECT_STREAM_MODE: bool = _env_bool("DIRECT_STREAM_MODE", True)` (defaulting to True on this branch).
-  - Add dynamic paths derived at call time from `SITE_DIR`:
-    - `direct_manifest_file() -> Path`: returns `config.SITE_DIR / "data_direct.json"`.
-    - `DIRECT_PAGES_MANIFEST_URL: str = f"{PAGES_BASE_URL}/data_direct.json"`.
-  - Add `COBALT_RESOLVER_API_URL: str = os.getenv("COBALT_RESOLVER_API_URL", "https://api.cobalt.tools/").rstrip("/")`.
-  - Preserve all existing R2 and Cloudflare configuration variables intact for full backwards compatibility.
-  - Pin legacy tests to `DIRECT_STREAM_MODE = False` so existing tests keep their verified semantics.
+## Overview & Architecture
+This plan executes the permanent repository freeze for Instagram Digest (`arch/direct-meta-stream` branch) per `.workflow/REQUIREMENTS.md` §6, incorporating all findings from the Frontier Architectural Review (`.workflow/FRONTIER_PLAN_REVIEW.md`). The implementation adheres strictly to single-person personal use (zero enterprise overhead), reorders phases so the app compiles and functions at every milestone, introduces honest on-disk cache census states, implements GitHub Release video asset upload & streaming with silent background sync, eliminates main-thread thumbnail decode jank, and certifies the codebase with Swift 6 strict concurrency before locking the repository.
 
 ---
 
-## Phase 1: Python Pipeline (Zero-R2 / Direct Stream Mode)
+## Phase A: Cache Census & Honest Completed States
 
-### Step 1.1: Direct Stream Gating across all Pipeline Entry Points
-- **Files:** `main.py`
+### Step A.1: Single Source of Truth Cache Census Helper
+- **Files:** `Sources/InstagramDigest/Engine/LibraryPathResolver.swift`
 - **Changes:**
-  - **Startup Gate:** In `main.py:956-960`, if `DIRECT_STREAM_MODE` is True, skip S3 client creation and bucket usage checks.
-  - **Phase 5 Storage Gate:** In `main.py:2230-2435`:
-    - Skip `storage_r2.purge_previous_weeks_videos`, `storage_r2.check_preflight_quota`, and all `storage_r2.upload_reel_to_r2` calls.
-    - Validate local video downloads and extract accurate `size_bytes` and direct `video_cdn_url`.
-    - Skip Telegram bookmark notifier setup and Cloudflare Worker sync.
-  - **Subcommands:** In `--expand`, `--build-only`, and `--deploy-only`, enforce direct mode gating without falling through to S3.
+  - Add helper `public func cacheCensus(reels: [ReelItem], weekID: String) -> (cached: Int, total: Int)`:
+    - Counts non-empty local video files using `isLocalFileAvailable(for: weekID, reelID: reel.id)`.
+    - Pure, read-only filesystem check, safe to call off the main thread.
+- **Tests:** Add unit tests in `Tests/InstagramDigestTests/DirectStreamTests.swift` testing empty directory, partial, full, and zero-byte exclusion.
 
-### Step 1.2: Dedicated Direct Manifest Writer (`write_direct_manifest`)
-- **Files:** `site_builder.py`
+### Step A.2: Honest Completed State in `DownloadAllSheet`
+- **Files:** `Sources/InstagramDigest/Views/Modals/DownloadAllSheet.swift`
 - **Changes:**
-  - Create pure function `write_direct_manifest(items: list[dict], run_date: str, output_path: Path) -> Path`:
-    - Iterates over validated items:
-      - Sets `video_url` to the exact validated direct Meta stream URL (`video_cdn_url`).
-      - Strips `r2_url`.
-      - Sets canonical Instagram reel URL (`url: "https://www.instagram.com/reel/{id}/"`).
-      - Sets absolute GitHub Pages thumbnail URL: `f"{config.PAGES_BASE_URL}/thumbnails/{reel_id}.jpg"`.
-      - Retains exact `size_bytes`, `run_date`, `generated_at`, and `count`.
-    - Durably writes `output_path` (`site/data_direct.json`) using `atomic_io.durable_write_json`.
-    - Does NOT mutate caller's `items` or touch production `site/data.json`.
+  - In `.idle` state, evaluate `cacheCensus` asynchronously via `.task` off the main thread.
+  - When `cached == total`:
+    - Display completed UI: "All reels downloaded and ready offline!" with green checkmark icon.
+    - Hide the "Start Download" button.
+    - Present a single prominent "Done" button that dismisses the sheet.
+  - When `cached < total`:
+    - Display "Ready to download \(total - cached) reels (\(cached) already cached)".
+    - "Start Download" initiates download only for the pending items.
 
-### Step 1.3: Isolated GitHub Pages Direct Channel Deployment
-- **Files:** `site_builder.py`
+### Step A.3: Honest Completed State in `SettingsSheetView`
+- **Files:** `Sources/InstagramDigest/Views/Modals/SettingsSheetView.swift`, `Sources/InstagramDigest/InstagramDigestApp.swift`
 - **Changes:**
-  - In `deploy_to_gh_pages()`:
-    - When `DIRECT_STREAM_MODE` is True:
-      - Overlay only `data_direct.json` and new direct thumbnails onto the `gh-pages` worktree.
-      - **CRITICAL INVARIANT:** Byte-verify that production `data.json` exists and remains 100% untouched.
-      - Commit and push without deleting legacy files.
-      - Poll `DIRECT_PAGES_MANIFEST_URL` (verifying `run_date` and valid direct URLs).
-      - Write sentinel `data/deployed_direct_week.json` upon confirmed serving (leaving `data/deployed_week.json` untouched).
+  - Pass `reels: [ReelItem]` and `weekID: String` into `SettingsSheetView` from `FeedMainView` (mirroring `DownloadAllSheet` inputs).
+  - In `SettingsSheetView`, run `cacheCensus` on appear via `.task`.
+  - If `cached == total`:
+    - Display row: `Label("All Reels Downloaded (\(cached)/\(total))", systemImage: "checkmark.circle.fill")` in green.
+  - If `cached < total`:
+    - Display row: `Label("Download All for Offline (\(total - cached) pending)", systemImage: "arrow.down.circle")`.
+  - Tapping opens `DownloadAllSheet`.
 
 ---
 
-## Phase 2: iOS Swift Models & Channel-Isolated Manifest Routing
+## Phase B: GitHub Release Video Upload & Tier 2 Streaming (Manual Proven Path)
 
-### Step 2.1: Reel Item Model & Canonical URL Preservation
-- **Files:** `Sources/InstagramDigest/Models/ReelItem.swift`
+### Step B.1: SwiftData Model & DTO Extension
+- **Files:** `Sources/InstagramDigest/Models/DigestState.swift`, `Sources/InstagramDigest/Engine/GitHubBookmarkSyncService.swift`
 - **Changes:**
-  - Preserve `videoUrl` exactly (including query parameters and hex signature tokens).
-  - Add optional canonical permalink property: `public let canonicalUrl: URL?` (decoded from `url` or constructed from `id`).
-  - Retain `sizeBytes` mapping.
+  - In `BookmarkItem`:
+    - Add additive SwiftData fields: `public var videoAssetName: String? = nil` and `public var releaseTag: String? = nil` (lightweight migration safe).
+  - In `BookmarkSyncDTO`:
+    - Support `video_asset_name: String?` and `release_tag: String?`.
+  - Round-trip these fields in `exportBookmarksJSON` and `importBookmarks`.
+  - Add pure helper `public static func releaseTag(for date: Date) -> String` using Gregorian UTC Calendar (`v{YYYY}`). Add unit test covering Dec 31 / Jan 1 boundary.
 
-### Step 2.2: Channel-Isolated Manifest Routing in `DigestDataService`
-- **Files:** `Sources/InstagramDigest/Engine/DigestDataService.swift`
+### Step B.2: Video Asset Upload to GitHub Releases
+- **Files:** `Sources/InstagramDigest/Engine/GitHubBookmarkSyncService.swift`
 - **Changes:**
-  - Add direct manifest constants:
-    - `public static let directManifestURL = URL(string: "https://vkr1729.github.io/Instagram_digest/data_direct.json")!`
-    - Cache file: `manifest_cache_direct.json` in `pathResolver.mediaCacheBaseURL`.
-  - When running in direct mode:
-    - Route manifest fetches to `directManifestURL` with fallback ONLY to `manifest_cache_direct.json`.
-    - Never fall back to R2 or production `data.json`.
-    - Reject empty manifests atomically.
-  - Disable legacy remote bookmarks sync calls (`fetchRemoteBookmarks`) in direct mode.
+  - Implement video upload logic during `syncWithGitHub`:
+    - Group bookmarks requiring upload by `releaseTag`.
+    - For each release tag:
+      - GET `/repos/{repo}/releases/tags/{tag}`. If 404, create release via POST `/repos/{repo}/releases`. Treat 422 as success/already exists.
+      - GET `/repos/{repo}/releases/{release_id}/assets?per_page=100` to list existing assets.
+      - Strip template `{?name,label}` from `upload_url`.
+      - For each bookmark needing upload: locate local file via `LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID)`.
+      - Sanitize ID via `LibraryPathResolver.sanitizeComponent`.
+      - If `{safeID}.mp4` is not in release assets, upload via `uploadTask(fromFile:)` with `Content-Type: video/mp4`. Treat 422 as success (already exists).
+      - On successful upload, record `videoAssetName = "{safeID}.mp4"` and `releaseTag = tag` on the local `BookmarkItem`, and set `dtoMutated = true`.
+    - Push `bookmarks.json` if `dtoMutated || newlyAddedLocal > 0 || remoteDTOs.isEmpty`.
+    - Await video uploads before pushing `bookmarks.json`.
+
+### Step B.3: On-the-Fly GitHub Release Video Streaming
+- **Files:** `Sources/InstagramDigest/Engine/GitHubBookmarkSyncService.swift`, `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift`
+- **Changes:**
+  - In `GitHubBookmarkSyncService`:
+    - Add `resolveReleaseStreamURL(reelID: String, year: Int, repo: String, pat: String) async -> URL?`:
+      - Uses a dedicated ephemeral `URLSession` with a `URLSessionTaskDelegate` that cancels redirects and captures the HTTP 302 `Location:` header pointing to AWS S3.
+      - Returns the pre-signed S3 streaming URL.
+      - Maintain a memory-only short-lived cache `[reelID: (url: URL, fetchedAt: Date)]` (TTL ~4 mins). Never persist to disk/database.
+  - In `BookmarksSheet.swift`:
+    - Integrate Tier 2 into `loadVideo`:
+      1. Tier 1 (Local Disk Vault): If video exists locally on disk, play immediately.
+      2. Tier 1.5 (Active-Week Stored URL): If `weekID == currentActiveWeekID` and `videoUrl != nil` and online, attempt playback. Wire `failObserverToken` and `statusObserver` with a single-shot guard to fall through to Tier 2 on failure.
+      3. Tier 2 (GitHub Release Streaming): If PAT and repo configured, resolve streaming URL via `resolveReleaseStreamURL` and stream via `AVPlayer`. Fall through to resolver/Tier 3 on failure.
+    - Rename `isResolving` to `isLoadingVideo` so async resolution shows a smooth loading state instead of a dead screen.
+- **Tests:** Add unit tests for `releaseTag(for:)`, upload URL template stripping, 422 handling, and S3 redirect capture via `MockURLProtocol`.
 
 ---
 
-## Phase 3: iOS Storage Rollover & Bulk Offline Caching Engine
+## Phase C: Resolver Purge, Dead UI Removal & Tier 3 Web Fallback
 
-### Step 3.1: Coordinated Single-Transaction Rollover in `MediaCacheManager`
+### Step C.1: Delete Resolver & Banner Files and Call Sites
+- **Files:**
+  - Delete `Sources/InstagramDigest/Engine/BookmarkResolver.swift`.
+  - Delete `Sources/InstagramDigest/Views/Feed/OfflineCacheBanner.swift`.
+  - Remove `OfflineCacheBanner` block in `InstagramDigestApp.swift` (lines 349–359).
+  - Remove `ResolverResult` enum, `playViaResolver` method, and resolver-specific error branches from `BookmarksSheet.swift`.
+  - Add versioned one-time cleanup in `InstagramDigestApp.swift` (`hasPurgedCobaltKeys_v1`) to remove `cobalt_api_url`, `cobalt_api_key`, `cobalt_api_token` from `UserDefaults`.
+  - Remove `COBALT_RESOLVER_API_URL` from `config.py` and `.env.example`.
+- **Note:** Keep `ResolverTests.swift` intact (it tests `LibraryPathResolver`). Only delete the `BookmarkResolver` tests in `DirectStreamTests.swift`.
+
+### Step C.2: Complete Tier 3 Web Fallback & Badges
+- **Files:** `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift`, `Tests/InstagramDigestUITests/InstagramDigestUITests.swift`
+- **Changes:**
+  - In `BookmarksSheet.swift`:
+    - Tier 3 state: When not in local cache and not in GitHub, show clean "Open on Instagram" button.
+    - If offline and not in local cache, show "You're offline — this bookmark isn't downloaded".
+    - Update bookmark badges:
+      - Cached: checkmark (`checkmark.circle.fill`).
+      - Active-week uncached: download arrow (`arrow.down.circle`).
+      - GitHub-backed: cloud (`cloud.fill`).
+      - Web-only: globe / safari (`safari`).
+  - Update `InstagramDigestUITests.swift` to match the new badge and Tier 3 identifiers.
+- **Verification:** `git grep -i cobalt Sources/` and `git grep -i cobalt Tests/` return 0 hits.
+
+---
+
+## Phase D: FeedCell Zero-Thumbnail Revert (60 FPS Swiping)
+
+### Step D.1: Revert `FeedCell` to Pure `AVPlayerLayer`
+- **Files:** `Sources/InstagramDigest/Views/Feed/FeedPagerView.swift`, `Sources/InstagramDigest/Views/Feed/ReelCardView.swift`
+- **Changes:**
+  - In `FeedPagerView.swift`:
+    - In `FeedCell`: Remove `posterImageView`, `imageTask`, and all synchronous `UIImage(contentsOfFile:)` disk reads and `URLSessionDataTask` loads from `configure(reel:isCurrent:)`.
+    - `FeedCell` contains only `PlayerContainerView`. `configure` executes minimal setup (`playerContainerView?.isHidden = false`).
+    - `prepareForReuse` immediately detaches `pc.playerLayer` via `AVPlayerPool.shared.detachLayer` to eliminate stale frame flashes.
+  - In `ReelCardView.swift`:
+    - Set `PlayerContainerView.backgroundColor = .black` so unattached or cold slots display clean black without flashing.
+- **Verification:** `git grep "UIImage(contentsOfFile" Sources/InstagramDigest/Views/Feed/` returns 0 hits; buttery smooth 60 FPS scrolling.
+
+---
+
+## Phase E: Silent Background Sync & Local Vault Retention
+
+### Step E.1: Centralized Silent Sync Engine
+- **Files:** `Sources/InstagramDigest/Engine/GitHubBookmarkSyncService.swift`, `Sources/InstagramDigest/Engine/BookmarkController.swift`, `Sources/InstagramDigest/InstagramDigestApp.swift`
+- **Changes:**
+  - In `GitHubBookmarkSyncService`:
+    - Add `private var isSyncing: Bool = false` and `private var needsResync: Bool = false` to coalesce overlapping sync passes.
+    - Add entry point `public func syncIfNeeded(context: ModelContext, force: Bool = false) async`.
+    - Cellular Guard: Gate video asset uploads on `!Reachability.shared.isExpensive` (or non-cellular network). Metadata and thumbnails always sync.
+  - In `BookmarkController`:
+    - Trigger `syncIfNeeded` in `Task.detached` on `add` and `remove`.
+  - In `InstagramDigestApp.swift`:
+    - Trigger `syncIfNeeded` on scene phase `.active` (app launch / foreground).
+  - In `BookmarksSheet.swift`:
+    - Route on-appear sync through `syncIfNeeded`.
+
+### Step E.2: Local 50-Reel Vault & Upload-Before-Evict Invariant
 - **Files:** `Sources/InstagramDigest/Engine/MediaCacheManager.swift`
 - **Changes:**
-  - Remove manifest-arrival purge from `FeedMainView` to prevent wiping offline media prematurely.
-  - Implement single-transaction rollover method:
-    `public func executeRolloverPurge(forNewWeek incomingWeekID: String) async throws`
-    - Cancels active in-flight downloads and pauses old playback.
-    - Deletes all prior week directories (`videos/{oldWeekID}`, `.part` files, thumbnails, stale resume data).
-    - Preserves incoming week files if already partially downloaded.
-    - Preserves SwiftData bookmark metadata rows (while clearing legacy isolated `Bookmarks/` MP4 files).
-    - Ensures device storage strictly maintains the ~2.5–3.5 GB ceiling.
-
-### Step 3.2: Download Coordinator Hardening
-- **Files:** `Sources/InstagramDigest/Engine/DownloadAllCoordinator.swift`
-- **Changes:**
-  - State machine with unified progress reporting:
-    - Single state enum: `.idle`, `.preparing`, `.downloading(ready: Int, total: Int, failed: Int)`, `.completed(ready: Int, failed: Int)`, `.failed(String)`.
-  - When user taps "Download Week":
-    - Enters `.preparing` state (disables duplicate taps).
-    - Executes `MediaCacheManager.shared.executeRolloverPurge(forNewWeek:)`.
-    - Enforces direct batch storage preflight with reclaimable space accounted for.
-    - Launches bounded queue (concurrency: 3) downloading to `.part` files keyed by `(weekID, reelID)`.
-    - Promotes `.part` files via `MediaCacheManager.promotePartFile` with size and non-zero byte validation.
-    - Honors 403/410 by pausing and requesting a single debounced manifest refresh from GitHub Pages.
+  - Ensure `syncWithGitHub` NEVER deletes local files.
+  - Enforce the 50-reel LRU cap (or user-configured cap: 25/50/100/unlimited) in `MediaCacheManager.pruneBookmarksToCap`:
+    - When selecting eviction victims, prioritize items with `videoAssetName != nil` (already uploaded to GitHub) before evicting items that have not yet uploaded.
+    - Preserve SwiftData record and portrait thumbnail `.thumb.jpg` on disk upon eviction.
+- **Tests:** Add unit tests verifying `syncIfNeeded` coalescing, cellular gating, and upload-before-evict prioritization.
 
 ---
 
-## Phase 4: Dynamic Resolver & Bookmarks Architecture
+## Phase F: Swift 6 Strict Concurrency, Tests & CI Packaging
 
-### Step 4.1: Public Media Resolver (`BookmarkResolver`)
-- **Files:** `Sources/InstagramDigest/Engine/BookmarkResolver.swift` (new file)
+### Step F.1: Swift 6 Strict Concurrency Audit
+- **Files:** All modified Swift files in `Sources/InstagramDigest/`
 - **Changes:**
-  - Actor `BookmarkResolver` with injected `URLSession` (ephemeral, timeout: 15s):
-    - Configured endpoint: `https://api.cobalt.tools/` (or user setting).
-    - Request: POST JSON `{"url": canonicalPermalink}` with headers `Accept: application/json`, `Content-Type: application/json`.
-    - Response parsing:
-      - Supports `tunnel` and `redirect` status types; extracts HTTPS `url`.
-      - Rejects `local-processing` (unsupported) and `picker`.
-      - Maps HTTP 429 to `.rateLimited(retryAfter: TimeInterval?)`.
-      - Maps 401/403/Turnstile HTML to `.authRequiredOrBlocked`.
-      - Maps network errors to `.offline`.
-    - Bounded retries: max 1 retry with exponential backoff on 429/5xx.
-    - Resolves on demand; does NOT persist resolved streaming URLs in database.
+  - Ensure all actor isolation (`@MainActor`, `actor MediaCacheManager`), `Sendable` types, and task boundaries compile cleanly with zero warnings under complete strict concurrency.
 
-### Step 4.2: Bookmark Controller & Playback Routing
-- **Files:** `Sources/InstagramDigest/Engine/BookmarkController.swift`, `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift`
+### Step F.2: Test Verification & Pipeline Execution
+- **Files:** `tests/test_direct_stream_mode.py`, `Tests/InstagramDigestTests/DirectStreamTests.swift`
 - **Changes:**
-  - In direct mode:
-    - Bypass Cloudflare Worker/D1 sync and Telegram forward.
-    - Save bookmark as metadata row with `canonicalUrl`, `reelID`, `weekID`, `caption`, `creatorHandle`, `thumbnailUrl`.
-    - Direct mode persists `Bookmarks/{id}.mp4` under count-LRU (protecting up to `max_cached_bookmark_videos`); resolver is fallback for evicted/purged items.
-  - In `BookmarkPlayerOverlay.loadVideo()`:
-    - Check if active week's local file or isolated bookmark file exists in `Bookmarks/{id}.mp4` or `videos/{bookmark.weekID}/{id}.mp4`. If yes, play local file immediately (offline MRT ready!).
-    - If local file missing (prior week purged and bookmark evicted):
-      - If network offline: show "Online required for this older bookmark" without spinning player.
-      - If network online: invoke `BookmarkResolver.shared.resolve(url:)`, receive fresh MP4 URL, and stream directly in AVPlayer.
-  - One-time migration: enforce count-cap LRU on `Bookmarks/` MP4 files to respect device storage limits.
+  - Run local Python tests (`pytest tests/test_direct_stream_mode.py`).
+  - Commit all changes to branch `arch/direct-meta-stream` and push to origin.
+  - Monitor GitHub Actions workflow (`.github/workflows/build-ipa.yml`) for macOS test execution and IPA packaging.
+  - Download and inspect `build_artifacts/InstagramDigestDirect.ipa`.
 
 ---
 
-## Phase 5: iOS UI Integration & Feedback
-
-### Step 5.1: 1-Tap 'Download Week for Offline' Home Banner
-- **Files:** `Sources/InstagramDigest/InstagramDigestApp.swift` (`FeedMainView`), `Sources/InstagramDigest/Views/Feed/HeaderBarView.swift`
-- **Changes:**
-  - When active week is un-downloaded:
-    - Display prominent 1-tap banner: "⚡ Download Week for Offline (~3 GB)".
-  - While downloading:
-    - Display live progress banner: "Downloading: 42/250 ready (2 failed) — Tap for details".
-  - When finished:
-    - Display green badge: "✓ Ready Offline (250/250)".
-
-### Step 5.2: Bookmarks Sheet Three-State Indicators
-- **Files:** `Sources/InstagramDigest/Views/Modals/BookmarksSheet.swift`
-- **Changes:**
-  - Derive badge from filesystem and week:
-    - `Offline ready` (green icon): local feed file is present on disk.
-    - `Download required` (amber icon): current week, but not downloaded yet.
-    - `Online required` (globe icon): older bookmark whose local week was purged; requires network for dynamic stream resolution.
-
----
-
-## Phase 6: Automated Verification & Test Matrix
-
-### Step 6.1: Python Test Suite
-- **File:** `tests/test_direct_stream_mode.py`
-- **Tests:**
-  1. `test_full_call_graph_bypass()`: Verify all R2/S3 methods are bypassed when `DIRECT_STREAM_MODE = True`.
-  2. `test_legacy_parity()`: Verify legacy mode (`DIRECT_STREAM_MODE = False`) still performs standard R2 operations.
-  3. `test_direct_manifest_generation()`: Verify `data_direct.json` has exact Meta URLs, canonical URLs, absolute thumbnails, and correct `size_bytes`.
-  4. `test_isolated_gh_pages_deploy()`: Verify production `data.json` is preserved 100% byte-for-byte during direct manifest deploy.
-
-### Step 6.2: Swift Test Suite
-- **File:** `Tests/InstagramDigestTests/DirectStreamTests.swift`
-- **Tests:**
-  1. `testDirectManifestDecoding()`: Verify `DigestDataService` decodes `data_direct.json` with canonical permalinks and direct URLs.
-  2. `testRolloverTransaction()`: Verify `executeRolloverPurge` deletes old week directories before starting new week downloads.
-  3. `testBookmarkResolverContracts()`: Stub `URLProtocol` tests verifying `tunnel`, `redirect`, `local-processing` rejection, 429 backoff, and offline handling.
-  4. `testBookmarkPlaybackRouting()`: Verify local file is preferred when present, and resolver is only invoked for purged/older reels.
+## Exit Criteria
+1. `rg -i cobalt Sources/ Tests/ config.py .env.example` returns 0 hits.
+2. `rg OfflineCacheBanner Sources/` returns 0 hits.
+3. `rg 'UIImage\(contentsOfFile' Sources/InstagramDigest/Views/Feed/` returns 0 hits.
+4. DownloadAllSheet and Settings show honest completed states ("All Reels Downloaded (250/250)").
+5. Bookmarks playback honors Tier 1 -> Tier 1.5 -> Tier 2 -> Tier 3 without captcha dialogs.
+6. Newly bookmarked videos upload to GitHub Release assets on sync, retaining 50 reels locally.
+7. GitHub Actions CI builds and packages verified `InstagramDigestDirect.ipa`.
+8. Repository declared locked.

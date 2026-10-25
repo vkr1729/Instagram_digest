@@ -350,11 +350,12 @@ final class InstagramDigestUITests: XCTestCase {
         // First saved bookmark must appear in the grid.
         XCTAssertTrue(app.buttons["BookmarkGridItem_0"].waitForExistence(timeout: 5.0),
                       "Saved bookmark must persist into the Bookmarks sheet")
-        // Direct stream mode uses 3-state badges (cached/downloadRequired/resolver);
+        // Direct stream mode uses 4 badges (cached/downloadRequired/github/web);
         // legacy R2 mode uses BookmarkPendingBadge_0.
         let directBadgeExists = app.images["BookmarkBadge_0_cached"].waitForExistence(timeout: 2.0)
             || app.images["BookmarkBadge_0_downloadRequired"].waitForExistence(timeout: 2.0)
-            || app.images["BookmarkBadge_0_resolver"].waitForExistence(timeout: 2.0)
+            || app.images["BookmarkBadge_0_github"].waitForExistence(timeout: 2.0)
+            || app.images["BookmarkBadge_0_web"].waitForExistence(timeout: 2.0)
         let legacyBadgeExists = app.images["BookmarkPendingBadge_0"].waitForExistence(timeout: 2.0)
         XCTAssertTrue(directBadgeExists || legacyBadgeExists,
                       "Saved bookmark must show either a direct stream badge or legacy pending badge")

@@ -144,6 +144,8 @@ public struct GitHubSyncModal: View {
     }
 
     private func performSync() {
+        repo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        pat = pat.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSync else { return }
         isSyncing = true
         errorMessage = nil

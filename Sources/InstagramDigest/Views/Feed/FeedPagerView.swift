@@ -551,11 +551,9 @@ public final class FeedCollectionViewController: UICollectionViewController {
     }
 }
 
-/// Custom UICollectionViewCell with PlayerContainerView and poster thumbnail fallback
+/// Custom UICollectionViewCell with PlayerContainerView for direct AVPlayerLayer attachment
 public final class FeedCell: UICollectionViewCell {
     public private(set) var playerContainerView: PlayerContainerView?
-    private let posterImageView = UIImageView()
-    private var imageTask: URLSessionDataTask?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -570,23 +568,12 @@ public final class FeedCell: UICollectionViewCell {
     }
 
     private func setupViews() {
-        posterImageView.translatesAutoresizingMaskIntoConstraints = false
-        posterImageView.contentMode = .scaleAspectFit
-        posterImageView.clipsToBounds = true
-        posterImageView.backgroundColor = .black
-        contentView.addSubview(posterImageView)
-
         let pc = PlayerContainerView()
         pc.translatesAutoresizingMaskIntoConstraints = false
         pc.isHidden = false
         contentView.addSubview(pc)
 
         NSLayoutConstraint.activate([
-            posterImageView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            posterImageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            posterImageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            posterImageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-
             pc.topAnchor.constraint(equalTo: contentView.topAnchor),
             pc.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             pc.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -598,29 +585,10 @@ public final class FeedCell: UICollectionViewCell {
 
     public func configure(reel: ReelItem, isCurrent: Bool) {
         playerContainerView?.isHidden = false
-        imageTask?.cancel()
-        posterImageView.image = nil
-
-        if let thumbURL = reel.thumbnailUrl {
-            if thumbURL.isFileURL, let img = UIImage(contentsOfFile: thumbURL.path) {
-                posterImageView.image = img
-            } else {
-                imageTask = URLSession.shared.dataTask(with: thumbURL) { [weak self] data, _, _ in
-                    guard let data = data, let img = UIImage(data: data) else { return }
-                    DispatchQueue.main.async {
-                        self?.posterImageView.image = img
-                    }
-                }
-                imageTask?.resume()
-            }
-        }
     }
 
     public override func prepareForReuse() {
         super.prepareForReuse()
-        imageTask?.cancel()
-        imageTask = nil
-        posterImageView.image = nil
         if let pc = playerContainerView {
             AVPlayerPool.shared.detachLayer(pc.playerLayer)
         }

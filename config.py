@@ -135,15 +135,6 @@ def direct_pages_manifest_url() -> str:
     return f"{base}/data_direct.json"
 
 
-_raw_cobalt = os.getenv("COBALT_RESOLVER_API_URL", "https://api.cobalt.tools/").strip()
-if not _raw_cobalt.startswith("https://"):
-    import warnings
-    warnings.warn(f"Invalid COBALT_RESOLVER_API_URL={_raw_cobalt!r}, defaulting to https://api.cobalt.tools/", RuntimeWarning)
-    COBALT_RESOLVER_API_URL = "https://api.cobalt.tools/"
-else:
-    COBALT_RESOLVER_API_URL = _raw_cobalt
-
-
 def direct_manifest_file() -> Path:
     """Dynamic path to data_direct.json derived at call time from SITE_DIR."""
     return SITE_DIR / "data_direct.json"

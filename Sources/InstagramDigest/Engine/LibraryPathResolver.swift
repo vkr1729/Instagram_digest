@@ -136,6 +136,18 @@ public struct LibraryPathResolver: Sendable {
         return nil
     }
 
+    /// Single source of truth cache census: counts non-empty local video files across a reel batch.
+    public func cacheCensus(reels: [ReelItem], weekID: String) -> (cached: Int, total: Int) {
+        guard !reels.isEmpty else { return (0, 0) }
+        var count = 0
+        for r in reels {
+            if isLocalFileAvailable(for: weekID, reelID: r.id) {
+                count += 1
+            }
+        }
+        return (count, reels.count)
+    }
+
     /// Gets exact byte size of the local file if present.
     public func localFileSize(for weekID: String, reelID: String) -> Int64? {
         if let url = resolvedLocalFileURL(for: weekID, reelID: reelID),

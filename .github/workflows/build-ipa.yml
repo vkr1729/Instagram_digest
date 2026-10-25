@@ -35,7 +35,7 @@ jobs:
 
       - name: Run Python direct stream tests
         run: |
-          pytest tests/test_direct_stream_mode.py -q
+          pytest tests/test_direct_stream_mode.py tests/test_migrate_r2_bookmarks_to_gh.py -q
 
       - name: Verify Direct Manifest Contract Pair (AUDIT-071)
         run: |

@@ -316,13 +316,13 @@ public final class PlayerContainerView: UIView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         playerLayer.videoGravity = .resizeAspect
-        backgroundColor = .clear
+        backgroundColor = .black
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         playerLayer.videoGravity = .resizeAspect
-        backgroundColor = .clear
+        backgroundColor = .black
     }
 }
 

@@ -38,6 +38,8 @@ public final class BookmarkItem {
     public var videoUrlString: String = ""
     public var thumbnailUrlString: String? = nil
     public var canonicalUrlString: String? = nil
+    public var videoAssetName: String? = nil
+    public var releaseTag: String? = nil
     public var bookmarkedAt: Date = Date()
     public var localStatusRaw: String = BookmarkLocalStatus.cached.rawValue
     public var sizeBytes: Int64 = 0
@@ -52,6 +54,8 @@ public final class BookmarkItem {
         videoUrl: URL? = nil,
         thumbnailUrl: URL? = nil,
         canonicalUrl: URL? = nil,
+        videoAssetName: String? = nil,
+        releaseTag: String? = nil,
         bookmarkedAt: Date = Date(),
         localStatus: BookmarkLocalStatus = .cached,
         sizeBytes: Int64 = 0,
@@ -66,6 +70,8 @@ public final class BookmarkItem {
         self.thumbnailUrlString = thumbnailUrl?.absoluteString
         let safeReel = LibraryPathResolver.sanitizeComponent(reelID, fallback: "unknown")
         self.canonicalUrlString = canonicalUrl?.absoluteString ?? "https://www.instagram.com/reel/\(safeReel)/"
+        self.videoAssetName = videoAssetName
+        self.releaseTag = releaseTag
         self.bookmarkedAt = bookmarkedAt
         self.localStatusRaw = localStatus.rawValue
         self.sizeBytes = sizeBytes
