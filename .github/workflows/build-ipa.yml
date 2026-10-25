@@ -55,10 +55,15 @@ jobs:
 
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer 2>/dev/null || sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer
+          if [ -d "/Applications/Xcode_16.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_16.2.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+          fi
           xcode-select -p
-          xcodebuild -version
-          xcodebuild -version | grep -q 'Xcode 16' || { echo "ERROR: Expected Xcode 16 toolchain"; exit 1; }
+          XC_VER=$(xcodebuild -version)
+          echo "$XC_VER"
+          echo "$XC_VER" | grep -q 'Xcode 16' || { echo "ERROR: Expected Xcode 16 toolchain"; exit 1; }
           sudo xcodebuild -runFirstLaunch || true
 
       - name: Install XcodeGen
