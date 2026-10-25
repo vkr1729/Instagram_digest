@@ -1082,16 +1082,15 @@ public struct BookmarkPlayerOverlay: View {
                 forName: .AVPlayerItemFailedToPlayToEndTime,
                 object: item,
                 queue: .main
-            ) { [weak self, weak avPlayer] _ in
-                guard let self = self, avPlayer != nil else { return }
-                self.playViaResolver(for: bookmark)
+            ) { [weak avPlayer] _ in
+                guard avPlayer != nil else { return }
+                playViaResolver(for: bookmark)
             }
 
-            statusObserver = item.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
+            statusObserver = item.observe(\.status, options: [.new]) { observedItem, _ in
                 DispatchQueue.main.async {
-                    guard let self = self else { return }
                     if observedItem.status == .failed {
-                        self.playViaResolver(for: bookmark)
+                        playViaResolver(for: bookmark)
                     }
                 }
             }

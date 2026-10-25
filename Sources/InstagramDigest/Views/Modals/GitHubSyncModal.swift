@@ -157,8 +157,7 @@ public struct GitHubSyncModal: View {
                     pat: pat,
                     localBookmarks: localBookmarks,
                     context: context,
-                    onProgress: { [weak dismissTask] current, total in
-                        _ = dismissTask
+                    onProgress: { current, total in
                         Task { @MainActor in
                             self.syncProgress = (current, total)
                         }
