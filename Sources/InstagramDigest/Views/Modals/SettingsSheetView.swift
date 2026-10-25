@@ -207,7 +207,7 @@ public struct SettingsSheetView: View {
     }
 
     private func saveSettings() {
-        storedGhRepo = localGhRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        storedGhRepo = GitHubBookmarkSyncService.sanitizeRepo(localGhRepo)
         storedGhPAT = localGhPAT.trimmingCharacters(in: .whitespacesAndNewlines)
         storedMaxCachedVideos = localMaxCachedVideos
         UserDefaults.standard.set(timeQuotaMinutes, forKey: "ig_digest_quota_minutes")

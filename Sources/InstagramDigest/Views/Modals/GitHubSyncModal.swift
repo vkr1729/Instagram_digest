@@ -30,9 +30,9 @@ public struct GitHubSyncModal: View {
     }
 
     private var isRepoFormatValid: Bool {
-        let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = trimmed.split(separator: "/")
-        return parts.count == 2 && !parts[0].isEmpty && !parts[1].isEmpty && !trimmed.contains(" ")
+        let cleaned = GitHubBookmarkSyncService.sanitizeRepo(repo)
+        let parts = cleaned.split(separator: "/")
+        return parts.count == 2 && !parts[0].isEmpty && !parts[1].isEmpty && !cleaned.contains(" ")
     }
 
     private var canSync: Bool {
@@ -144,7 +144,7 @@ public struct GitHubSyncModal: View {
     }
 
     private func performSync() {
-        repo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        repo = GitHubBookmarkSyncService.sanitizeRepo(repo)
         pat = pat.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSync else { return }
         isSyncing = true

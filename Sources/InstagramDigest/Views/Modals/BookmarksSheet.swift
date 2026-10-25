@@ -520,6 +520,7 @@ public struct BookmarkPlayerOverlay: View {
     @State private var isOfflineUnavailable: Bool = false
     @State private var hasAttemptedTier1_5Fallback: Bool = false
     @State private var streamTask: Task<Void, Never>? = nil
+    @State private var activeCacheTasks: [String: Task<Void, Never>] = [:]
 
     // Stored (not built in `body`): same lesson as FeedMainView.watchTimer —
     // an inline Timer.publish would be recreated and resubscribed on every
@@ -995,8 +996,9 @@ public struct BookmarkPlayerOverlay: View {
         isLoadingVideo = true
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        let currentYear = Calendar.current.component(.year, from: Date())
         let parsedYear = cal.component(.year, from: bookmark.bookmarkedAt)
-        let year = parsedYear > 2000 ? parsedYear : 2026
+        let year = parsedYear > 2000 ? parsedYear : currentYear
 
         streamTask?.cancel()
         streamTask = Task { @MainActor in
@@ -1076,15 +1078,16 @@ public struct BookmarkPlayerOverlay: View {
                 object: item,
                 queue: .main
             ) { [weak avPlayer] _ in
-                guard avPlayer != nil else { return }
+                guard let avPlayer, avPlayer === self.player else { return }
                 if !self.hasAttemptedTier1_5Fallback {
                     self.hasAttemptedTier1_5Fallback = true
                     self.playViaGitHubRelease(for: bookmark)
                 }
             }
 
-            statusObserver = item.observe(\.status, options: [.new]) { observedItem, _ in
+            statusObserver = item.observe(\.status, options: [.new]) { [weak avPlayer] observedItem, _ in
                 DispatchQueue.main.async {
+                    guard let avPlayer, avPlayer === self.player else { return }
                     if observedItem.status == .failed && !self.hasAttemptedTier1_5Fallback {
                         self.hasAttemptedTier1_5Fallback = true
                         self.playViaGitHubRelease(for: bookmark)
@@ -1099,15 +1102,15 @@ public struct BookmarkPlayerOverlay: View {
                 object: item,
                 queue: .main
             ) { [weak avPlayer] _ in
-                guard avPlayer != nil else { return }
-                self.handleRemotePlaybackFailure(for: bookmark)
+                guard let avPlayer, avPlayer === self.player else { return }
+                self.handleRemotePlaybackFailure(for: bookmark, playerInstance: avPlayer)
             }
 
             statusObserver = item.observe(\.status, options: [.new]) { [weak avPlayer] observedItem, _ in
                 DispatchQueue.main.async {
-                    guard avPlayer != nil else { return }
+                    guard let avPlayer, avPlayer === self.player else { return }
                     if observedItem.status == .failed {
-                        self.handleRemotePlaybackFailure(for: bookmark, error: observedItem.error)
+                        self.handleRemotePlaybackFailure(for: bookmark, playerInstance: avPlayer, error: observedItem.error)
                     } else if observedItem.status == .readyToPlay {
                         self.isLoadingVideo = false
                     }
@@ -1118,7 +1121,10 @@ public struct BookmarkPlayerOverlay: View {
         scheduleChromeAutoHide()
     }
 
-    private func handleRemotePlaybackFailure(for bookmark: BookmarkItem, error: Error? = nil) {
+    private func handleRemotePlaybackFailure(for bookmark: BookmarkItem, playerInstance: AVPlayer? = nil, error: Error? = nil) {
+        if let p = playerInstance, p !== self.player { return }
+        guard bookmark.reelID == currentBookmark?.reelID else { return }
+        print("[BookmarksSheet] Remote playback failed for reel \(bookmark.reelID): \(String(describing: error))")
         if let localFile = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) {
             self.playMedia(url: localFile, isLocal: true, for: bookmark, isStoredURL: false)
         } else {
@@ -1129,37 +1135,73 @@ public struct BookmarkPlayerOverlay: View {
     }
 
     private func cacheVideoOnDemand(from remoteURL: URL, for bookmark: BookmarkItem) {
+        // F-P2-3: Honor cellular gate (Invariant 5b). Do not download on cellular/expensive connections.
+        guard !Reachability.shared.isExpensive else { return }
+
         let reelID = bookmark.reelID
         let dest = LibraryPathResolver.shared.bookmarkFileURL(for: reelID)
-        if FileManager.default.fileExists(atPath: dest.path) { return }
 
-        Task.detached(priority: .utility) {
-            do {
-                _ = try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
-                let (tempURL, resp) = try await URLSession.shared.download(from: remoteURL)
-                if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    if !FileManager.default.fileExists(atPath: dest.path) {
-                        try FileManager.default.moveItem(at: tempURL, to: dest)
-                        await MainActor.run {
-                            let desc = FetchDescriptor<BookmarkItem>(predicate: #Predicate { $0.reelID == reelID })
-                            if let item = (try? modelContext.fetch(desc))?.first {
-                                item.localStatus = .cached
-                                try? modelContext.save()
-                            }
-                            if self.player == nil, let current = self.currentBookmark, current.reelID == reelID {
-                                self.playMedia(url: dest, isLocal: true, for: current, isStoredURL: false)
-                            }
-                        }
-                    } else {
+        // F-P3-1: Check if already present and non-empty
+        if let attr = try? FileManager.default.attributesOfItem(atPath: dest.path),
+           (attr[.size] as? Int64 ?? 0) > 0 {
+            return
+        }
+
+        // F-P3-3: Skip if already in flight
+        guard activeCacheTasks[reelID] == nil else { return }
+
+        // F-P1-1: Outer @MainActor task + Sendable-only detached I/O task
+        let targetURL = remoteURL
+        let targetDest = dest
+        let targetReelID = reelID
+
+        let cacheTask = Task { @MainActor [modelContext] in
+            defer {
+                self.activeCacheTasks.removeValue(forKey: targetReelID)
+            }
+
+            let success = await Task.detached(priority: .utility) { () -> Bool in
+                do {
+                    _ = try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                    let (tempURL, resp) = try await URLSession.shared.download(from: targetURL)
+                    // F-P3-2: Guarantee temp file cleanup in all cases
+                    defer {
                         try? FileManager.default.removeItem(at: tempURL)
                     }
-                } else {
-                    try? FileManager.default.removeItem(at: tempURL)
+
+                    if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                        if !FileManager.default.fileExists(atPath: targetDest.path) {
+                            try FileManager.default.moveItem(at: tempURL, to: targetDest)
+                            return true
+                        }
+                    }
+                    return false
+                } catch {
+                    return false
                 }
-            } catch {
-                // Background caching failure is non-fatal
+            }.value
+
+            guard success, !Task.isCancelled else { return }
+
+            // Write-back occurs strictly on @MainActor after detached task finishes
+            let desc = FetchDescriptor<BookmarkItem>(predicate: #Predicate { $0.reelID == targetReelID })
+            if let item = (try? modelContext.fetch(desc))?.first {
+                item.localStatus = .cached
+                try? modelContext.save()
+            }
+
+            // F-P3-10: Enforce cache cap post-caching
+            let maxLimit = UserDefaults.standard.integer(forKey: "max_cached_bookmark_videos")
+            let effectiveLimit = maxLimit == 0 ? 50 : maxLimit
+            BookmarkController.enforceCachedVideosCap(limit: effectiveLimit, context: modelContext)
+
+            // If player was waiting or dropped to tier 3, transition to local playback smoothly
+            if self.player == nil, let current = self.currentBookmark, current.reelID == targetReelID {
+                self.playMedia(url: targetDest, isLocal: true, for: current, isStoredURL: false)
             }
         }
+
+        activeCacheTasks[reelID] = cacheTask
     }
 
     private func handleVideoEnded() {
@@ -1253,6 +1295,10 @@ public struct BookmarkPlayerOverlay: View {
         streamTask = nil
         shareDownloadTask?.cancel()
         shareDownloadTask = nil
+        for (_, task) in activeCacheTasks {
+            task.cancel()
+        }
+        activeCacheTasks.removeAll()
         isLoadingVideo = false
         if let token = endObserverToken {
             NotificationCenter.default.removeObserver(token)

@@ -80,14 +80,26 @@ public final class GitHubBookmarkSyncService {
 
     private init() {}
 
+    public nonisolated static func streamCacheKey(repo: String, tag: String, reelID: String) -> String {
+        let sanitizedRepo = sanitizeRepo(repo)
+        let safeTag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeID = LibraryPathResolver.sanitizeComponent(reelID)
+        return "\(sanitizedRepo)/\(safeTag)/\(safeID)"
+    }
+
     public func clearMemoryStreamCache() {
         memoryStreamCache.removeAll()
     }
 
-    public func setMemoryStreamCacheEntry(reelID: String, year: Int, repo: String, url: URL, expiresAt: Date) {
-        let trimmedRepo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
-        let safeID = LibraryPathResolver.sanitizeComponent(reelID)
-        let cacheKey = "\(trimmedRepo)/\(year)/\(safeID)"
+    public func setMemoryStreamCacheEntry(reelID: String, tag: String? = nil, year: Int = 2026, repo: String, url: URL, expiresAt: Date) {
+        let validYear = year > 2000 ? year : Calendar.current.component(.year, from: Date())
+        let effectiveTag: String
+        if let tag = tag?.trimmingCharacters(in: .whitespacesAndNewlines), !tag.isEmpty {
+            effectiveTag = tag
+        } else {
+            effectiveTag = "v\(validYear)"
+        }
+        let cacheKey = Self.streamCacheKey(repo: repo, tag: effectiveTag, reelID: reelID)
         memoryStreamCache[cacheKey] = (url, expiresAt)
     }
 
@@ -129,7 +141,7 @@ public final class GitHubBookmarkSyncService {
     public func resolveReleaseStreamURL(
         reelID: String,
         releaseTag: String? = nil,
-        year: Int = 2026,
+        year: Int = 0,
         repo: String,
         pat: String
     ) async -> URL? {
@@ -150,67 +162,69 @@ public final class GitHubBookmarkSyncService {
         let bareYearTag = "\(validYear)"
         if !candidateTags.contains(bareYearTag) { candidateTags.append(bareYearTag) }
 
-        let cacheKey = "\(trimmedRepo)/\(candidateTags.first ?? yearTag)/\(safeID)"
+        let primaryTag = candidateTags.first ?? yearTag
+        let cacheKey = Self.streamCacheKey(repo: trimmedRepo, tag: primaryTag, reelID: reelID)
         if let cached = memoryStreamCache[cacheKey], cached.expiresAt > Date() {
             return cached.url
         }
 
-        // Fetch release metadata (trying candidate tags, then fallback to latest release)
-        var releaseJson: [String: Any]? = nil
+        // Build list of candidate release URLs to check:
+        // Candidate tags first, then latest release as ultimate fallback
+        var releaseCandidateURLs: [URL] = []
         for tag in candidateTags {
-            guard let apiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/tags/\(tag)") else { continue }
-            var req = URLRequest(url: apiURL)
-            req.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
-            req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-            req.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
-
-            if let (data, resp) = try? await session.data(for: req),
-               let http = resp as? HTTPURLResponse, http.statusCode == 200,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                releaseJson = json
-                break
+            if let apiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/tags/\(tag)") {
+                releaseCandidateURLs.append(apiURL)
             }
         }
-
-        if releaseJson == nil, let latestURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/latest") {
-            var req = URLRequest(url: latestURL)
-            req.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
-            req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-            req.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
-
-            if let (data, resp) = try? await session.data(for: req),
-               let http = resp as? HTTPURLResponse, http.statusCode == 200,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                releaseJson = json
-            }
-        }
-
-        guard let json = releaseJson else {
-            return nil
+        if let latestURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/latest"),
+           !releaseCandidateURLs.contains(latestURL) {
+            releaseCandidateURLs.append(latestURL)
         }
 
         let targetAssetName = "\(safeID).mp4"
         let alternateAssetName = "\(reelID).mp4"
+        let assetNamesToMatch = [targetAssetName, alternateAssetName]
         var targetAssetURLString: String? = nil
 
-        // Check release embedded assets (first page, ~30 entries)
-        if let assets = json["assets"] as? [[String: Any]] {
-            let match = assets.first(where: {
-                let name = $0["name"] as? String
-                return name == targetAssetName || name == alternateAssetName
-            })
-            targetAssetURLString = match?["url"] as? String
-        }
+        // F-P2-1 & F-P3-8: Loop through candidate releases; if asset is missing in one, continue to the next
+        for releaseURL in releaseCandidateURLs {
+            if Task.isCancelled { return nil }
+            var req = URLRequest(url: releaseURL)
+            req.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+            req.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
 
-        // AUDIT-009: If target asset not in embedded assets, page through release assets following Link: rel="next" up to 500 assets
-        if targetAssetURLString == nil, let releaseID = json["id"] as? Int {
-            targetAssetURLString = await fetchReleaseAssetDownloadURL(
-                repo: trimmedRepo,
-                pat: trimmedPAT,
-                releaseID: releaseID,
-                assetName: targetAssetName,
-                maxPages: 5
-            )
+            guard let (data, resp) = try? await session.data(for: req),
+                  let http = resp as? HTTPURLResponse, http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+
+            // Check release embedded assets (first page, ~30 entries)
+            if let assets = json["assets"] as? [[String: Any]] {
+                let match = assets.first(where: {
+                    guard let name = $0["name"] as? String else { return false }
+                    return assetNamesToMatch.contains(name)
+                })
+                if let urlStr = match?["url"] as? String {
+                    targetAssetURLString = urlStr
+                    break
+                }
+            }
+
+            // AUDIT-009 & F-P3-9: Paginated release assets following Link: rel="next" up to 500 assets
+            if let releaseID = json["id"] as? Int {
+                if let urlStr = await fetchReleaseAssetDownloadURL(
+                    repo: trimmedRepo,
+                    pat: trimmedPAT,
+                    releaseID: releaseID,
+                    assetNames: assetNamesToMatch,
+                    maxPages: 5
+                ) {
+                    targetAssetURLString = urlStr
+                    break
+                }
+            }
         }
 
         guard let assetURLString = targetAssetURLString,
@@ -261,18 +275,19 @@ public final class GitHubBookmarkSyncService {
         return nil
     }
 
-    /// AUDIT-009: Search paginated release assets for download URL
+    /// AUDIT-009 & F-P3-9: Search paginated release assets for download URL matching candidate asset names
     private func fetchReleaseAssetDownloadURL(
         repo: String,
         pat: String,
         releaseID: Int,
-        assetName: String,
+        assetNames: [String],
         maxPages: Int = 5
     ) async -> String? {
         var nextPageURL: URL? = URL(string: "https://api.github.com/repos/\(repo)/releases/\(releaseID)/assets?per_page=100")
         var pageCount = 0
 
         while let currentURL = nextPageURL, pageCount < maxPages {
+            if Task.isCancelled { return nil }
             pageCount += 1
             var aReq = URLRequest(url: currentURL)
             aReq.setValue("Bearer \(pat)", forHTTPHeaderField: "Authorization")
@@ -285,7 +300,10 @@ public final class GitHubBookmarkSyncService {
                 break
             }
 
-            if let match = assetList.first(where: { ($0["name"] as? String) == assetName }),
+            if let match = assetList.first(where: {
+                guard let name = $0["name"] as? String else { return false }
+                return assetNames.contains(name)
+            }),
                let downloadURL = match["url"] as? String {
                 return downloadURL
             }
@@ -535,7 +553,7 @@ public final class GitHubBookmarkSyncService {
         context: ModelContext,
         onProgress: (@Sendable (_ current: Int, _ total: Int) -> Void)? = nil
     ) async throws -> BookmarkSyncResult {
-        let trimmedRepo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRepo = Self.sanitizeRepo(repo)
         let trimmedPAT = pat.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedRepo.isEmpty else {
@@ -909,7 +927,7 @@ public final class GitHubBookmarkSyncService {
 
     /// Centralized silent sync with in-flight coalescing
     public func syncIfNeeded(context: ModelContext) async {
-        let repo = UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks"
+        let repo = Self.sanitizeRepo(UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks")
         let pat = UserDefaults.standard.string(forKey: "gh_bookmark_pat") ?? ""
         guard !repo.isEmpty, !pat.isEmpty else { return }
 

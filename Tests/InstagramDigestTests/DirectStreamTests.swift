@@ -1372,6 +1372,63 @@ final class DirectStreamTests: XCTestCase {
     }
 
     @MainActor
+    func testResolveReleaseStreamURLAssetMissInFoundReleaseAdvancesToNextCandidateOrLatest() async throws {
+        let service = GitHubBookmarkSyncService.shared
+        service.session = makeMockSession()
+        GitHubBookmarkSyncService.additionalProtocolClasses = [MockResolverURLProtocol.self]
+
+        let repo = "vkreddy1729-ops/ig-bookmarks"
+        let pat = "ghp_mockpat123"
+        let reelID = "migrated_reel"
+        let assetID = 88888
+        let s3Location = "https://release-assets.githubusercontent.com/asset_migrated.mp4"
+
+        MockResolverURLProtocol.requestHandler = { request in
+            let urlString = request.url?.absoluteString ?? ""
+            if urlString.contains("/releases/tags/v2024") {
+                // v2024 release exists, but does NOT have this reel asset
+                let emptyAssetsJSON = """
+                {
+                    "id": 11111,
+                    "tag_name": "v2024",
+                    "assets": [
+                        {
+                            "id": 10001,
+                            "name": "other_unrelated_video.mp4",
+                            "url": "https://api.github.com/repos/\(repo)/releases/assets/10001"
+                        }
+                    ]
+                }
+                """.data(using: .utf8)!
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, emptyAssetsJSON)
+            } else if urlString.contains("/releases/tags/v2026") {
+                // v2026 release exists and DOES have this reel asset
+                let matchedJSON = """
+                {
+                    "id": 22222,
+                    "tag_name": "v2026",
+                    "assets": [
+                        {
+                            "id": \(assetID),
+                            "name": "\(reelID).mp4",
+                            "url": "https://api.github.com/repos/\(repo)/releases/assets/\(assetID)"
+                        }
+                    ]
+                }
+                """.data(using: .utf8)!
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, matchedJSON)
+            } else if urlString.contains("/releases/assets/\(assetID)") {
+                let headers = ["Location": s3Location]
+                return (HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil, headerFields: headers)!, Data())
+            }
+            throw URLError(.badURL)
+        }
+
+        let resolvedURL = await service.resolveReleaseStreamURL(reelID: reelID, releaseTag: "v2024", year: 2026, repo: repo, pat: pat)
+        XCTAssertEqual(resolvedURL?.absoluteString, s3Location, "Asset-miss in a found release must continue checking next candidate tags")
+    }
+
+    @MainActor
     func testAudit013ReleaseAssetUploadTemplateStrippingAnd422Success() async throws {
         // AUDIT-013: Release asset upload handling (URL template stripping {?name,label} and 422 treated as success)
         let service = GitHubBookmarkSyncService.shared

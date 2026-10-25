@@ -102,7 +102,8 @@ public final class BookmarkItem {
     public var thumbnailUrl: URL? {
         if let s = thumbnailUrlString {
             if s.hasPrefix("thumbnails/") {
-                let repo = UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks"
+                let rawRepo = UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks"
+                let repo = GitHubBookmarkSyncService.sanitizeRepo(rawRepo)
                 return URL(string: "https://raw.githubusercontent.com/\(repo)/main/\(s)")
             }
             if let u = URL(string: s), u.host?.contains("fbcdn.net") != true {
