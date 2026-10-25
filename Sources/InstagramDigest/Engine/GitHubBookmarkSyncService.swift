@@ -103,47 +103,103 @@ public final class GitHubBookmarkSyncService {
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
+    public nonisolated static func sanitizeRepo(_ repo: String) -> String {
+        var trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("https://github.com/") {
+            trimmed = String(trimmed.dropFirst("https://github.com/".count))
+        } else if trimmed.hasPrefix("http://github.com/") {
+            trimmed = String(trimmed.dropFirst("http://github.com/".count))
+        } else if trimmed.hasPrefix("github.com/") {
+            trimmed = String(trimmed.dropFirst("github.com/".count))
+        }
+        if trimmed.hasSuffix(".git") {
+            trimmed = String(trimmed.dropLast(4))
+        }
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
     public nonisolated static func releaseTag(for date: Date) -> String {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
         let year = cal.component(.year, from: date)
-        return "v\(year)"
+        let validYear = year > 2000 ? year : Calendar.current.component(.year, from: Date())
+        return "v\(validYear)"
     }
 
-    public func resolveReleaseStreamURL(reelID: String, year: Int, repo: String, pat: String) async -> URL? {
-        let trimmedRepo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+    public func resolveReleaseStreamURL(
+        reelID: String,
+        releaseTag: String? = nil,
+        year: Int = 2026,
+        repo: String,
+        pat: String
+    ) async -> URL? {
+        let trimmedRepo = Self.sanitizeRepo(repo)
         let trimmedPAT = pat.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRepo.isEmpty, !trimmedPAT.isEmpty else { return nil }
 
         let safeID = LibraryPathResolver.sanitizeComponent(reelID)
-        let cacheKey = "\(trimmedRepo)/\(year)/\(safeID)"
+
+        // Build list of candidate tags to check
+        var candidateTags: [String] = []
+        if let releaseTag = releaseTag?.trimmingCharacters(in: .whitespacesAndNewlines), !releaseTag.isEmpty {
+            candidateTags.append(releaseTag)
+        }
+        let validYear = year > 2000 ? year : Calendar.current.component(.year, from: Date())
+        let yearTag = "v\(validYear)"
+        if !candidateTags.contains(yearTag) { candidateTags.append(yearTag) }
+        let bareYearTag = "\(validYear)"
+        if !candidateTags.contains(bareYearTag) { candidateTags.append(bareYearTag) }
+
+        let cacheKey = "\(trimmedRepo)/\(candidateTags.first ?? yearTag)/\(safeID)"
         if let cached = memoryStreamCache[cacheKey], cached.expiresAt > Date() {
             return cached.url
         }
 
-        let tag = "v\(year)"
-        guard let apiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/tags/\(tag)") else {
-            return nil
+        // Fetch release metadata (trying candidate tags, then fallback to latest release)
+        var releaseJson: [String: Any]? = nil
+        for tag in candidateTags {
+            guard let apiURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/tags/\(tag)") else { continue }
+            var req = URLRequest(url: apiURL)
+            req.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+            req.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
+
+            if let (data, resp) = try? await session.data(for: req),
+               let http = resp as? HTTPURLResponse, http.statusCode == 200,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                releaseJson = json
+                break
+            }
         }
 
-        var req = URLRequest(url: apiURL)
-        req.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-        req.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
+        if releaseJson == nil, let latestURL = URL(string: "https://api.github.com/repos/\(trimmedRepo)/releases/latest") {
+            var req = URLRequest(url: latestURL)
+            req.setValue("Bearer \(trimmedPAT)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+            req.setValue("InstagramDigestDirect-iOS", forHTTPHeaderField: "User-Agent")
 
-        guard let (data, resp) = try? await session.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            if let (data, resp) = try? await session.data(for: req),
+               let http = resp as? HTTPURLResponse, http.statusCode == 200,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                releaseJson = json
+            }
+        }
+
+        guard let json = releaseJson else {
             return nil
         }
 
         let targetAssetName = "\(safeID).mp4"
+        let alternateAssetName = "\(reelID).mp4"
         var targetAssetURLString: String? = nil
 
         // Check release embedded assets (first page, ~30 entries)
-        if let assets = json["assets"] as? [[String: Any]],
-           let match = assets.first(where: { ($0["name"] as? String) == targetAssetName }) {
-            targetAssetURLString = match["url"] as? String
+        if let assets = json["assets"] as? [[String: Any]] {
+            let match = assets.first(where: {
+                let name = $0["name"] as? String
+                return name == targetAssetName || name == alternateAssetName
+            })
+            targetAssetURLString = match?["url"] as? String
         }
 
         // AUDIT-009: If target asset not in embedded assets, page through release assets following Link: rel="next" up to 500 assets
@@ -179,6 +235,10 @@ public final class GitHubBookmarkSyncService {
             return s3URL
         }
         return nil
+    }
+
+    public func resolveReleaseStreamURL(reelID: String, year: Int, repo: String, pat: String) async -> URL? {
+        await resolveReleaseStreamURL(reelID: reelID, releaseTag: nil, year: year, repo: repo, pat: pat)
     }
 
     /// AUDIT-009: Extract "next" page URL from GitHub API Link header
@@ -350,10 +410,23 @@ public final class GitHubBookmarkSyncService {
     }()
 
     private func parseDate(_ str: String?) -> Date {
-        guard let str, !str.isEmpty else { return Date.distantPast }
+        guard let str, !str.isEmpty else { return Date() }
         if let d = isoFormatter.date(from: str) { return d }
         if let d = fallbackIsoFormatter.date(from: str) { return d }
-        return Date.distantPast
+        let customFormatters = [
+            "yyyy-MM-dd'T'HH:mm:ss.SSSSSSZ",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd"
+        ]
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.timeZone = TimeZone(secondsFromGMT: 0)
+        for fmt in customFormatters {
+            df.dateFormat = fmt
+            if let d = df.date(from: str) { return d }
+        }
+        return Date()
     }
 
     /// Export bookmarks to a temporary JSON file for sharing via UIActivityViewController
@@ -528,10 +601,15 @@ public final class GitHubBookmarkSyncService {
             let id = dto.id
             let descriptor = FetchDescriptor<BookmarkItem>(predicate: #Predicate { $0.reelID == id })
             let existing = (try? context.fetch(descriptor))?.first
+            let parsedDate = parseDate(dto.bookmarked_at)
+            let resolvedTag = dto.release_tag ?? (dto.video_asset_name != nil ? Self.releaseTag(for: parsedDate) : nil)
             if let item = existing {
                 if item.videoAssetName == nil && dto.video_asset_name != nil {
                     item.videoAssetName = dto.video_asset_name
-                    item.releaseTag = dto.release_tag
+                    item.releaseTag = resolvedTag
+                }
+                if item.releaseTag == nil && resolvedTag != nil {
+                    item.releaseTag = resolvedTag
                 }
             } else {
                 let canonical = dto.canonical_url.flatMap { URL(string: $0) }
@@ -548,8 +626,8 @@ public final class GitHubBookmarkSyncService {
                     thumbnailUrl: thumb,
                     canonicalUrl: canonical,
                     videoAssetName: dto.video_asset_name,
-                    releaseTag: dto.release_tag,
-                    bookmarkedAt: parseDate(dto.bookmarked_at),
+                    releaseTag: resolvedTag,
+                    bookmarkedAt: parsedDate,
                     localStatus: .evicted,
                     sizeBytes: dto.size_bytes ?? 0,
                     lastAccessedAt: Date()

@@ -486,6 +486,7 @@ public struct BookmarksSheet: View {
 /// Plays bookmarks in order, auto-advances on end, has (x) close button at top,
 /// channel name, caption, unsave bookmark, and auto-hides chrome during playback.
 public struct BookmarkPlayerOverlay: View {
+    @Environment(\.modelContext) private var modelContext
     public let bookmarks: [BookmarkItem]
     public let initialIndex: Int
     public let currentActiveWeekID: String
@@ -982,7 +983,7 @@ public struct BookmarkPlayerOverlay: View {
             return
         }
 
-        let repo = UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks"
+        let repo = GitHubBookmarkSyncService.sanitizeRepo(UserDefaults.standard.string(forKey: "gh_bookmark_repo") ?? "vkreddy1729-ops/ig-bookmarks")
         let pat = UserDefaults.standard.string(forKey: "gh_bookmark_pat") ?? ""
 
         guard !repo.isEmpty, !pat.isEmpty else {
@@ -994,22 +995,25 @@ public struct BookmarkPlayerOverlay: View {
         isLoadingVideo = true
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
-        let year = cal.component(.year, from: bookmark.bookmarkedAt)
+        let parsedYear = cal.component(.year, from: bookmark.bookmarkedAt)
+        let year = parsedYear > 2000 ? parsedYear : 2026
 
         streamTask?.cancel()
         streamTask = Task { @MainActor in
             let s3URL = await GitHubBookmarkSyncService.shared.resolveReleaseStreamURL(
                 reelID: bookmark.reelID,
+                releaseTag: bookmark.releaseTag,
                 year: year,
                 repo: repo,
                 pat: pat
             )
             guard !Task.isCancelled else { return }
-            self.isLoadingVideo = false
             if let s3URL = s3URL {
                 self.playMedia(url: s3URL, isLocal: false, for: bookmark, isStoredURL: false)
+                self.cacheVideoOnDemand(from: s3URL, for: bookmark)
             } else {
                 // S3 URL resolution failed -> Tier 3 Web Fallback
+                self.isLoadingVideo = false
                 self.player?.pause()
                 self.player = nil
             }
@@ -1029,10 +1033,17 @@ public struct BookmarkPlayerOverlay: View {
         statusObserver = nil
         player?.pause()
 
-        let asset = AVURLAsset(url: mediaURL)
+        var assetOptions: [String: Any] = [:]
+        if !isLocal {
+            if #available(iOS 17.0, *) {
+                assetOptions[AVURLAssetOverrideMIMETypeKey] = "video/mp4"
+            }
+            assetOptions["AVURLAssetOutOfBandMIMETypeKey"] = "video/mp4"
+        }
+        let asset = AVURLAsset(url: mediaURL, options: assetOptions)
         let item = AVPlayerItem(asset: asset)
         if !isLocal {
-            item.preferredForwardBufferDuration = 8.0
+            item.preferredForwardBufferDuration = 4.0
         }
 
         let avPlayer = AVPlayer(playerItem: item)
@@ -1041,6 +1052,9 @@ public struct BookmarkPlayerOverlay: View {
         self.isPlaying = true
         AudioSessionCoordinator.shared.activateSession()
         avPlayer.play()
+        if isLocal {
+            self.isLoadingVideo = false
+        }
 
         // Rec 1: the overlay clock ticks on the view's own timer (see the
         // onReceive below) — no AVPlayer time observer, so there is no
@@ -1074,6 +1088,8 @@ public struct BookmarkPlayerOverlay: View {
                     if observedItem.status == .failed && !self.hasAttemptedTier1_5Fallback {
                         self.hasAttemptedTier1_5Fallback = true
                         self.playViaGitHubRelease(for: bookmark)
+                    } else if observedItem.status == .readyToPlay {
+                        self.isLoadingVideo = false
                     }
                 }
             }
@@ -1084,21 +1100,66 @@ public struct BookmarkPlayerOverlay: View {
                 queue: .main
             ) { [weak avPlayer] _ in
                 guard avPlayer != nil else { return }
-                self.player?.pause()
-                self.player = nil
+                self.handleRemotePlaybackFailure(for: bookmark)
             }
 
-            statusObserver = item.observe(\.status, options: [.new]) { observedItem, _ in
+            statusObserver = item.observe(\.status, options: [.new]) { [weak avPlayer] observedItem, _ in
                 DispatchQueue.main.async {
+                    guard avPlayer != nil else { return }
                     if observedItem.status == .failed {
-                        self.player?.pause()
-                        self.player = nil
+                        self.handleRemotePlaybackFailure(for: bookmark, error: observedItem.error)
+                    } else if observedItem.status == .readyToPlay {
+                        self.isLoadingVideo = false
                     }
                 }
             }
         }
 
         scheduleChromeAutoHide()
+    }
+
+    private func handleRemotePlaybackFailure(for bookmark: BookmarkItem, error: Error? = nil) {
+        if let localFile = LibraryPathResolver.shared.resolvedLocalFileURL(for: bookmark.weekID, reelID: bookmark.reelID) {
+            self.playMedia(url: localFile, isLocal: true, for: bookmark, isStoredURL: false)
+        } else {
+            self.isLoadingVideo = false
+            self.player?.pause()
+            self.player = nil
+        }
+    }
+
+    private func cacheVideoOnDemand(from remoteURL: URL, for bookmark: BookmarkItem) {
+        let reelID = bookmark.reelID
+        let dest = LibraryPathResolver.shared.bookmarkFileURL(for: reelID)
+        if FileManager.default.fileExists(atPath: dest.path) { return }
+
+        Task.detached(priority: .utility) {
+            do {
+                _ = try LibraryPathResolver.shared.ensureDirectoryExists(at: LibraryPathResolver.shared.bookmarksDirectoryURL)
+                let (tempURL, resp) = try await URLSession.shared.download(from: remoteURL)
+                if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                    if !FileManager.default.fileExists(atPath: dest.path) {
+                        try FileManager.default.moveItem(at: tempURL, to: dest)
+                        await MainActor.run {
+                            let desc = FetchDescriptor<BookmarkItem>(predicate: #Predicate { $0.reelID == reelID })
+                            if let item = (try? modelContext.fetch(desc))?.first {
+                                item.localStatus = .cached
+                                try? modelContext.save()
+                            }
+                            if self.player == nil, let current = self.currentBookmark, current.reelID == reelID {
+                                self.playMedia(url: dest, isLocal: true, for: current, isStoredURL: false)
+                            }
+                        }
+                    } else {
+                        try? FileManager.default.removeItem(at: tempURL)
+                    }
+                } else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                }
+            } catch {
+                // Background caching failure is non-fatal
+            }
+        }
     }
 
     private func handleVideoEnded() {

@@ -1328,6 +1328,50 @@ final class DirectStreamTests: XCTestCase {
     }
 
     @MainActor
+    func testResolveReleaseStreamURLFallbackToLatestRelease() async throws {
+        let service = GitHubBookmarkSyncService.shared
+        service.session = makeMockSession()
+        GitHubBookmarkSyncService.additionalProtocolClasses = [MockResolverURLProtocol.self]
+
+        let repo = "vkreddy1729-ops/ig-bookmarks"
+        let pat = "ghp_mockpat123"
+        let reelID = "fallback_reel"
+        let assetID = 77777
+        let s3Location = "https://release-assets.githubusercontent.com/asset_fallback.mp4"
+
+        MockResolverURLProtocol.requestHandler = { request in
+            let urlString = request.url?.absoluteString ?? ""
+            if urlString.contains("/releases/tags/") {
+                // 404 for tag
+                return (HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, "{\"message\":\"Not Found\"}".data(using: .utf8)!)
+            } else if urlString.contains("/releases/latest") {
+                // Fallback to latest succeeds
+                let latestJSON = """
+                {
+                    "id": 99999,
+                    "tag_name": "custom_tag_2026",
+                    "assets": [
+                        {
+                            "id": \(assetID),
+                            "name": "\(reelID).mp4",
+                            "url": "https://api.github.com/repos/\(repo)/releases/assets/\(assetID)"
+                        }
+                    ]
+                }
+                """.data(using: .utf8)!
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, latestJSON)
+            } else if urlString.contains("/releases/assets/\(assetID)") {
+                let headers = ["Location": s3Location]
+                return (HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil, headerFields: headers)!, Data())
+            }
+            throw URLError(.badURL)
+        }
+
+        let resolvedURL = await service.resolveReleaseStreamURL(reelID: reelID, releaseTag: "custom_missing_tag", year: 2026, repo: repo, pat: pat)
+        XCTAssertEqual(resolvedURL?.absoluteString, s3Location, "Missing release tags must cleanly fallback to latest release")
+    }
+
+    @MainActor
     func testAudit013ReleaseAssetUploadTemplateStrippingAnd422Success() async throws {
         // AUDIT-013: Release asset upload handling (URL template stripping {?name,label} and 422 treated as success)
         let service = GitHubBookmarkSyncService.shared
