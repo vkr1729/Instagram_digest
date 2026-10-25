@@ -28,6 +28,9 @@ final class MockResolverURLProtocol: URLProtocol {
                let redirectURL = URL(string: location, relativeTo: request.url) {
                 let redirectReq = URLRequest(url: redirectURL)
                 client?.urlProtocol(self, wasRedirectedTo: redirectReq, redirectResponse: response)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
                 return
             }
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -1451,19 +1454,33 @@ final class DirectStreamTests: XCTestCase {
         let context = ModelContext(container)
 
         final class GateBox: @unchecked Sendable {
-            var continuation: CheckedContinuation<Void, Never>?
-        }
-        let box = GateBox()
-        let gateTask = Task {
-            await withCheckedContinuation { cont in
-                box.continuation = cont
+            private let lock = NSLock()
+            private var hasGated = false
+            let semaphore = DispatchSemaphore(value: 0)
+
+            func gateIfNeeded() {
+                var shouldWait = false
+                lock.lock()
+                if !hasGated {
+                    hasGated = true
+                    shouldWait = true
+                }
+                lock.unlock()
+                if shouldWait {
+                    _ = semaphore.wait(timeout: .now() + 5.0)
+                }
+            }
+
+            func open() {
+                semaphore.signal()
             }
         }
+        let gate = GateBox()
 
         MockResolverURLProtocol.requestHandler = { request in
             let urlString = request.url?.absoluteString ?? ""
             if urlString.contains("/contents/bookmarks.json") {
-                _ = Task { await gateTask.value }
+                gate.gateIfNeeded()
                 let body = "[]".data(using: .utf8)!.base64EncodedString()
                 let resp = """
                 {"sha": "abc", "content": "\(body)"}
@@ -1490,11 +1507,14 @@ final class DirectStreamTests: XCTestCase {
         XCTAssertTrue(service.needsResync, "Overlapping syncIfNeeded call must set needsResync = true")
 
         // Release gate and wait for task1
-        box.continuation?.resume()
+        gate.open()
         await task1.value
 
         // Allow follow-up deferred task to execute
-        try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        let deadline = Date().addingTimeInterval(1.0)
+        while service.isSyncing && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000) // 20ms
+        }
         XCTAssertFalse(service.isSyncing)
     }
 

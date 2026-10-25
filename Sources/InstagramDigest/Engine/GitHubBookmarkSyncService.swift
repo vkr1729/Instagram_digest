@@ -93,6 +93,8 @@ public final class GitHubBookmarkSyncService {
 
     private func makeEphemeralSession(delegate: URLSessionTaskDelegate) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 15
         if !Self.additionalProtocolClasses.isEmpty {
             config.protocolClasses = Self.additionalProtocolClasses
         } else if let sessionClasses = session.configuration.protocolClasses, !sessionClasses.isEmpty {
